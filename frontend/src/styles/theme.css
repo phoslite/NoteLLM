@@ -1,0 +1,39 @@
+:root {
+  --primary-color: #2f6fed;
+  --text-color: #1f2329;
+  --text-secondary: #8a919f;
+  --border-color: #e5e6eb;
+  --panel-bg: #f5f6f7;
+  --reading-bg: #fdfcf9;
+  --reading-text: #333;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text-color: #e5e6eb;
+    --text-secondary: #8a919f;
+    --border-color: #3a3f4b;
+    --panel-bg: #262a35;
+    --reading-bg: #1e2129;
+    --reading-text: #cfd3dc;
+  }
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  color: var(--text-color);
+  background: var(--panel-bg);
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* 视口高度采用百分比链 + dvh 兜底，避免最小化/还原或浏览器 UI 变化时 100vh 超出可视区导致页面显示不全 */
+#app {
+  height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+}

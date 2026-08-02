@@ -1,0 +1,8 @@
+# 文本文件入库统一 LF（Windows 检出按 autocrlf 处理）
+* text=auto
+*.bat text eol=crlf
+*.md text
+*.py text
+*.ts text
+*.vue text
+*.json text

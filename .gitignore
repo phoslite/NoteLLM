@@ -1,0 +1,40 @@
+# ---- 敏感与密钥（.env.example 保留入库） ----
+.env
+.env.*
+!.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---- Node / 前端 ----
+node_modules/
+.pnpm-store/
+dist/
+*.local
+
+# ---- 运行时数据 ----
+# 用户专业术语词库（系统会自动追加，属本地运行时数据）
+domain_terms.txt
+data/
+*.db
+*.sqlite3
+*.db-wal
+*.db-shm
+*.log
+demo/logs/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

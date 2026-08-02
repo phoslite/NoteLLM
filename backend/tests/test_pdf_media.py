@@ -1,0 +1,130 @@
+"""PDF 统一按页读图（含文本型，M7）+ 封面：导入检测、封面/页面端点、LLM 图片附件。"""
+from pathlib import Path
+from types import SimpleNamespace
+
+import pymupdf
+
+from app.services.ai_context import page_image_data_uri
+from app.services.chat_service import build_messages
+
+
+def _make_scanned_pdf(path: Path, pages: int = 3) -> None:
+    """无文本层的 PDF：只有图形，用于模拟扫描版。"""
+    doc = pymupdf.open()
+    for _i in range(pages):
+        page = doc.new_page(width=300, height=400)
+        page.draw_rect(pymupdf.Rect(50, 50, 250, 350), color=(0.2, 0.4, 0.8), fill=(0.9, 0.9, 0.95))
+    doc.save(str(path))
+    doc.close()
+
+
+def _make_text_pdf(path: Path) -> None:
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Chapter 1 Introduction\n\nBody paragraph one here.", fontsize=12)
+    doc.save(str(path))
+    doc.close()
+
+
+def _import(client, path: Path, name: str):
+    r = client.post("/api/books", files={"file": (name, path.read_bytes(), "application/pdf")})
+    assert r.status_code == 200
+    return r.json()["data"]
+
+
+def test_import_scanned_pdf_pages_and_cover(client, tmp_path):
+    pdf = tmp_path / "scan.pdf"
+    _make_scanned_pdf(pdf, pages=3)
+    data = _import(client, pdf, "scan.pdf")
+
+    assert data["is_scanned"] is True
+    assert data["page_count"] == 3
+    assert data["total_chapters"] == 3
+    assert data["cover_url"] == f"/api/books/{data['id']}/cover"
+
+    chs = client.get(f"/api/books/{data['id']}").json()["data"]["chapters"]
+    assert [c["page_index"] for c in chs] == [1, 2, 3]
+    assert [c["title"] for c in chs] == ["第 1 页", "第 2 页", "第 3 页"]
+
+    cov = client.get(f"/api/books/{data['id']}/cover")
+    assert cov.status_code == 200 and cov.headers["content-type"].startswith("image/")
+
+    pg = client.get(f"/api/books/{data['id']}/pages/2")
+    assert pg.status_code == 200 and pg.headers["content-type"].startswith("image/")
+    assert client.get(f"/api/books/{data['id']}/pages/99").status_code == 404
+    assert client.get(f"/api/books/{data['id']}/pages/0").status_code == 404
+
+
+def test_import_text_pdf_unified_page_mode_with_cover(client, tmp_path):
+    """文本型 PDF 同样按页处理（M7）：is_scanned=True、按页切章、渲染页图、保留封面。"""
+    from app.core.database import SessionLocal
+    from app.repositories import books as book_repo
+
+    pdf = tmp_path / "text.pdf"
+    _make_text_pdf(pdf)
+    data = _import(client, pdf, "text.pdf")
+
+    assert data["is_scanned"] is True
+    assert data["page_count"] == 1
+    assert data["total_chapters"] == 1
+    assert data["cover_url"] is not None
+    assert client.get(f"/api/books/{data['id']}/cover").status_code == 200
+    # 文本型 PDF 也渲染原图页
+    assert client.get(f"/api/books/{data['id']}/pages/1").status_code == 200
+    chs = client.get(f"/api/books/{data['id']}").json()["data"]["chapters"]
+    assert [c["page_index"] for c in chs] == [1]
+    # 正文不再抽取（页面模式 content 为空）
+    content = client.get(f"/api/books/{data['id']}/chapters/{chs[0]['id']}").json()["data"]
+    assert content["content_text"] == ""
+    # 本地抽取文本仅作全文检索索引
+    db = SessionLocal()
+    try:
+        fp = book_repo.get_book(db, data["id"]).file_path
+    finally:
+        db.close()
+    txt = Path(fp).parent / "local_text" / "page_001.txt"
+    assert txt.exists() and "Introduction" in txt.read_text(encoding="utf-8")
+
+
+def test_build_messages_attaches_page_image():
+    book = SimpleNamespace(title="扫描书")
+    chapter = SimpleNamespace(index=1, title="第 1 页", content_text="")
+    uri = "data:image/jpeg;base64,AAAA"
+
+    msgs = build_messages(book, chapter, "这页讲了什么", "", [], [], True, uri)
+    user = msgs[1]["content"]
+    assert isinstance(user, list)
+    assert user[0]["type"] == "text"
+    assert user[1] == {"type": "image_url", "image_url": {"url": uri, "detail": "high"}}
+
+    # 隐私开关关闭时不附带图片（内容退化为纯文本）
+    msgs2 = build_messages(book, chapter, "这页讲了什么", "", [], [], False, uri)
+    assert isinstance(msgs2[1]["content"], str)
+    assert "data:image" not in msgs2[1]["content"]
+
+
+def testpage_image_data_uri(client, tmp_path):
+    from app.core.database import SessionLocal
+    from app.repositories import books as book_repo
+
+    pdf = tmp_path / "scan.pdf"
+    _make_scanned_pdf(pdf, pages=2)
+    data = _import(client, pdf, "scan.pdf")
+    detail = client.get(f"/api/books/{data['id']}").json()["data"]
+    ch = detail["chapters"][0]
+
+    db = SessionLocal()
+    try:
+        file_path = book_repo.get_book(db, data["id"]).file_path
+    finally:
+        db.close()
+    book = SimpleNamespace(is_scanned=True, file_path=file_path)
+
+    assert page_image_data_uri(book, ch, False) is None
+    assert page_image_data_uri(SimpleNamespace(is_scanned=False, file_path=file_path), ch, True) is None
+    no_page = SimpleNamespace(index=1, title="x", content_text="", page_index=None)
+    assert page_image_data_uri(book, no_page, True) is None
+
+    uri = page_image_data_uri(book, ch, True)
+    assert uri and uri.startswith("data:image/jpeg;base64,")
+    assert client.get(f"/api/books/{data['id']}/pages/{ch['page_index']}").status_code == 200
