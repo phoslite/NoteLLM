@@ -15,4 +15,4 @@ uvicorn app.main:app --host 127.0.0.1 --port 8321
 
 ## 目录结构
 
-见 `技术栈规范.md` §2；分层：api -> services -> repositories -> models。
+见 `技术栈规范.md` §2；分层：api -> services -> repositories -> models。"# NoteLLM" 
