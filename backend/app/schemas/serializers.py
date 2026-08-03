@@ -12,6 +12,7 @@ def book_to_dict(book: Book, read_chapters: int | None = None, latest_chapter: C
         "title": book.title,
         "author": book.author,
         "format": book.format,
+        "content_hash": book.content_hash,
         "status": book.status,
         "progress": book.progress,
         "total_chapters": book.total_chapters,

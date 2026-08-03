@@ -32,8 +32,20 @@ if not exist "frontend\node_modules" (
     exit /b 1
 )
 
-echo [1/3] 启动后端 ^(8321^)...
-start "LLMnotebook 后端" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8321"
+rem --- 端口占用检测：已在运行则跳过启动，避免重复启动报 10048 ---
+netstat -ano | findstr ":8321 " | findstr "LISTENING" >nul 2>nul
+if not errorlevel 1 (
+    echo [提示] 后端已在运行 http://127.0.0.1:8321 ，跳过启动
+) else (
+    echo [1/3] 启动后端 ^(8321^)...
+    start "LLMnotebook 后端" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8321"
+)
+
+netstat -ano | findstr ":5173 " | findstr "LISTENING" >nul 2>nul
+if not errorlevel 1 (
+    echo [提示] 前端已在运行 http://127.0.0.1:5173 ，跳过启动
+    goto :front_done
+)
 
 echo [2/3] 启动前端 ^(5173^)...
 where pnpm >nul 2>nul

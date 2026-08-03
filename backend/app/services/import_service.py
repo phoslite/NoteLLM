@@ -1,4 +1,5 @@
 """书籍导入服务：保存文件 → 解析 → 入库。"""
+import hashlib
 import uuid
 from pathlib import Path
 
@@ -63,6 +64,7 @@ def import_book(
     book = create_book(
         db,
         title=book_title,
+        content_hash=hashlib.sha256(file_bytes).hexdigest(),
         author=author or parsed.author or None,
         format=_FORMAT_MAP[suffix],
         file_path=str(dest),

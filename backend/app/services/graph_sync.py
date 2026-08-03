@@ -17,7 +17,7 @@ from app.ai.prompts.rag_link import SYSTEM_PROMPT, build_link_user_prompt
 from app.core.time import utcnow
 from app.models.book import Book
 from app.models.graph import BookRelation
-from app.repositories.assets import read_asset_content, upsert_asset
+from app.repositories.assets import read_asset_content, save_asset_content, upsert_asset
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import extract_keywords
 from app.services.graph.lexicon import _GENERIC_DOMAIN_TERMS
@@ -38,10 +38,12 @@ def load_reasons(rel: BookRelation) -> list[str]:
 
 
 def _upsert_if_changed(db: Session, book_id: int, kind: str, content: dict) -> bool:
-    """内容未变化不写库（避免图谱重算反复 bump 资产版本，导致 post-classify 频繁失效）。"""
+    """内容未变化不写库；变化时用 save_asset_content 写入且**不递增版本**——联动存根
+    （linked_books/domain_terms）是辅助元数据，不应 bump 版本导致 post-classify 频繁失效
+    或污染资产版本语义（v1.68 修复：新书存根曾被每条关联边连续 +1）。"""
     if read_asset_content(db, book_id, kind) == content:
         return False
-    upsert_asset(db, book_id, kind, content)
+    save_asset_content(db, book_id, kind, content)
     return True
 
 

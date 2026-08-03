@@ -3,6 +3,7 @@ export interface BookItem {
   title: string
   author: string | null
   format: string
+  content_hash: string | null
   status: string
   progress: number
   total_chapters: number

@@ -30,6 +30,7 @@ class Book(Base):
     cover: Mapped[str | None] = mapped_column(String(500), nullable=True)
     format: Mapped[str] = mapped_column(String(10))  # pdf/md/txt/epub
     file_path: Mapped[str] = mapped_column(String(500))
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 原文件 sha256：资产去重合并判定（与书籍内容一一对应）
     status: Mapped[str] = mapped_column(String(20), default="未读")  # 未读/在读/读完
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     total_chapters: Mapped[int] = mapped_column(Integer, default=0)

@@ -21,7 +21,7 @@ from app.ai.prompts.rag_skill import (
 )
 from app.core.config import settings
 from app.repositories import books as book_repo
-from app.repositories.assets import get_asset, read_asset_content, upsert_asset
+from app.repositories.assets import delete_asset, get_asset, read_asset_content, upsert_asset
 from app.repositories.reading import set_all_chapters_read_flag
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import sanitize_cluster_name
@@ -240,19 +240,22 @@ def generate_rag_skill(
         chunks = chunk_book(chapters)
         llm_input = _build_llm_input(chapters, chunks)
 
-    # 再次阅读归档：已有资产 → 增量增改模式（旧资产概要 + 新笔记/对话 + 正文）
+    # 再次阅读归档：已有**实质**资产 → 增量增改模式（旧资产概要 + 新笔记/对话 + 正文）。
+    # 图谱联动可能留下空存根（summary/key_points 为空，v1.68 起不 bump 版本）——
+    # 空存根视为无资产：先删除存根再全量生成，保证新书首次总结 version=1 且不走增量提示词。
     old_rag_asset = get_asset(db, book_id, "rag")
-    if old_rag_asset:
-        old_rag = read_asset_content(db, book_id, "rag")
+    old_rag = read_asset_content(db, book_id, "rag") if old_rag_asset else {}
+    if old_rag_asset and (old_rag.get("summary") or old_rag.get("key_points")):
         old_skill = read_asset_content(db, book_id, "skill")
         system_prompt = INCREMENTAL_SYSTEM_PROMPT
         user_prompt = build_incremental_user_prompt(
             book.title, old_rag, old_skill, _collect_new_material(db, book), llm_input
         )
     else:
+        if old_rag_asset:
+            delete_asset(db, book_id, "rag")  # 清除空存根，版本归 1
         system_prompt = SYSTEM_PROMPT
         user_prompt = build_user_prompt(book.title, llm_input)
-
     client = build_client(db)
     try:
         reply = client.chat(

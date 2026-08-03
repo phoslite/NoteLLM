@@ -1,5 +1,5 @@
 import type { BookAssetView, TaskStatus } from '@/types'
-import { get, post } from './client'
+import { del, get, post } from './client'
 
 /** 触发书籍总结为 RAG/Skill（后台任务），返回 task_id。 */
 export function summarizeBook(bookId: number) {
@@ -14,6 +14,21 @@ export function archiveBook(bookId: number) {
 /** 轮询任务状态：{status, result, error}。 */
 export function getTask(taskId: string) {
   return get<TaskStatus>(`/tasks/${taskId}`)
+}
+
+/** 删除资产内第 index 项（0 基）：rag.key_points / rag.chunks / skill.skills。 */
+export function deleteAssetItem(
+  bookId: number,
+  kind: 'rag' | 'skill',
+  section: 'key_points' | 'chunks' | 'skills',
+  index: number,
+) {
+  return del<{ content: unknown }>(`/books/${bookId}/asset/${kind}/${section}/${index}`)
+}
+
+/** 跨书资产去重合并：按书籍内容 hash（原文件 sha256）合并相同资产的书籍（返回 {rag, skill} 合并数）。 */
+export function dedupeAssets() {
+  return post<{ rag: number; skill: number }>(`/assets/dedupe`)
 }
 
 /** 读取书籍的 RAG/Skill 资产。 */

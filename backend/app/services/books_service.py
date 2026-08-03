@@ -6,9 +6,9 @@ from sqlalchemy import delete, or_
 from sqlalchemy.orm import Session
 
 from app.models.activity import Bookmark, ChatMessage, Note, ReadingLog
-from app.models.asset import BookAsset
 from app.models.graph import BookRelation, KnowledgePoint
 from app.repositories import books as repo
+from app.repositories.assets import delete_assets
 
 
 def _remove_book_files(file_path: Path) -> None:
@@ -40,7 +40,7 @@ def delete_book(db: Session, book_id: int) -> bool:
     db.execute(delete(ReadingLog).where(ReadingLog.book_id == book_id))
     db.execute(delete(Bookmark).where(Bookmark.book_id == book_id))
     db.execute(delete(Note).where(Note.book_id == book_id))
-    db.execute(delete(BookAsset).where(BookAsset.book_id == book_id))
+    delete_assets(db, book_id)  # 共享资产：主书转移/成员解除引用后删除
     db.execute(delete(KnowledgePoint).where(KnowledgePoint.book_id == book_id))
     db.execute(delete(BookRelation).where(or_(BookRelation.book_a_id == book_id, BookRelation.book_b_id == book_id)))
     if repo.delete_book(db, book_id):

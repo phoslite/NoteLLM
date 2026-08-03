@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { getBookAsset, getTask, summarizeBook } from '@/api/rag'
-import { listBooks, uploadBook } from '@/api/books'
-import type { BookAssetView, BookItem } from '@/types'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { dedupeAssets, deleteAssetItem, getBookAsset, getTask, summarizeBook } from '@/api/rag'
+import { deleteBook, listBooks, uploadBook } from '@/api/books'
+import type { AssetEntry, BookAssetView, BookItem } from '@/types'
 
 const books = ref<BookItem[]>([])
 const assets = ref<Record<number, BookAssetView>>({})
@@ -36,6 +36,11 @@ function assetOf(bookId: number) {
   return assets.value[bookId] ?? null
 }
 
+function mergedCount(entry: AssetEntry<unknown> | null | undefined) {
+  const content = entry?.content as Record<string, unknown> | undefined
+  const ids = content?.merged_book_ids
+  return Array.isArray(ids) && ids.length ? ids.length : 0
+}
 function toggle(bookId: number) {
   expanded.value = expanded.value === bookId ? null : bookId
 }
@@ -72,6 +77,58 @@ async function runSummarize(bookId: number) {
   }
 }
 
+async function runDedupe() {
+  try {
+    await ElMessageBox.confirm('将按内容 hash 合并完全相同的 RAG/Skill 资产（重复导入的相同文件会合并为一条共享资产），确认执行？', '去重合并', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    const stats = await dedupeAssets()
+    ElMessage.success(`合并完成：RAG ${stats.rag} 条、Skill ${stats.skill} 条`)
+    await refresh()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+async function removeBook(bookId: number, title: string) {
+  try {
+    await ElMessageBox.confirm(
+      `确认从资产库移除「${title}」？将同时删除其 RAG/Skill 资产与书籍文件，不可恢复。`,
+      '移除确认',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  busyId.value = bookId
+  try {
+    await deleteBook(bookId)
+    ElMessage.success('已移除该书及其 RAG/Skill 资产')
+    await refresh()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    busyId.value = null
+  }
+}
+async function removeItem(
+  bookId: number,
+  kind: 'rag' | 'skill',
+  section: 'key_points' | 'chunks' | 'skills',
+  index: number,
+) {
+  busyId.value = bookId
+  try {
+    await deleteAssetItem(bookId, kind, section, index)
+    ElMessage.success('已删除')
+    await refresh()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    busyId.value = null
+  }
+}
 async function startIngest() {
   if (!pickedFile.value) {
     ElMessage.warning('请先选择文件')
@@ -116,14 +173,17 @@ onMounted(refresh)
       <template #header>
         <div class="card-head">
           <span>资料资产列表</span>
-          <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
+          <div class="head-actions">
+            <el-button size="small" @click="runDedupe">合并重复资产</el-button>
+            <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
+          </div>
         </div>
       </template>
       <el-empty v-if="!loading && !books.length" description="暂无资料，先上传一个文件" />
       <div v-for="b in books" :key="b.id" class="asset-row">
         <div class="asset-head" @click="toggle(b.id)">
           <span class="fmt">{{ b.format.toUpperCase() }}</span>
-          <span class="name">{{ b.title }}</span>
+          <span class="name" :title="b.content_hash || ''">{{ b.title }}<span v-if="b.content_hash" class="hash-tag">{{ b.content_hash.slice(0, 8) }}</span></span>
           <el-tag size="small" :type="assetOf(b.id)?.version ? 'success' : 'info'">
             {{ assetOf(b.id)?.version ? `RAG/Skill v${assetOf(b.id)!.version}` : '未总结' }}
           </el-tag>
@@ -131,15 +191,32 @@ onMounted(refresh)
 
         <div v-if="expanded === b.id" class="asset-detail">
           <div v-if="assetOf(b.id)">
-            <h4>RAG 摘要</h4>
+              <div class="asset-actions">
+                <el-button type="danger" size="small" plain :disabled="busyId === b.id" @click="removeBook(b.id, b.title)">
+                  移除书籍（含 RAG/Skill）
+                </el-button>
+              </div>
+              <h4 class="section-head">
+                RAG 摘要
+                <el-tag v-if="mergedCount(assetOf(b.id)!.rag)" size="small" type="warning">共享 {{ mergedCount(assetOf(b.id)!.rag) }} 本书</el-tag>
+              </h4>
             <pre class="summary">{{ assetOf(b.id)!.rag?.content.summary || '（无摘要）' }}</pre>
             <h4>关键知识点（含章节/段落出处）</h4>
             <ul class="key-points">
-              <li v-for="(k, i) in assetOf(b.id)!.rag?.content.key_points || []" :key="i">{{ k }}</li>
+              <li v-for="(k, i) in assetOf(b.id)!.rag?.content.key_points || []" :key="i" class="kp-row">
+                  <span class="kp-text">{{ k }}</span>
+                  <el-button type="danger" size="small" link @click="removeItem(b.id, 'rag', 'key_points', i)">删除</el-button>
+                </li>
             </ul>
-            <h4>Skill 技能</h4>
+            <h4 class="section-head">
+                Skill 技能
+                <el-tag v-if="mergedCount(assetOf(b.id)!.skill)" size="small" type="warning">共享 {{ mergedCount(assetOf(b.id)!.skill) }} 本书</el-tag>
+              </h4>
             <div v-for="(s, i) in assetOf(b.id)!.skill?.content.skills || []" :key="i" class="skill-item">
-              <div class="skill-name">{{ s.name }}</div>
+                <div class="skill-head">
+                  <div class="skill-name">{{ s.name }}</div>
+                  <el-button type="danger" size="small" link @click="removeItem(b.id, 'skill', 'skills', i)">删除</el-button>
+                </div>
               <div v-if="s.applicable" class="skill-meta">适用场景：{{ s.applicable }}</div>
               <pre v-if="s.usage" class="skill-usage">{{ s.usage }}</pre>
               <div v-if="s.sources?.length" class="skill-meta">出处：{{ s.sources.join('、') }}</div>
@@ -174,6 +251,13 @@ onMounted(refresh)
 .asset-detail h4 { margin: 14px 0 6px; font-size: 13px; color: var(--text-secondary); }
 .summary { white-space: pre-wrap; line-height: 1.8; margin: 0; font-size: 13px; background: var(--panel-bg); padding: 10px; border-radius: 6px; }
 .key-points { margin: 0; padding-left: 18px; line-height: 1.9; font-size: 13px; }
+.head-actions { display: flex; gap: 8px; }
+.section-head { display: flex; align-items: center; gap: 8px; }
+.asset-actions { display: flex; gap: 8px; margin-bottom: 4px; }
+.hash-tag { margin-left: 8px; font-size: 10px; color: var(--text-secondary); background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 4px; padding: 1px 5px; }
+.kp-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.kp-text { flex: 1; }
+.skill-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .skill-item { background: var(--panel-bg); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
 .skill-name { font-weight: 700; font-size: 14px; }
 .skill-meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }

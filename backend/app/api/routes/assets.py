@@ -1,10 +1,15 @@
-"""RAG/Skill 资产 API：触发总结（后台任务）、任务状态、资产读取。"""
+"""RAG/Skill 资产 API：触发总结（后台任务）、任务状态、资产读取与删除。"""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
 from app.core.database import SessionLocal, get_db
-from app.repositories.assets import list_assets
+from app.repositories.assets import (
+    delete_asset,
+    delete_asset_item,
+    list_assets,
+    merge_duplicate_assets,
+)
 from app.schemas.common import ok
 from app.schemas.serializers import asset_to_dict
 from app.services.rag_service import archive_book_task, generate_rag_skill
@@ -51,3 +56,42 @@ def book_asset(book_id: int, db: Session = Depends(get_db)):
         data[asset.kind] = asset_to_dict(asset)
     data["version"] = max((a.version for a in assets), default=0)
     return ok(data)
+
+
+
+
+@router.post("/assets/dedupe")
+def dedupe_assets(db: Session = Depends(get_db)):
+    """跨书资产去重合并：kind + 内容 hash 相同的整条资产合并为一条主资产。
+
+    返回 {rag, skill} 合并条数；被合并书仍可透明读取共享资产（见资料页「共享 N 本书」）。
+    """
+    return ok(merge_duplicate_assets(db), "去重合并完成")
+
+
+@router.delete("/books/{book_id}/asset")
+def delete_book_asset(book_id: int, kind: str, db: Session = Depends(get_db)):
+    """删除指定 kind（rag / skill）的整条资产；kind 非法时拒绝。"""
+    require_book(db, book_id)
+    if kind not in {"rag", "skill"}:
+        return ok(None, f"未知资产类型：{kind}")
+    removed = delete_asset(db, book_id, kind)
+    return ok({"deleted": removed}, "已删除" if removed else "资产不存在")
+
+
+@router.delete("/books/{book_id}/asset/{kind}/{section}/{index}")
+def delete_book_asset_item(
+    book_id: int, kind: str, section: str, index: int, db: Session = Depends(get_db)
+):
+    """删除资产内第 index 项（0 基）：rag.key_points / rag.chunks / skill.skills。
+
+    删除后 version + 1（保持「变更即版本递增」约定）；返回删除后的资产内容。
+    """
+    require_book(db, book_id)
+    if kind not in {"rag", "skill"} or section not in {"key_points", "chunks", "skills"}:
+        return ok(None, "不支持的删除目标")
+    try:
+        content = delete_asset_item(db, book_id, kind, section, index)
+    except ValueError as exc:
+        return ok(None, str(exc))
+    return ok({"content": content}, "已删除")

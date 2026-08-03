@@ -35,6 +35,7 @@ def _ensure_columns() -> None:
             ("books", "classified_at", "ALTER TABLE books ADD COLUMN classified_at DATETIME"),
             ("books", "classify_version", "ALTER TABLE books ADD COLUMN classify_version INTEGER"),
             ("books", "position", "ALTER TABLE books ADD COLUMN position INTEGER NOT NULL DEFAULT 0"),
+            ("books", "content_hash", "ALTER TABLE books ADD COLUMN content_hash VARCHAR(64)"),
             ("book_relations", "from_book_id", "ALTER TABLE book_relations ADD COLUMN from_book_id INTEGER"),
         ):
             cols = [r[1] for r in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()]
