@@ -87,13 +87,13 @@
       <template v-if="detailEdge">
         <div class="rel-pair">
           <div class="rel-book-card">
-            <b>{{ detailBooks.a?.title || '—' }}</b>
+            <b><MdRender v-if="detailBooks.a" :source="detailBooks.a.title" inline /></b>
             <span v-if="detailBooks.a">领域 {{ detailBooks.a.cluster }}</span>
             <span v-else>—</span>
           </div>
           <div class="rel-arrow">{{ detailEdge.direction === '无' ? '⇄' : '→' }}</div>
           <div class="rel-book-card">
-            <b>{{ detailBooks.b?.title || '—' }}</b>
+            <b><MdRender v-if="detailBooks.b" :source="detailBooks.b.title" inline /></b>
             <span v-if="detailBooks.b">领域 {{ detailBooks.b.cluster }}</span>
             <span v-else>—</span>
           </div>
@@ -108,13 +108,13 @@
         <div class="dlg-block">
           <div class="dlg-label">关联原因</div>
           <div v-if="detailEdge.reasons.length" class="reason-list">
-            <span v-for="(r, i) in detailEdge.reasons" :key="i" class="reason-tag">{{ r }}</span>
+            <span v-for="(r, i) in detailEdge.reasons" :key="i" class="reason-tag"><MdRender :source="r" inline /></span>
           </div>
           <p v-else class="empty">—</p>
         </div>
         <div v-if="detailEdge.user_feedback" class="dlg-block">
           <div class="dlg-label">人工反馈</div>
-          <el-tag size="small" type="success">{{ detailEdge.user_feedback }}</el-tag>
+          <el-tag size="small" type="success"><MdRender :source="detailEdge.user_feedback" inline /></el-tag>
         </div>
         <div class="feedback-row">
           <el-button size="small" type="success" @click="feedback('确认')">确认关联</el-button>
@@ -133,27 +133,27 @@
       <template v-if="kpDetail">
         <div class="kp-hero">
           <div class="kp-headline">
-            <h3 class="kp-title">{{ kpDetail.source.title }}</h3>
+            <h3 class="kp-title"><MdRender :source="kpDetail.source.title" inline /></h3>
             <el-tag size="small">{{ kpDetail.source.level }}</el-tag>
           </div>
           <p class="kv">出自：《{{ currentBook?.title ?? '' }}》</p>
-          <p class="kp-summary">{{ kpDetail.source.summary || '（无摘要）' }}</p>
+          <p class="kp-summary"><MdRender :source="kpDetail.source.summary || '（无摘要）'" /></p>
         </div>
         <div class="dlg-block">
           <div class="dlg-label">还出现在 {{ kpDetail.total }} 本书<template v-if="kpLoading">（检索中…）</template></div>
           <div v-if="kpDetail.books.length" class="appear-list">
             <div v-for="b in kpDetail.books" :key="b.book_id" class="appear-item">
               <div class="appear-head">
-                <b>《{{ b.title }}》</b>
+                <b><MdRender :source="b.title" inline /></b>
                 <el-tag size="small">{{ b.matched_count }} 处命中</el-tag>
                 <el-button size="small" type="primary" link @click="switchKpBook(b.book_id)">查看本书图谱</el-button>
               </div>
               <ul v-if="b.matched_kps.length" class="mini-list">
                 <li v-for="kp in b.matched_kps.slice(0, 5)" :key="kp.id">
-                  {{ kp.title }}<el-tag size="small" type="info" class="kp-level">{{ kp.level }}</el-tag>
+                  <MdRender :source="kp.title" inline /><el-tag size="small" type="info" class="kp-level">{{ kp.level }}</el-tag>
                 </li>
               </ul>
-              <p v-if="b.rag_hits.length" class="rag-hit">RAG 要点：{{ b.rag_hits[0] }}</p>
+              <p v-if="b.rag_hits.length" class="rag-hit">RAG 要点：<MdRender :source="b.rag_hits[0]" inline /></p>
             </div>
           </div>
           <p v-else class="empty">暂无其他书记载该知识点</p>
@@ -174,6 +174,8 @@ import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import type { GlobalGraph, GraphEdge, GraphNode, IntraGraph, KpNode, KnowledgeAppearsIn } from '@/types'
 import { getGlobalGraph, getIntraGraph, getKnowledgeAppearsIn, rebuildGraph, rebuildBookGraph, relationFeedback, syncGraphAssets } from '@/api/graph'
+import { LABEL_FONT_SIZE, ensureGraphLabelReady, labelRichFormatter, renderTooltipHtml } from '@/utils/graphLabel'
+import MdRender from '@/components/MdRender.vue'
 
 const router = useRouter()
 
@@ -250,6 +252,7 @@ function ensureChart(): echarts.ECharts | null {
 async function loadGlobal() {
   loading.value = true
   try {
+    await ensureGraphLabelReady()
     graph.value = await getGlobalGraph()
     await nextTick()
     renderGlobal()
@@ -313,6 +316,7 @@ function backToGlobal() {
 async function openIntraBook(node: GraphNode) {
   loading.value = true
   try {
+    await ensureGraphLabelReady()
     currentBook.value = node
     intra.value = await getIntraGraph(node.id)
     view.value = 'intra'
@@ -427,9 +431,11 @@ function renderGlobal() {
       },
       edgeLabel: {
         show: bestSet.has(e.id) && e.strength >= 20,
-        formatter: () => `${e.strength}分 ${e.reasons[0] ?? ''}`.trim(),
-        fontSize: 10,
+        formatter: () => labelRichFormatter(`${e.strength}分 ${e.reasons[0] ?? ''}`.trim(), LABEL_FONT_SIZE, 14),
+        fontSize: LABEL_FONT_SIZE,
         color: '#c0392b',
+        width: 200,
+        overflow: 'truncate',
       },
       symbol: directed ? ['none', 'arrow'] : 'none',
     }
@@ -442,10 +448,11 @@ function renderGlobal() {
         formatter: (p: any) => {
           if (p.dataType === 'edge') {
             const r = p.data.relation
-            return `<b>${nodeMap.get(r.book_a)?.title} ↔ ${nodeMap.get(r.book_b)?.title}</b><br/>强度：${r.strength}｜类型：${r.relation_type}<br/>原因：${(r.reasons ?? []).join('、') || '—'}<br/>方向：${edgeDirLabel(r, nodeMap)}`
+            const reasons = (r.reasons ?? []).map((x: string) => `• ${renderTooltipHtml(x, true)}`).join('<br/>')
+            return `<b>${renderTooltipHtml(nodeMap.get(r.book_a)?.title ?? '—', true)} ↔ ${renderTooltipHtml(nodeMap.get(r.book_b)?.title ?? '—', true)}</b><br/>强度：${r.strength}｜类型：${r.relation_type}<br/>方向：${edgeDirLabel(r, nodeMap)}<br/>原因：<br/>${reasons || '—'}`
           }
           const b: GraphNode = p.data.book
-          return `<b>${b.title}</b><br/>领域：${b.cluster}｜章节：${b.chapter_count}<br/>状态：${b.status}${b.graph_built ? '' : '<br/>（图谱未构建）'}<br/>点击查看本书知识图谱`
+          return `<b>${renderTooltipHtml(b.title, true)}</b><br/>领域：${b.cluster}｜章节：${b.chapter_count}<br/>状态：${b.status}${b.graph_built ? '' : '<br/>（图谱未构建）'}<br/>点击查看本书知识图谱`
         },
       },
       legend: { top: 4, data: [...new Set(nodes.map((n) => n.cluster))], textStyle: { fontSize: 11 } },
@@ -458,7 +465,14 @@ function renderGlobal() {
           data,
           links,
           force: { repulsion: 220, edgeLength: [80, 200], gravity: 0.12 },
-          label: { show: true, position: 'bottom', fontSize: 10, formatter: (p: any) => truncate(p.data.name, 9) },
+          label: {
+            show: true,
+            position: 'bottom',
+            fontSize: LABEL_FONT_SIZE,
+            width: 220,
+            overflow: 'truncate',
+            formatter: (p: any) => labelRichFormatter(p.data.name, LABEL_FONT_SIZE),
+          },
           lineStyle: { color: 'source' },
           emphasis: { focus: 'adjacency', lineStyle: { width: 5 } },
           categories: [...new Set(nodes.map((n) => n.cluster))].map((name) => ({ name, itemStyle: { color: clusterColor(name) } })),
@@ -510,7 +524,8 @@ function renderIntra() {
           const n: KpNode = p.data.kp
           const ch = n.chapter_id ? chapters.get(n.chapter_id) : null
           const pos = n.para_pos ? `第 ${n.para_pos} 段` : ''
-          return `<b>${n.title}</b><br/>层级：${n.level}｜重要度：${n.importance}<br/>出处：${ch ? `第 ${ch.index} 章${pos ? ' · ' + pos : ''}` : '—'}<br/>${truncate(n.summary || '（无摘要）', 120)}<br/>点击跳转阅读原文`
+          const summary = renderTooltipHtml(truncate(n.summary || '（无摘要）', 180), true)
+          return `<b>${renderTooltipHtml(n.title, true)}</b><br/>层级：${n.level}｜重要度：${n.importance}<br/>出处：${ch ? `第 ${ch.index} 章${pos ? ' · ' + pos : ''}` : '—'}<br/>${summary}<br/>点击跳转阅读原文`
         },
       },
       legend: { top: 4, data: ['章节级', '重要段落', '用户标记'], textStyle: { fontSize: 11 } },
@@ -523,7 +538,14 @@ function renderIntra() {
           data,
           links,
           force: { repulsion: 160, edgeLength: [60, 140], gravity: 0.08 },
-          label: { show: true, position: 'bottom', fontSize: 10, formatter: (p: any) => truncate(p.data.name, 8) },
+          label: {
+            show: true,
+            position: 'bottom',
+            fontSize: LABEL_FONT_SIZE,
+            width: 220,
+            overflow: 'truncate',
+            formatter: (p: any) => labelRichFormatter(p.data.name, LABEL_FONT_SIZE),
+          },
           lineStyle: { color: 'source' },
           emphasis: { focus: 'adjacency', lineStyle: { width: 4 } },
         },
