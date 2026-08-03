@@ -21,6 +21,20 @@ def list_messages(db: Session, book_id: int) -> list[ChatMessage]:
     )
 
 
+
+
+def list_recent_messages(db: Session, book_id: int, limit: int = 20) -> list[ChatMessage]:
+    """本书最近对话（按 ref_book_id）：时间倒序取最近 limit 条，返回时按时间正序。"""
+    rows = list(
+        db.scalars(
+            select(ChatMessage)
+            .where(ChatMessage.ref_book_id == book_id)
+            .order_by(ChatMessage.id.desc())
+            .limit(limit)
+        )
+    )
+    return list(reversed(rows))
+
 def clear_messages(db: Session, book_id: int) -> None:
     """清空本书对话历史。"""
     db.execute(delete(ChatMessage).where(ChatMessage.session_id == chat_session_id(book_id)))

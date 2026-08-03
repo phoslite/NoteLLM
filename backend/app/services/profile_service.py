@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.models.book import Book
 from app.models.profile import UserProfile
+from app.services.graph.keywords import extract_keywords
 from app.services.profile_learning import (
     get_thresholds,
     learn_thresholds,
@@ -131,7 +132,6 @@ def _asset_summary(rag: dict | None) -> dict:
 
 def _terms(text: str, top_n: int = 10) -> list[str]:
     """从短文本抽取术语（复用关键词抽取，中文二元组+英文词）。"""
-    from app.services.graph.keywords import extract_keywords
 
     return list(extract_keywords(text or "", top_n))
 

@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.ai.client import LLMClient
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.repositories import books as book_repo
 from app.repositories.settings import load_ai_overrides, vision_client_kwargs
 from app.services.media_service import page_image_path
 
@@ -124,8 +126,6 @@ def rebuild_book_caches(
 
 def extract_book_pages_task(book_id: int, force: bool = False) -> dict:
     """后台任务入口：打开独立会话，补齐全书页缓存（force=True 全部重提取）。"""
-    from app.core.database import SessionLocal
-    from app.repositories import books as book_repo
 
     db = SessionLocal()
     try:

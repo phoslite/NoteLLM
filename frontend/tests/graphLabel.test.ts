@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, beforeAll } from 'vitest'
+import { describe, expect, it, beforeAll } from 'vitest'
 import {
   ensureGraphLabelReady,
   formulaToImage,
@@ -56,25 +56,23 @@ describe('splitLabelSegments', () => {
 })
 
 describe('labelRichFormatter', () => {
-  it('返回 rich 图片片段与文本片段', () => {
+  it('返回字符串 formatter 与 rich 图片样式（token 形式）', () => {
     const out = labelRichFormatter('$\\Lambda^n V$ 与 $K$')
-    expect(out.rich).toHaveProperty('img0')
-    expect(out.formatter.length).toBeGreaterThanOrEqual(3)
+    expect(out.rich).toHaveProperty('f0')
+    expect(out.formatter).toContain('{f0| }')
+    expect(out.formatter).toContain('与')
+    expect(out.formatter).not.toContain('[object Object]')
   })
 
   it('长文本截断（保留尾部省略号）', () => {
     const out = labelRichFormatter('这是一个非常非常长的节点名称用于测试截断')
-    const text = (out.formatter as { type: string; text: string }[])
-      .filter((f) => f.type === 'text')
-      .map((f) => f.text)
-      .join('')
-    expect(text.length).toBeLessThanOrEqual(13)
-    expect(text.endsWith('…')).toBe(true)
+    expect(out.formatter.length).toBeLessThanOrEqual(13)
+    expect(out.formatter.endsWith('…')).toBe(true)
   })
 
   it('空名称兜底显示 …', () => {
     const out = labelRichFormatter('')
-    expect(out.formatter.length).toBe(1)
+    expect(out.formatter).toBe('…')
   })
 })
 

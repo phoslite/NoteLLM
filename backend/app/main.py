@@ -21,7 +21,8 @@ from app.api.routes import (
 )
 from app.api.routes import settings as settings_routes
 from app.core.config import settings
-from app.core.database import init_db
+from app.core.database import SessionLocal, init_db
+from app.services.media_service import migrate_all_books
 
 
 @asynccontextmanager
@@ -62,8 +63,6 @@ app.include_router(settings_routes.router)
 def migrate_book_media() -> None:
     """启动迁移：旧版扁平书籍目录 → 独立子目录 + 封面回填；失败不阻塞启动。"""
     try:
-        from app.core.database import SessionLocal
-        from app.services.media_service import migrate_all_books
 
         with SessionLocal() as db:
             migrate_all_books(db)

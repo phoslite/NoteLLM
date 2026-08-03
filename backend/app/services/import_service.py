@@ -12,6 +12,8 @@ from app.parsers.epub import extract_epub_cover
 from app.parsers.pdf import extract_pdf_cover, render_pdf_pages
 from app.repositories.books import add_chapters, create_book
 from app.repositories.settings import vision_configured
+from app.services.vision_extract import extract_book_pages_task
+from app.tasks import submit
 
 _FORMAT_MAP = {".md": "md", ".markdown": "md", ".txt": "txt", ".pdf": "pdf", ".epub": "epub"}
 
@@ -77,8 +79,6 @@ def import_book(
     # M7 批量预提取：导入 PDF（含文本型）作为知识库时后台补齐全书页缓存；
     # 受「发送书籍内容至模型」隐私开关与多模态配置约束。
     if suffix == ".pdf" and settings.ai_enable_body_send and vision_configured(db):
-        from app.services.vision_extract import extract_book_pages_task
-        from app.tasks import submit
 
         submit("vision-pre-extract", lambda: extract_book_pages_task(book.id))
     return book

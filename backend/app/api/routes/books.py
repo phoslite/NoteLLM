@@ -1,5 +1,4 @@
 """书籍 CRUD 与导入。"""
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -7,15 +6,16 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.parsers.pdf import jpeg_width, pdf_page_target_width, render_pdf_page
 from app.repositories import books as repo
 from app.repositories.reading import book_reading_summary, books_reading_summary
 from app.schemas.common import fail, ok
 from app.schemas.serializers import book_to_dict, chapter_to_dict
+from app.services.book_pages import get_or_render_page
+from app.services.books_service import clean_tags
 from app.services.books_service import delete_book as delete_book_service
-from app.services.graph.keywords import sanitize_cluster_name
+from app.services.graph.cross_book import incremental_cross_book_graph
 from app.services.import_service import import_book
-from app.services.media_service import ensure_book_cover, page_image_path
+from app.services.media_service import book_cover_file
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -69,8 +69,6 @@ async def upload_book(
         return fail(400, str(exc))
     # 新书导入后增量更新跨书关联（需求 3.6.2：不动既有关联，只补新书与其他书的边；失败不阻塞导入）
     try:
-        from app.services.graph.cross_book import incremental_cross_book_graph
-
         incremental_cross_book_graph(db, book.id)
     except Exception:
         db.rollback()
@@ -89,14 +87,7 @@ def get_book(book_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{book_id}")
 def update_book(book_id: int, body: BookUpdate, db: Session = Depends(get_db)):
-    tags = None
-    if body.tags is not None:
-        seen: list[str] = []
-        for raw in body.tags:
-            clean = sanitize_cluster_name(raw)
-            if clean and clean not in seen:
-                seen.append(clean)
-        tags = seen
+    tags = clean_tags(body.tags) if body.tags is not None else None
     book = repo.update_book(
         db,
         book_id,
@@ -126,12 +117,9 @@ def get_book_cover(book_id: int, db: Session = Depends(get_db)):
     book = repo.get_book(db, book_id)
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
-    cover = ensure_book_cover(db, book)
-    if not cover:
+    path = book_cover_file(db, book)
+    if not path:
         raise HTTPException(status_code=404, detail="该书没有封面")
-    path = Path(book.file_path).parent / cover
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="封面文件不存在")
     return FileResponse(path)
 
 
@@ -141,19 +129,7 @@ def get_book_page(book_id: int, page_index: int, db: Session = Depends(get_db)):
     book = repo.get_book(db, book_id)
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
-    if not (book.is_scanned and Path(book.file_path).exists()):
+    path = get_or_render_page(book, page_index)
+    if not path:
         raise HTTPException(status_code=404, detail="页面图片不存在")
-    path = page_image_path(book, page_index)
-    stale = False
-    if path.exists():
-        try:
-            target = pdf_page_target_width(Path(book.file_path), page_index)
-            stale = target > 0 and jpeg_width(path) < target * 0.85
-        except Exception:
-            stale = False
-    if not path.exists() or stale:
-        try:
-            render_pdf_page(Path(book.file_path), page_index, path)
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="页面图片不存在") from exc
     return FileResponse(path, headers={"Cache-Control": "private, max-age=600"})

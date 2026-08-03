@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 图谱节点/边标签渲染工具：
  * - 节点名中的 LaTeX 公式（$...$ / $$...$$ / \(...\) / \[...\] / 裸 \command 段）
  *   用 MathJax tex2svg 渲染为 SVG data URL，嵌入 ECharts 富文本图片片段
@@ -215,31 +215,40 @@ export function truncateLabelText(text: string, max = MAX_TEXT_CHARS): string {
   return t.length > max ? `${t.slice(0, max)}…` : t
 }
 
-/** 标签富文本：普通文本 + 公式图片片段（ECharts rich text formatter 返回值）。 */
-export function labelRichFormatter(raw: string, fontSize = LABEL_FONT_SIZE, maxChars = MAX_TEXT_CHARS) {
+/**
+ * 标签富文本：普通文本 + 公式图片片段。
+ * 返回 ECharts 可用的「字符串 token + rich 样式表」（graph 系列 label formatter
+ * 不支持返回对象，返回对象会被 zrender 字符串化成 "[object Object]"）。
+ * 文本段直接拼接为普通字符（沿用 label 默认样式），公式段用 {fN| } token 内嵌图片。
+ */
+export function labelRichFormatter(
+  raw: string,
+  fontSize = LABEL_FONT_SIZE,
+  maxChars = MAX_TEXT_CHARS,
+): { formatter: string; rich: Record<string, unknown> } {
   const segs = splitLabelSegments(raw, fontSize)
   const rich: Record<string, unknown> = {}
-  const formatter: unknown[] = []
+  const parts: string[] = []
   let imgIdx = 0
   let textBuf = ''
   const flushText = () => {
     const t = truncateLabelText(textBuf, maxChars)
-    if (t) formatter.push({ type: 'text', style: { fontSize }, text: t })
+    if (t) parts.push(t)
     textBuf = ''
   }
   for (const s of segs) {
     if (s.type === 'formula') {
       flushText()
-      const name = `img${imgIdx++}`
+      const name = `f${imgIdx++}`
       rich[name] = { backgroundColor: { image: s.image.url }, width: s.image.width, height: s.image.height }
-      formatter.push({ type: 'rich', style: { rich: name } })
+      parts.push(`{${name}| }`)
     } else {
       textBuf += s.text
     }
   }
   flushText()
-  if (!formatter.length) formatter.push({ type: 'text', style: { fontSize }, text: '…' })
-  return { rich, formatter }
+  if (!parts.length) parts.push('…')
+  return { formatter: parts.join(''), rich }
 }
 
 const escapeHtml = (s: string) =>

@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.models.asset import BookAsset
+from app.models.book import Book
 
 RAG_TOP_K = 4
 # 合并时忽略的元数据字段（不参与内容指纹，避免合并后 hash 漂移）
@@ -225,7 +226,6 @@ def delete_asset_item(db: Session, book_id: int, kind: str, section: str, index:
 
 def _book_file_hash(db: Session, book_id: int) -> str | None:
     """懒回填/读取书籍内容 hash：优先用 book.content_hash，缺失时读原文件计算并回填。"""
-    from app.models.book import Book
 
     book = db.get(Book, book_id)
     if not book:

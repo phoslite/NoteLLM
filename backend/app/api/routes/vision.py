@@ -8,9 +8,11 @@ from app.core.database import get_db
 from app.repositories.settings import vision_configured
 from app.schemas.common import ok
 from app.services.vision_extract import (
+    ensure_page_cache,
     extract_book_pages_task,
     read_page_cache,
 )
+from app.tasks import get_status, submit
 
 router = APIRouter(prefix="/api/books", tags=["vision"])
 
@@ -31,7 +33,6 @@ def get_page_text_status(book_id: int, db: Session = Depends(get_db)):
 @router.post("/{book_id}/page-text/rebuild")
 def rebuild_page_text(book_id: int, body: RebuildIn | None = None, db: Session = Depends(get_db)):
     """重建本书页缓存：后台任务补缺失页（force=False）或全部重提取（force=True），返回 task_id。"""
-    from app.tasks import submit
 
     require_book(db, book_id)
     if not vision_configured(db):
@@ -53,7 +54,6 @@ def get_page_text(book_id: int, page_index: int, db: Session = Depends(get_db)):
 @router.post("/{book_id}/page-text/{page_index}")
 def reextract_page(book_id: int, page_index: int, db: Session = Depends(get_db)):
     """重新提取本页（强制覆盖缓存）；需已配置多模态且隐私开关开启。"""
-    from app.services.vision_extract import ensure_page_cache
 
     book = require_book(db, book_id)
     if not 1 <= page_index <= (book.page_count or 0):
@@ -72,6 +72,5 @@ def reextract_page(book_id: int, page_index: int, db: Session = Depends(get_db))
 @router.get("/{book_id}/page-text/tasks/{task_id}")
 def get_page_text_task(task_id: str, db: Session = Depends(get_db)):
     """查询页缓存任务状态。"""
-    from app.tasks import get_status
 
     return ok(get_status(task_id))

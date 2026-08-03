@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.activity import ChatMessage, Note
 from app.models.book import Book, Chapter
 from app.services.graph.keywords import extract_keywords
+from app.services.profile_learning import get_thresholds
 from app.services.profile_service import get_all_profiles
 
 # 归档后 ≥1 天建议复习（初值，后续按用户复习频率学习调整）
@@ -32,7 +33,6 @@ def generate_recommendations(db: Session) -> dict:
         "read_chapters": db.query(Chapter).filter(Chapter.read_flag.is_(True)).count(),
         "books_total": db.query(Book).count(),
     }
-    from app.services.profile_learning import get_thresholds
 
     review_days = int(get_thresholds(db)["review_days"])
     return {

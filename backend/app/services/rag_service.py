@@ -19,11 +19,15 @@ from app.ai.prompts.rag_skill import (
     build_incremental_user_prompt,
     build_user_prompt,
 )
+from app.core.database import SessionLocal
 from app.repositories import books as book_repo
 from app.repositories.assets import delete_asset, get_asset, read_asset_content, upsert_asset
+from app.repositories.chat import list_recent_messages
+from app.repositories.notes import list_notes
 from app.repositories.reading import set_all_chapters_read_flag
-from app.services.graph.clustering import post_classify_book
+from app.services.graph.clustering import merge_and_rename_clusters, post_classify_book
 from app.services.graph.keywords import sanitize_cluster_name
+from app.services.profile_service import migrate_profiles_on_archive
 from app.services.rag_input import (
     build_llm_input,
     build_page_input,
@@ -31,19 +35,19 @@ from app.services.rag_input import (
     normalize_skills,
     page_chunks,
 )
+from app.services.vision_extract import read_page_cache, rebuild_book_caches
 
 
 def _collect_new_material(db: Session, book) -> str:
     """再次阅读归档的增量素材：该书全部笔记/划线/「不理解」+ 最近对话（用户与助手）。"""
-    from app.models.activity import ChatMessage, Note
 
     parts: list[str] = []
-    for n in db.query(Note).filter(Note.book_id == book.id).order_by(Note.id).all():
+    for n in list_notes(db, book.id):
         quote = (n.quote_text or "").strip()
         text = (n.note_text or "").strip()
         if quote or text:
             parts.append(f"[{n.note_type}] {quote} 备注：{text}")
-    for m in db.query(ChatMessage).filter(ChatMessage.ref_book_id == book.id).order_by(ChatMessage.id).all()[-20:]:
+    for m in list_recent_messages(db, book.id, limit=20):
         role = "用户" if m.role == "user" else "助手"
         parts.append(f"{role}: {(m.content or '')[:300]}")
     return "\n".join(parts) if parts else "（本轮没有新增笔记或对话）"
@@ -57,9 +61,6 @@ def archive_book_task(book_id: int) -> dict:
     - 非 PDF：直接按章节正文总结。
     - 成功后章节全部标记已读、书籍状态=读完，并触发 post-classify（两阶段分类 §9）。
     """
-    from app.core.database import SessionLocal
-    from app.repositories import books as book_repo
-    from app.services.vision_extract import read_page_cache, rebuild_book_caches
 
     db = SessionLocal()
     try:
@@ -76,15 +77,11 @@ def archive_book_task(book_id: int) -> dict:
         set_all_chapters_read_flag(db, book, True)  # 标记读完（状态=读完，进度=100%）
         # 三层画像迁移 + 暖记忆联动（失败不阻塞归档）
         try:
-            from app.services.profile_service import migrate_profiles_on_archive
-
             result["profile"] = migrate_profiles_on_archive(db, book, rag=result.get("rag"))
         except Exception:
             db.rollback()
         # post-classify 簇合并/重命名（§9.4.4/9.4.5，失败不阻塞归档）
         try:
-            from app.services.graph.clustering import merge_and_rename_clusters
-
             result["cluster_merge"] = merge_and_rename_clusters(db)
         except Exception:
             db.rollback()

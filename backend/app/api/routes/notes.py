@@ -11,6 +11,7 @@ from app.repositories import notes as note_repo
 from app.schemas.common import ok
 from app.schemas.serializers import note_to_dict
 from app.services.note_export import build_notes_markdown, build_notes_pdf
+from app.services.profile_service import update_hot_profile
 
 router = APIRouter(prefix="/api", tags=["notes"])
 
@@ -46,7 +47,6 @@ def create_note(book_id: int, body: NoteIn, db: Session = Depends(get_db)):
     )
     # 热画像回写：笔记/划线/「不理解」点（失败不影响笔记保存）
     try:
-        from app.services.profile_service import update_hot_profile
 
         book = require_book(db, book_id)
         update_hot_profile(

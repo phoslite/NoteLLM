@@ -175,6 +175,7 @@ import { ElMessage } from 'element-plus'
 import type { GlobalGraph, GraphEdge, GraphNode, IntraGraph, KpNode, KnowledgeAppearsIn } from '@/types'
 import { getGlobalGraph, getIntraGraph, getKnowledgeAppearsIn, rebuildGraph, rebuildBookGraph, relationFeedback, syncGraphAssets } from '@/api/graph'
 import { LABEL_FONT_SIZE, ensureGraphLabelReady, labelRichFormatter, renderTooltipHtml } from '@/utils/graphLabel'
+import { bestEdgeSet, edgeStrokeColor, kpEdgeColor, linkEndpoints } from '@/utils/graphEdges'
 import MdRender from '@/components/MdRender.vue'
 
 const router = useRouter()
@@ -371,18 +372,14 @@ async function switchKpBook(bookId: number) {
 }
 
 /** 有向边：返回箭头 source→target（无方向返回 book_a→book_b 且 directed=false）。 */
-function edgeEndpoints(e: GraphEdge, nodeMap: Map<number, GraphNode>) {
-  const directed = e.direction !== '无' && e.from_book != null && (e.from_book === e.book_a || e.from_book === e.book_b)
-  if (directed) {
-    const source = e.from_book as number
-    return { source, target: source === e.book_a ? e.book_b : e.book_a, directed: true }
-  }
-  return { source: e.book_a, target: e.book_b, directed: false }
+/** 关联方向展示（数值端点，供 nodeMap 查书名）：方向判定复用 linkEndpoints，避免两处实现。 */
+function edgeEndpoints(e: GraphEdge) {
+  const { source, target, directed } = linkEndpoints(e)
+  return { source: Number(source), target: Number(target), directed }
 }
-
 /** 关联方向展示文案（详情弹窗用）。 */
 function edgeDirLabel(edge: GraphEdge, nodeMap: Map<number, GraphNode>): string {
-  const { source, target, directed } = edgeEndpoints(edge, nodeMap)
+  const { source, target, directed } = edgeEndpoints(edge)
   if (!directed) return '双向关联'
   return `${nodeMap.get(source)?.title ?? source} → ${nodeMap.get(target)?.title ?? target}`
 }
@@ -398,45 +395,47 @@ function renderGlobal() {
   const ids = new Set(nodes.map((n) => n.id))
   const edges = g.edges.filter((e) => ids.has(e.book_a) && ids.has(e.book_b))
 
-  // 每本书的「关系最密切」边
-  const best: Record<number, number> = {}
-  for (const e of edges) {
-    best[e.book_a] = Math.max(best[e.book_a] ?? 0, e.strength)
-    best[e.book_b] = Math.max(best[e.book_b] ?? 0, e.strength)
-  }
-  const bestSet = new Set(edges.filter((e) => e.strength >= (best[e.book_a] ?? 0) - 0.01 || e.strength >= (best[e.book_b] ?? 0) - 0.01).map((e) => e.id))
+  // 每本书的「关系最密切」边（加粗/红色强调）
+  const bestSet = bestEdgeSet(edges)
 
-  const data = nodes.map((n) => ({
-    id: n.id,
-    name: n.title,
-    value: n.chapter_count,
-    symbolSize: 16 + Math.min(24, Math.log2((n.chapter_count || 1) + 1) * 5),
-    itemStyle: { color: clusterColor(n.cluster) },
-    category: n.cluster,
-    book: n,
-  }))
+  const data = nodes.map((n) => {
+    const label = labelRichFormatter(n.title, LABEL_FONT_SIZE)
+    return {
+      id: n.id,
+      name: n.title,
+      value: n.chapter_count,
+      symbolSize: 16 + Math.min(24, Math.log2((n.chapter_count || 1) + 1) * 5),
+      itemStyle: { color: clusterColor(n.cluster) },
+      category: n.cluster,
+      book: n,
+      label: { formatter: label.formatter, rich: label.rich },
+    }
+  })
 
   const links = edges.map((e) => {
-    const { source, target, directed } = edgeEndpoints(e, nodeMap)
+    const { source, target, directed } = linkEndpoints(e)
+    const isBest = bestSet.has(e.id)
     return {
       source,
       target,
       value: e.strength,
       relation: e,
-      isBest: bestSet.has(e.id),
+      isBest,
       lineStyle: {
-        width: bestSet.has(e.id) ? 4 + e.strength / 20 : 1.5 + e.strength / 40,
-        color: bestSet.has(e.id) ? '#f56c6c' : `rgba(64, 158, 255, ${0.3 + e.strength / 200})`,
+        width: isBest ? 4 + e.strength / 20 : 1.5 + e.strength / 40,
+        color: edgeStrokeColor(e.strength, isBest),
         curveness: 0.08,
       },
-      edgeLabel: {
-        show: bestSet.has(e.id) && e.strength >= 20,
-        formatter: () => labelRichFormatter(`${e.strength}分 ${e.reasons[0] ?? ''}`.trim(), LABEL_FONT_SIZE, 14),
-        fontSize: LABEL_FONT_SIZE,
-        color: '#c0392b',
-        width: 200,
-        overflow: 'truncate',
-      },
+      edgeLabel: (() => {
+        const label = labelRichFormatter(`${e.strength}分 ${e.reasons[0] ?? ''}`.trim(), LABEL_FONT_SIZE, 14)
+        return {
+          show: bestSet.has(e.id) && e.strength >= 20,
+          formatter: label.formatter,
+          rich: label.rich,
+          fontSize: LABEL_FONT_SIZE,
+          color: '#c0392b',
+        }
+      })(),
       symbol: directed ? ['none', 'arrow'] : 'none',
     }
   })
@@ -465,14 +464,7 @@ function renderGlobal() {
           data,
           links,
           force: { repulsion: 220, edgeLength: [80, 200], gravity: 0.12 },
-          label: {
-            show: true,
-            position: 'bottom',
-            fontSize: LABEL_FONT_SIZE,
-            width: 220,
-            overflow: 'truncate',
-            formatter: (p: any) => labelRichFormatter(p.data.name, LABEL_FONT_SIZE),
-          },
+          label: { show: true, position: 'bottom', fontSize: LABEL_FONT_SIZE },
           lineStyle: { color: 'source' },
           emphasis: { focus: 'adjacency', lineStyle: { width: 5 } },
           categories: [...new Set(nodes.map((n) => n.cluster))].map((name) => ({ name, itemStyle: { color: clusterColor(name) } })),
@@ -498,20 +490,24 @@ function renderIntra() {
   const ids = new Set(nodes.map((n) => n.id))
   const edges = kp.edges.filter((e) => ids.has(e.from) && ids.has(e.to))
 
-  const data = nodes.map((n) => ({
-    id: n.id,
-    name: n.title,
-    value: n.importance,
-    symbolSize: 12 + n.importance * 3,
-    itemStyle: { color: LEVEL_COLOR[n.level] ?? '#909399' },
-    level: n.level,
-    kp: n,
-  }))
+  const data = nodes.map((n) => {
+    const label = labelRichFormatter(n.title, LABEL_FONT_SIZE)
+    return {
+      id: n.id,
+      name: n.title,
+      value: n.importance,
+      symbolSize: 12 + n.importance * 3,
+      itemStyle: { color: LEVEL_COLOR[n.level] ?? '#909399' },
+      level: n.level,
+      kp: n,
+      label: { formatter: label.formatter, rich: label.rich },
+    }
+  })
   const links = edges.map((e) => ({
-    source: e.from,
-    target: e.to,
+    source: String(e.from),
+    target: String(e.to),
     value: e.strength,
-    lineStyle: { width: 1.5 + e.strength / 40, color: 'rgba(96, 98, 102, 0.6)', curveness: 0.1 },
+    lineStyle: { width: 1.5 + e.strength / 40, color: kpEdgeColor(), curveness: 0.1 },
     symbol: ['none', 'arrow'],
   }))
 
@@ -538,14 +534,7 @@ function renderIntra() {
           data,
           links,
           force: { repulsion: 160, edgeLength: [60, 140], gravity: 0.08 },
-          label: {
-            show: true,
-            position: 'bottom',
-            fontSize: LABEL_FONT_SIZE,
-            width: 220,
-            overflow: 'truncate',
-            formatter: (p: any) => labelRichFormatter(p.data.name, LABEL_FONT_SIZE),
-          },
+          label: { show: true, position: 'bottom', fontSize: LABEL_FONT_SIZE },
           lineStyle: { color: 'source' },
           emphasis: { focus: 'adjacency', lineStyle: { width: 4 } },
         },

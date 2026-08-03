@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
 from app.core.database import get_db
+from app.models.book import Book
 from app.models.graph import BookRelation
 from app.schemas.common import ok
 from app.services.graph.cross_book import (
@@ -12,7 +13,14 @@ from app.services.graph.cross_book import (
     global_graph_payload,
     rebuild_all_graph,
 )
+from app.services.graph.cross_book import knowledge_appears_in as cross_book_knowledge_appears_in
 from app.services.graph.intra_book import build_intra_book_graph, intra_graph_payload
+from app.services.graph_sync import (
+    link_domain_terms,
+    link_graph_assets,
+    link_relation_stubs,
+    sync_assets_for_relations,
+)
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -25,11 +33,9 @@ class FeedbackIn(BaseModel):
 @router.get("/books")
 def get_global_graph(db: Session = Depends(get_db)):
     """书籍级谱系图：聚类 + 节点 + 关联边（懒构建：尚无关联时自动计算并触发本地联动存根）。"""
-    from app.models.book import Book
 
     if db.query(BookRelation).count() == 0 and db.query(Book).count() > 0:
         compute_cross_book_graph(db)
-        from app.services.graph_sync import link_graph_assets
 
         link_graph_assets(db)
     return ok(global_graph_payload(db))
@@ -53,9 +59,8 @@ def rebuild_graph(db: Session = Depends(get_db)):
 @router.get("/knowledge/{kp_id}/appears-in")
 def knowledge_appears_in(kp_id: int, db: Session = Depends(get_db)):
     """跨书检索（需求 3.4.7）：该知识点还出现在哪些书（其他书知识点命中 + RAG key_points 命中）。"""
-    from app.services.graph.cross_book import knowledge_appears_in as _service
 
-    data = _service(db, kp_id)
+    data = cross_book_knowledge_appears_in(db, kp_id)
     if not data:
         raise HTTPException(status_code=404, detail="知识点不存在")
     return ok(data)
@@ -69,7 +74,6 @@ def sync_graph_assets(db: Session = Depends(get_db)):
     - 已配置文本 AI 时，对强度 ≥ 50 且未忽略的关联执行 LLM 增量增改
       （RAG 补跨书条目、Skill 融合新方法，version+1，失败回滚不阻塞）。
     """
-    from app.services.graph_sync import link_domain_terms, sync_assets_for_relations
 
     merged = sync_assets_for_relations(db)
     terms = link_domain_terms(db)
@@ -105,7 +109,6 @@ def relation_feedback(relation_id: int, body: FeedbackIn, db: Session = Depends(
         raise HTTPException(status_code=400, detail="action 仅支持 确认/忽略/修改")
     db.commit()
     if body.action in ("确认", "修改"):
-        from app.services.graph_sync import link_relation_stubs
 
         try:
             link_relation_stubs(db, rel)

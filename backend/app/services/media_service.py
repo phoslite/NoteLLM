@@ -39,6 +39,19 @@ def ensure_book_cover(db: Session, book: Book) -> str | None:
     return book.cover
 
 
+
+
+def book_cover_file(db: Session, book: Book) -> Path | None:
+    """确保封面存在并返回封面文件路径；无封面/文件缺失且提取失败返回 None。
+
+    封装 ensure_book_cover 的文件存在性检查，供 API 层直接返回 FileResponse。
+    """
+    cover = ensure_book_cover(db, book)
+    if not cover:
+        return None
+    path = Path(book.file_path).parent / cover
+    return path if path.exists() else None
+
 def migrate_book_layout(db: Session, book: Book) -> bool:
     """把旧版扁平布局（<root>/<file_id>.ext + 共享 cover.jpg/pages/）迁移为
     每本书独立子目录（<root>/<file_id>/）。返回是否发生迁移。"""

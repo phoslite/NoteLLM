@@ -9,7 +9,18 @@ from app.models.activity import Bookmark, ChatMessage, Note, ReadingLog
 from app.models.graph import BookRelation, KnowledgePoint
 from app.repositories import books as repo
 from app.repositories.assets import delete_assets
+from app.services.graph.keywords import sanitize_cluster_name
 
+
+def clean_tags(raw_tags: list[str]) -> list[str]:
+    """清洗书籍 tag：去除非法字符/空值/重复（与图谱聚类标签同一规范，供 API 层复用）。"""
+
+    seen: list[str] = []
+    for raw in raw_tags:
+        clean = sanitize_cluster_name(raw)
+        if clean and clean not in seen:
+            seen.append(clean)
+    return seen
 
 def _remove_book_files(file_path: Path) -> None:
     """删除书籍文件与媒体资源：新布局（<root>/<file_id>/）删除整个子目录；旧扁平布局尽力清理独立文件。"""

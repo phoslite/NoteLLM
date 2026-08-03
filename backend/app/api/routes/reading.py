@@ -22,6 +22,7 @@ from app.schemas.serializers import (
     chapter_to_dict,
     progress_to_dict,
 )
+from app.services.profile_service import update_hot_profile
 
 router = APIRouter(prefix="/api/books", tags=["reading"])
 
@@ -95,8 +96,6 @@ def save_progress(book_id: int, body: ProgressIn, db: Session = Depends(get_db))
     book = update_book_reading(db, book, progress, body.chapter_id, mark_read=body.mark_read)
     # 热画像回写：当前书进度与章节脉络（失败不影响阅读）
     try:
-        from app.services.profile_service import update_hot_profile
-
         chapter = next((c for c in chapters if c.id == body.chapter_id), None)
         update_hot_profile(
             db,

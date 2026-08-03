@@ -7,12 +7,14 @@ from sqlalchemy.orm import Session
 from app.models.activity import Note
 from app.models.book import Book
 from app.models.graph import BookRelation, KnowledgePoint
+from app.repositories.assets import read_asset_content
 from app.services.graph.clustering import assign_clusters
 from app.services.graph.corpus import book_corpus
 from app.services.graph.edges import pair_key
 from app.services.graph.intra_book import build_intra_book_graph
 from app.services.graph.keywords import extract_keywords
 from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
+from app.services.graph_sync import link_graph_assets
 
 
 def _note_keywords(note: Note, top_n: int = 30) -> set[str]:
@@ -163,7 +165,6 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
             apply_llm_result(rel, key[0], key[1], result)
     if llm_results:
         db.commit()
-    from app.services.graph_sync import link_graph_assets
 
     linked = link_graph_assets(db)
     return {"relations_added": added, "linked": linked["stubs"]}
@@ -175,7 +176,6 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
     命中来源：其他书 KnowledgePoint（章节级/重要段落/用户标记，title+summary 关键词重叠）
     + 其他书 RAG key_points 文本命中；按命中数倒序，空结果 books=[]。
     """
-    from app.repositories.assets import read_asset_content
 
     kp = db.get(KnowledgePoint, kp_id)
     if not kp:
@@ -284,7 +284,6 @@ def rebuild_all_graph(db: Session) -> dict:
         build_intra_book_graph(db, b)
     compute_cross_book_graph(db)
     # 本地 RAG 联动存根（强度 ≥ 50 的关联补 linked_books / domain_terms，内容未变化不写）
-    from app.services.graph_sync import link_graph_assets
 
     linked = link_graph_assets(db)
     return {
