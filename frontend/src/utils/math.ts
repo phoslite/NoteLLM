@@ -7,7 +7,7 @@ export function normalizeBlockBrackets(src: string): string {
   )
 }
 
-/** 标准转义定界符 \(...\) / \[...\] → $...$ / $$...$$。 */
+/** 标准转义定界符 \\(...\\) / \\[...\\] → $...$ / $$...$$。 */
 export function normalizeDelimiters(src: string): string {
   return src
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m: string, inner: string) => '$$' + inner.trim() + '$$')
@@ -70,13 +70,65 @@ export function normalizeInlineParens(src: string): string {
   return out
 }
 
+/** 行内裸数学表达式（无 $ 定界，如 `Λ^n V`、`λ−1`、`A∈R`）→ $...$。
+ * 仅包裹「数学字符起始、含上标/下标或 ≥2 个数学相关字符、括号配对」的短片段，避免误伤正文。 */
+export function normalizeBareMath(src: string): string {
+  const MATH_START = /[\u0391-\u03c9\u2200-\u22ff\u00b7\u00d7\u00f7\u2026\u2212\u2032]/
+  const TOKEN_END = /[\u4e00-\u9fff，。；：、？！（）“”‘’「」【】\n\r]/
+  const MATHISH = /[0-9A-Za-z\u0370-\u03ff\u2200-\u22ff\u00b7\u00d7\u00f7\u2212\u2032\\]/
+  const ASCII_ALNUM = /[0-9A-Za-z]/
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === '$') {
+      // 跳过已定界 $...$ / $$...$$ 区域，避免二次包裹
+      if (src[i + 1] === '$') {
+        const close = src.indexOf('$$', i + 2)
+        if (close === -1) { out += src.slice(i); break }
+        out += src.slice(i, close + 2)
+        i = close + 2
+      } else {
+        const next = src.indexOf('$', i + 1)
+        if (next === -1) { out += src.slice(i); break }
+        out += src.slice(i, next + 1)
+        i = next + 1
+      }
+      continue
+    }
+    if (MATH_START.test(ch)) {
+      let k = i
+      while (k > 0 && ASCII_ALNUM.test(src[k - 1])) k--
+      let j = i + 1
+      while (j < src.length && !TOKEN_END.test(src[j]) && !'$*#`|&~'.includes(src[j])) j++
+      const tok = src.slice(k, j).trim()
+      const opens = [...tok].filter((c) => c === '(' || c === '（' || c === '{').length
+      const closes = [...tok].filter((c) => c === ')' || c === '）' || c === '}').length
+      const wrap =
+        tok.length >= 2 &&
+        opens === closes &&
+        (tok.startsWith('\\') || tok.includes('^') || tok.includes('_') ||
+          [...tok].filter((c) => MATHISH.test(c)).length >= 2)
+      if (wrap) {
+        if (k < i) out = out.slice(0, out.length - (i - k))
+        out += '$' + tok + '$'
+        i = k + tok.length
+        continue
+      }
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
 /** 组合归一化（代码围栏内不做转换）。 */
 export function normalizeMath(src: string): string {
   const fences = src.match(/```[\s\S]*?```/g) ?? []
   const parts = src.split(/```[\s\S]*?```/g)
   let out = ''
   for (let i = 0; i < parts.length; i++) {
-    out += normalizeInlineParens(normalizeDelimiters(normalizeBlockBrackets(parts[i])))
+    out += normalizeBareMath(normalizeInlineParens(normalizeDelimiters(normalizeBlockBrackets(parts[i]))))
     if (i < fences.length) out += fences[i]
   }
   return out

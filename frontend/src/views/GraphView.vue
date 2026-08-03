@@ -1,65 +1,126 @@
 <template>
   <div class="graph-page">
-    <div class="graph-head">
-      <h2>{{ view === 'global' ? '书籍谱系图' : `《${currentBook?.title ?? ''}》知识图谱` }}</h2>
+    <!-- 顶部工具栏 -->
+    <header class="page-head">
+      <div class="head-left">
+        <h2>
+          <span class="title-ico">{{ view === 'global' ? '🗺️' : '📖' }}</span>
+          <span>{{ view === 'global' ? '书籍谱系图' : `《${currentBook?.title ?? ''}》知识图谱` }}</span>
+        </h2>
+        <p v-if="view === 'global'" class="head-sub">跨书知识谱系 · 点击书籍节点进入书内图谱 · 点击连线查看关联详情</p>
+        <p v-else class="head-sub">书内知识点谱系 · 章节级 / 重要段落 / 用户标记 三层粒度 · 点击节点查看跨书出现</p>
+      </div>
       <div class="head-actions">
-        <el-button v-if="view === 'intra'" size="small" @click="backToGlobal">← 返回谱系图</el-button>
-        <el-button v-if="view === 'global'" size="small" :loading="loading" @click="onRebuildGlobal">🔄 重建图谱</el-button>
-        <el-button v-if="view === 'global'" size="small" type="primary" plain :loading="syncing" @click="onSyncAssets">💾 联动沉淀</el-button>
-        <el-button v-if="view === 'intra'" size="small" :loading="loading" @click="rebuildCurrent">🔄 重建本书图谱</el-button>
+        <template v-if="view === 'global'">
+          <el-button size="small" :loading="loading" @click="onRebuildGlobal">🔄 重建图谱</el-button>
+          <el-button size="small" type="primary" plain :loading="syncing" @click="onSyncAssets">💾 联动沉淀</el-button>
+        </template>
+        <template v-else>
+          <el-button size="small" @click="backToGlobal">← 返回谱系图</el-button>
+          <el-button size="small" :loading="loading" @click="rebuildCurrent">🔄 重建本书图谱</el-button>
+        </template>
         <el-button size="small" @click="exportPng">⬇ 导出 PNG</el-button>
       </div>
-    </div>
+    </header>
 
-    <!-- 全局视图：聚类筛选 + 图 -->
+    <!-- ================= 全局视图 ================= -->
     <template v-if="view === 'global'">
-      <div class="filter-bar">
-        <el-check-tag :checked="clusterFilter === ''" @change="setCluster('')">全部</el-check-tag>
-        <el-check-tag
-          v-for="c in graph?.clusters ?? []"
-          :key="c.name"
-          :checked="clusterFilter === c.name"
-          @change="setCluster(c.name)"
-        >{{ c.name }}（{{ c.book_count }}）</el-check-tag>
+      <section v-if="graph" class="stat-grid">
+        <div v-for="s in statCards" :key="s.label" class="stat-card" :style="{ '--sc': s.color }">
+          <span class="stat-ico">{{ s.icon }}</span>
+          <div class="stat-body">
+            <b>{{ s.value }}</b>
+            <span>{{ s.label }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="filter-bar">
+        <span class="filter-label">领域筛选</span>
+        <div class="cluster-tags">
+          <el-check-tag :checked="clusterFilter === ''" @click="setCluster('')">全部</el-check-tag>
+          <el-check-tag
+            v-for="c in graph?.clusters ?? []"
+            :key="c.name"
+            :checked="clusterFilter === c.name"
+            @click="setCluster(c.name)"
+          >
+            {{ c.name }}<span class="count-badge">{{ c.book_count }}</span>
+          </el-check-tag>
+        </div>
         <span v-if="graph && graph.nodes.length === 0" class="empty-tip">暂无书籍，请先导入书籍</span>
+      </section>
+
+      <div ref="el" class="graph-canvas">
+        <div v-if="!graph" class="canvas-hint">{{ loading ? '正在加载谱系图…' : '暂无数据' }}</div>
       </div>
-      <div ref="el" class="graph-canvas"></div>
     </template>
 
-    <!-- 书内视图 -->
+    <!-- ================= 书内视图 ================= -->
     <template v-else>
-      <div class="filter-bar">
-        <span class="filter-label">知识点层级：</span>
-        <el-check-tag :checked="levelFilter['章节级']" @change="toggleLevel('章节级')">章节级</el-check-tag>
-        <el-check-tag :checked="levelFilter['重要段落']" @change="toggleLevel('重要段落')">重要段落</el-check-tag>
-        <el-check-tag :checked="levelFilter['用户标记']" @change="toggleLevel('用户标记')">用户标记</el-check-tag>
-        <span class="empty-tip">{{ intra ? `${intra.nodes.length} 个知识点 / ${intra.edges.length} 条关系` : '' }}</span>
+      <section v-if="intra" class="stat-grid stat-grid-small">
+        <div class="stat-card mini"><b>{{ intraStats.chapters }}</b><span>章节</span></div>
+        <div class="stat-card mini"><b>{{ intraStats.nodes }}</b><span>知识点</span></div>
+        <div class="stat-card mini"><b>{{ intraStats.edges }}</b><span>关系</span></div>
+        <div class="stat-card mini">
+          <b>{{ Object.values(levelFilter).filter(Boolean).length }}/3</b><span>层级显示</span>
+        </div>
+      </section>
+
+      <section class="filter-bar">
+        <span class="filter-label">知识点层级</span>
+        <div class="level-tags">
+          <el-check-tag :checked="levelFilter['章节级']" @click="toggleLevel('章节级')">章节级</el-check-tag>
+          <el-check-tag :checked="levelFilter['重要段落']" @click="toggleLevel('重要段落')">重要段落</el-check-tag>
+          <el-check-tag :checked="levelFilter['用户标记']" @click="toggleLevel('用户标记')">用户标记</el-check-tag>
+        </div>
+        <span class="count-tip">{{ intra ? `${intra.nodes.length} 个知识点 / ${intra.edges.length} 条关系` : '' }}</span>
+      </section>
+
+      <div ref="el" class="graph-canvas">
+        <div v-if="!intra" class="canvas-hint">加载中…</div>
       </div>
-      <div ref="el" class="graph-canvas"></div>
     </template>
 
     <!-- 关联详情弹窗 -->
-    <el-dialog v-model="detailVisible" title="书籍关联详情" width="480px">
+    <el-dialog v-model="detailVisible" title="书籍关联详情" width="560px" class="g-dialog">
       <template v-if="detailEdge">
-        <div class="rel-line">
-          <b>{{ detailBooks.a?.title }}</b>
-          <el-tag size="small" :type="detailEdge.direction === '无' ? 'info' : 'danger'" class="dir-tag">
+        <div class="rel-pair">
+          <div class="rel-book-card">
+            <b>{{ detailBooks.a?.title || '—' }}</b>
+            <span v-if="detailBooks.a">领域 {{ detailBooks.a.cluster }}</span>
+            <span v-else>—</span>
+          </div>
+          <div class="rel-arrow">{{ detailEdge.direction === '无' ? '⇄' : '→' }}</div>
+          <div class="rel-book-card">
+            <b>{{ detailBooks.b?.title || '—' }}</b>
+            <span v-if="detailBooks.b">领域 {{ detailBooks.b.cluster }}</span>
+            <span v-else>—</span>
+          </div>
+        </div>
+        <div class="rel-meta">
+          <el-tag size="small" type="info">{{ detailEdge.relation_type }}</el-tag>
+          <el-tag size="small" :type="detailEdge.direction === '无' ? 'info' : 'danger'">
             {{ detailEdge.direction === '无' ? '双向关联' : edgeDirLabel(detailEdge, new Map(graph?.nodes.map((n) => [n.id, n]) ?? [])) }}
           </el-tag>
-          <b>{{ detailBooks.b?.title }}</b>
+          <el-tag size="small" type="warning" effect="dark">强度 {{ detailEdge.strength }}</el-tag>
         </div>
-        <p>关联类型：{{ detailEdge.relation_type }}　|　关联强度：<b>{{ detailEdge.strength }}</b></p>
-        <p class="rel-reasons">
-          关联原因：
-          <span v-for="(r, i) in detailEdge.reasons" :key="i" class="reason-tag">{{ r }}</span>
-          <span v-if="!detailEdge.reasons.length">—</span>
-        </p>
-        <p v-if="detailEdge.user_feedback">人工反馈：<el-tag size="small">{{ detailEdge.user_feedback }}</el-tag></p>
+        <div class="dlg-block">
+          <div class="dlg-label">关联原因</div>
+          <div v-if="detailEdge.reasons.length" class="reason-list">
+            <span v-for="(r, i) in detailEdge.reasons" :key="i" class="reason-tag">{{ r }}</span>
+          </div>
+          <p v-else class="empty">—</p>
+        </div>
+        <div v-if="detailEdge.user_feedback" class="dlg-block">
+          <div class="dlg-label">人工反馈</div>
+          <el-tag size="small" type="success">{{ detailEdge.user_feedback }}</el-tag>
+        </div>
         <div class="feedback-row">
           <el-button size="small" type="success" @click="feedback('确认')">确认关联</el-button>
           <el-button size="small" type="warning" @click="feedback('忽略')">忽略关联</el-button>
           <span class="fb-strength">
-            修改强度：
+            修改强度
             <el-input-number v-model="strengthInput" :min="0" :max="100" size="small" />
             <el-button size="small" type="primary" @click="feedback('修改')">应用</el-button>
           </span>
@@ -68,29 +129,35 @@
     </el-dialog>
 
     <!-- 知识点详情：跨书出现 -->
-    <el-dialog v-model="kpDetailVisible" title="知识点详情" width="580px">
+    <el-dialog v-model="kpDetailVisible" title="知识点详情" width="640px" class="g-dialog">
       <template v-if="kpDetail">
-        <p class="kp-title"><b>{{ kpDetail.source.title }}</b></p>
-        <p class="kv">层级：{{ kpDetail.source.level }}　|　出自：《{{ currentBook?.title ?? '' }}》</p>
-        <p class="kp-summary">{{ kpDetail.source.summary || '（无摘要）' }}</p>
-        <el-divider />
-        <p class="kv"><b>还出现在 {{ kpDetail.total }} 本书</b><span v-if="kpLoading" class="empty">　检索中…</span></p>
-        <div v-if="kpDetail.books.length" class="appear-list">
-          <div v-for="b in kpDetail.books" :key="b.book_id" class="appear-item">
-            <div class="appear-head">
-              <b>《{{ b.title }}》</b>
-              <el-tag size="small">{{ b.matched_count }} 处命中</el-tag>
-              <el-button size="small" type="primary" link @click="switchKpBook(b.book_id)">查看本书图谱</el-button>
-            </div>
-            <ul v-if="b.matched_kps.length" class="mini-list">
-              <li v-for="kp in b.matched_kps.slice(0, 5)" :key="kp.id">
-                {{ kp.title }}<el-tag size="small" type="info" class="kp-level">{{ kp.level }}</el-tag>
-              </li>
-            </ul>
-            <p v-if="b.rag_hits.length" class="rag-hit">RAG 要点：{{ b.rag_hits[0] }}</p>
+        <div class="kp-hero">
+          <div class="kp-headline">
+            <h3 class="kp-title">{{ kpDetail.source.title }}</h3>
+            <el-tag size="small">{{ kpDetail.source.level }}</el-tag>
           </div>
+          <p class="kv">出自：《{{ currentBook?.title ?? '' }}》</p>
+          <p class="kp-summary">{{ kpDetail.source.summary || '（无摘要）' }}</p>
         </div>
-        <p v-else class="empty">暂无其他书记载该知识点</p>
+        <div class="dlg-block">
+          <div class="dlg-label">还出现在 {{ kpDetail.total }} 本书<template v-if="kpLoading">（检索中…）</template></div>
+          <div v-if="kpDetail.books.length" class="appear-list">
+            <div v-for="b in kpDetail.books" :key="b.book_id" class="appear-item">
+              <div class="appear-head">
+                <b>《{{ b.title }}》</b>
+                <el-tag size="small">{{ b.matched_count }} 处命中</el-tag>
+                <el-button size="small" type="primary" link @click="switchKpBook(b.book_id)">查看本书图谱</el-button>
+              </div>
+              <ul v-if="b.matched_kps.length" class="mini-list">
+                <li v-for="kp in b.matched_kps.slice(0, 5)" :key="kp.id">
+                  {{ kp.title }}<el-tag size="small" type="info" class="kp-level">{{ kp.level }}</el-tag>
+                </li>
+              </ul>
+              <p v-if="b.rag_hits.length" class="rag-hit">RAG 要点：{{ b.rag_hits[0] }}</p>
+            </div>
+          </div>
+          <p v-else class="empty">暂无其他书记载该知识点</p>
+        </div>
       </template>
       <template #footer>
         <el-button size="small" @click="kpDetailVisible = false">关闭</el-button>
@@ -101,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
@@ -141,6 +208,43 @@ function clusterColor(name: string): string {
   const names = [...new Set((graph.value?.clusters ?? []).map((c) => c.name))]
   const i = names.indexOf(name)
   return PALETTE[i % PALETTE.length] ?? '#909399'
+}
+
+const globalStats = computed(() => {
+  const nodes = graph.value?.nodes ?? []
+  const edges = graph.value?.edges ?? []
+  return {
+    books: nodes.length,
+    edges: edges.length,
+    clusters: new Set(nodes.map((n) => n.cluster)).size,
+    built: nodes.filter((n) => n.graph_built).length,
+    directed: edges.filter((e) => e.direction !== '无').length,
+  }
+})
+
+const statCards = computed(() => [
+  { icon: '📚', label: '书籍', value: globalStats.value.books, color: '#409eff' },
+  { icon: '🔗', label: '关联', value: globalStats.value.edges, color: '#67c23a' },
+  { icon: '➡️', label: '有向传承', value: globalStats.value.directed, color: '#f56c6c' },
+  { icon: '🗂️', label: '领域', value: globalStats.value.clusters, color: '#e6a23c' },
+  { icon: '✅', label: '已建图谱', value: globalStats.value.built, color: '#9b59b6' },
+])
+
+const intraStats = computed(() => ({
+  chapters: intra.value?.chapters.length ?? 0,
+  nodes: intra.value?.nodes.length ?? 0,
+  edges: intra.value?.edges.length ?? 0,
+}))
+
+/** 画布元素变化（全局↔书内切换）时重建 ECharts 实例，避免渲染到已卸载的 DOM。 */
+function ensureChart(): echarts.ECharts | null {
+  if (!el.value) return null
+  if (chart && chart.getDom() !== el.value) {
+    chart.dispose()
+    chart = null
+  }
+  if (!chart) chart = echarts.init(el.value)
+  return chart
 }
 
 async function loadGlobal() {
@@ -281,7 +385,8 @@ function edgeDirLabel(edge: GraphEdge, nodeMap: Map<number, GraphNode>): string 
 
 /* ---------- 全局谱系图渲染 ---------- */
 function renderGlobal() {
-  if (!el.value || !graph.value) return
+  const inst = ensureChart()
+  if (!inst || !graph.value) return
   const g = graph.value
   const nodeMap = new Map(g.nodes.map((n) => [n.id, n]))
   let nodes = g.nodes
@@ -330,8 +435,7 @@ function renderGlobal() {
     }
   })
 
-  if (!chart) chart = echarts.init(el.value)
-  chart.setOption(
+  inst.setOption(
     {
       tooltip: {
         trigger: 'item',
@@ -363,8 +467,8 @@ function renderGlobal() {
     },
     true,
   )
-  chart.off('click')
-  chart.on('click', (p: any) => {
+  inst.off('click')
+  inst.on('click', (p: any) => {
     if (p.dataType === 'node' && p.data.book) void openIntraBook(p.data.book as GraphNode)
     if (p.dataType === 'edge' && p.data.relation) openEdgeDetail(p.data.relation)
   })
@@ -372,7 +476,8 @@ function renderGlobal() {
 
 /* ---------- 书内知识图谱渲染 ---------- */
 function renderIntra() {
-  if (!el.value || !intra.value) return
+  const inst = ensureChart()
+  if (!inst || !intra.value) return
   const kp = intra.value
   const chapters = new Map(kp.chapters.map((c) => [c.id, c]))
   const nodes: KpNode[] = kp.nodes.filter((n) => levelFilter.value[n.level] ?? true)
@@ -396,8 +501,7 @@ function renderIntra() {
     symbol: ['none', 'arrow'],
   }))
 
-  if (!chart) chart = echarts.init(el.value)
-  chart.setOption(
+  inst.setOption(
     {
       tooltip: {
         trigger: 'item',
@@ -427,8 +531,8 @@ function renderIntra() {
     },
     true,
   )
-  chart.off('click')
-  chart.on('click', (p: any) => {
+  inst.off('click')
+  inst.on('click', (p: any) => {
     if (p.dataType === 'node' && p.data.kp) void openKpDetail(p.data.kp as KpNode)
   })
 }
@@ -482,27 +586,67 @@ onBeforeUnmount(() => {
   chart = null
 })
 </script>
-
 <style scoped>
-.graph-page { padding: 16px 20px; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.graph-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.graph-head h2 { margin: 0; font-size: 18px; }
-.head-actions { display: flex; gap: 8px; }
-.filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 8px; }
-.filter-label { color: var(--text-secondary); font-size: 13px; }
+.graph-page { padding: 18px 24px; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+
+/* 顶部工具栏 */
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.head-left { display: flex; flex-direction: column; gap: 4px; min-width: 240px; }
+.head-left h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+.title-ico { font-size: 20px; }
+.head-sub { color: var(--text-secondary); font-size: 12px; margin: 0; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 统计卡片 */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.stat-grid-small { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
+.stat-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
+.stat-ico { font-size: 20px; }
+.stat-body { display: flex; flex-direction: column; line-height: 1.25; }
+.stat-body b { font-size: 19px; color: var(--sc, var(--primary-color)); }
+.stat-body span { font-size: 12px; color: var(--text-secondary); }
+.stat-card.mini { justify-content: flex-start; padding: 8px 14px; }
+.stat-card.mini b { font-size: 17px; }
+
+/* 筛选栏 */
+.filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 0 12px; }
+.filter-label { color: var(--text-secondary); font-size: 13px; flex-shrink: 0; }
+.cluster-tags { display: flex; gap: 6px; flex-wrap: wrap; max-height: 76px; overflow-y: auto; }
+.count-badge { margin-left: 5px; font-size: 11px; opacity: .7; background: var(--panel-bg); border-radius: 999px; padding: 0 6px; }
+.level-tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .empty-tip { color: var(--text-secondary); font-size: 13px; margin-left: auto; }
-.graph-canvas { flex: 1; border: 1px solid var(--border-color); border-radius: 8px; min-height: 420px; }
-.rel-line { display: flex; align-items: center; gap: 8px; }
-.dir-tag { margin: 0 4px; }
-.rel-reasons { line-height: 1.9; }
-.reason-tag { display: inline-block; background: var(--el-fill-color-light, #f0f2f5); border-radius: 4px; padding: 1px 6px; margin-right: 6px; font-size: 12px; }
-.feedback-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-.kp-title { font-size: 15px; }
-.kp-summary { color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
-.appear-list { max-height: 300px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
-.appear-item { border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 10px; }
-.appear-head { display: flex; align-items: center; gap: 8px; }
+.count-tip { color: var(--text-secondary); font-size: 12px; margin-left: auto; }
+
+/* 图表画布 */
+.graph-canvas { position: relative; flex: 1; min-height: 420px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--reading-bg); background-image: radial-gradient(var(--border-color) 1px, transparent 1px); background-size: 22px 22px; box-shadow: 0 2px 10px rgba(0, 0, 0, .04); overflow: hidden; }
+.canvas-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 14px; }
+
+/* 关联详情弹窗 */
+.g-dialog :deep(.el-dialog__title) { font-weight: 700; }
+.rel-pair { display: flex; align-items: stretch; gap: 12px; padding: 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--reading-bg); }
+.rel-book-card { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--panel-bg); }
+.rel-book-card b { font-size: 14px; line-height: 1.5; }
+.rel-book-card span { font-size: 12px; color: var(--text-secondary); }
+.rel-arrow { display: flex; align-items: center; color: var(--primary-color); font-size: 22px; font-weight: 700; }
+.rel-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.dlg-block { margin-top: 14px; }
+.dlg-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.reason-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.reason-tag { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 9px; font-size: 12px; line-height: 1.7; }
+.feedback-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border-color); flex-wrap: wrap; }
+.fb-strength { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* 知识点详情弹窗 */
+.kp-hero { padding: 14px 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--reading-bg); }
+.kp-headline { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.kp-title { margin: 0; font-size: 16px; flex: 1; }
+.kp-summary { color: var(--text-secondary); font-size: 13px; line-height: 1.8; margin: 0; }
+.kv { margin: 6px 0; font-size: 13px; }
+.appear-list { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.appear-item { border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 12px; background: var(--reading-bg); }
+.appear-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mini-list { margin: 6px 0 0 18px; font-size: 13px; line-height: 1.9; }
 .kp-level { margin-left: 6px; }
-.rag-hit { color: var(--text-secondary); font-size: 12px; margin: 4px 0 0; }
-.fb-strength { display: flex; align-items: center; gap: 6px; }
+.rag-hit { color: var(--text-secondary); font-size: 12px; margin: 6px 0 0; }
+.empty { color: var(--text-secondary); font-size: 13px; }
 </style>

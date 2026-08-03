@@ -293,13 +293,18 @@ def merge_duplicate_assets(db: Session) -> dict:
     db.commit()
     return stats
 
+def _query_tokens(text: str) -> set[str]:
+    """把查询文本切分为检索 token：中文二元组 + 英文词（RAG 检索与 Skill 相关性共用）。"""
+    return set(re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_]*", text or ""))
+
+
 def retrieve_rag_chunks(db: Session, book_id: int, question: str, top_k: int = RAG_TOP_K) -> list[dict]:
     """从书籍 RAG 资产中按关键词重叠检索相关片段；无资产/无命中时返回空。"""
     content = read_asset_content(db, book_id, "rag")
     chunks = content.get("chunks") or []
     if not chunks:
         return []
-    tokens = set(re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_]*", question or ""))
+    tokens = _query_tokens(question)
     if not tokens:
         return chunks[:top_k]
 
@@ -312,7 +317,20 @@ def retrieve_rag_chunks(db: Session, book_id: int, question: str, top_k: int = R
     return hits or chunks[:top_k]
 
 
-def load_skills(db: Session, book_id: int) -> list[dict]:
-    """读取书籍 Skill 资产中的技能列表。"""
+def load_skills(db: Session, book_id: int, task_text: str | None = None, top_n: int = 8) -> list[dict]:
+    """读取书籍 Skill 资产中的技能列表；给出任务文本时按相关性排序并截断（避免全量注入）。"""
     content = read_asset_content(db, book_id, "skill")
-    return content.get("skills") or []
+    skills = content.get("skills") or []
+    if not skills or not task_text:
+        return skills
+    tokens = _query_tokens(task_text)
+    if not tokens:
+        return skills[:top_n]
+
+    def _score(s: dict) -> int:
+        hay = " ".join(str(s.get(k, "")) for k in ("name", "applicable", "usage", "sources"))
+        return sum(1 for t in tokens if t in hay)
+
+    scored = sorted(skills, key=_score, reverse=True)
+    hits = [s for s in scored if _score(s) > 0]
+    return (hits or scored)[:top_n]

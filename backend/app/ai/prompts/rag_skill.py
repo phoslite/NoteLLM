@@ -8,6 +8,9 @@ SYSTEM_PROMPT = (
     "格式如『第2章第3段』）；\n"
     "2) Skill 资产：可从本书提炼的可复用技能列表 skills，每项包含技能名 name、适用场景 applicable、"
     "使用步骤 usage、出处章节 sources。\n"
+    "数学公式必须用行内 $...$ 或块级 $$...$$ 包裹（如 `$\\Lambda^n V$`），"
+    "禁止输出无定界符的裸 LaTeX（如 `\\Lambda^n V`）或裸 Unicode 数学（如 `Λ^n V`）；"
+    "JSON 字符串内反斜杠须写成双反斜杠（`\\\\`）。\n"
     "必须严格输出一个 JSON 对象，不要输出任何其他内容或代码围栏。JSON 结构：\n"
     '{"summary": "…", "key_points": ["…（第x章第y段）", …], '
     '"skills": [{"name": "…", "applicable": "…", "usage": "…", "sources": ["第x章", …]}, …]}'
@@ -25,6 +28,9 @@ INCREMENTAL_SYSTEM_PROMPT = (
     "1) RAG 资产：合并新的要点、修正/扩展原 summary 与 key_points，不要丢失已有内容；"
     "每条 key_point 标注出处（如『第2章第3段』或『第 X 页』）；\n"
     "2) Skill 资产：合并/修正技能，去除重复项；\n"
+    "数学公式必须用行内 $...$ 或块级 $$...$$ 包裹（如 `$\\Lambda^n V$`），"
+    "禁止输出无定界符的裸 LaTeX（如 `\\Lambda^n V`）或裸 Unicode 数学（如 `Λ^n V`）；"
+    "JSON 字符串内反斜杠须写成双反斜杠（`\\\\`）。\n"
     "必须严格输出一个 JSON 对象（结构同首次总结），不要输出任何其他内容或代码围栏。JSON 结构：\n"
     '{"summary": "…", "key_points": ["…（第x章第y段）", …], '
     '"skills": [{"name": "…", "applicable": "…", "usage": "…", "sources": ["第x章", …]}, …]}'

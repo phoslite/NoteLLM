@@ -27,6 +27,8 @@ class ChatIn(BaseModel):
     # 涂鸦划线提问：划线区域裁剪图（data URI，chat 模式）与划线描述文本
     crop_image: str | None = None
     crop_label: str | None = None
+    # 预设能力模式：解读 / 概论 / 思考逻辑（附加结构化 system 模板）
+    mode: str | None = None
 
 
 @router.post("/{book_id}/chat")
@@ -48,7 +50,7 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
         chapter = chapters[0]
 
     job = prepare_chat_job(
-        db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or ""
+        db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or "", body.mode
     )
     return StreamingResponse(
         stream_chat(job),

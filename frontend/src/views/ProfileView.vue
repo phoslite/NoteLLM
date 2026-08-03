@@ -1,58 +1,155 @@
 <template>
   <div class="profile-page">
-    <div class="page-head">
-      <h2>读者画像</h2>
-      <el-button size="small" type="danger" plain :loading="busy" @click="onReset">重置画像</el-button>
-    </div>
-    <p class="tip">
-      三层画像由系统随阅读行为自动维护：热画像（当前书细节）&gt; 暖画像（近 1~2 本 + 相关领域）&gt; 冷画像（长期偏好）。
-      归档跨 1 本热转暖、跨 3 本暖转冷、&gt;3 本全部沉淀冷。
-    </p>
+    <!-- 顶部工具栏 -->
+    <header class="page-head">
+      <div class="head-left">
+        <h2>
+          <span class="title-ico">👤</span>
+          <span>读者画像</span>
+        </h2>
+        <p class="head-sub">三层画像随阅读行为自动维护：热（当前书细节）→ 暖（近 1~2 本 + 相关领域）→ 冷（长期偏好）</p>
+      </div>
+      <div class="head-actions">
+        <el-button size="small" :loading="busy" @click="refresh">🔄 刷新</el-button>
+        <el-button size="small" type="danger" plain :loading="busy" @click="onReset">重置画像</el-button>
+      </div>
+    </header>
 
-    <div class="layer-grid">
-      <el-card class="layer-card hot" shadow="never">
-        <template #header><b>🔥 热画像</b><span class="layer-sub">当前书细节</span></template>
-        <p v-if="!profiles.hot?.current_book_id" class="empty">暂无当前书（归档后清空）</p>
-        <template v-else>
-          <p class="kv"><b>当前书：</b>{{ profiles.hot.current_title }}</p>
-          <p class="kv"><b>进度：</b>{{ Math.round((Number(profiles.hot.progress) || 0) * 100) }}%</p>
-          <p class="kv"><b>章节脉络：</b>{{ (profiles.hot.chapter_titles as string[] || []).join(' → ') || '—' }}</p>
-          <p class="kv"><b>高亮/不理解：</b>{{ (profiles.hot.highlights as unknown[] || []).length }} 条</p>
-          <p class="kv"><b>进行中的问题：</b>{{ (profiles.hot.questions as string[] || []).length }} 个</p>
-        </template>
-      </el-card>
-
-      <el-card class="layer-card warm" shadow="never">
-        <template #header><b>🌤️ 暖画像</b><span class="layer-sub">近 1~2 本 + 相关领域</span></template>
-        <p class="kv"><b>已归档：</b>{{ profiles.warm?.archived_count || 0 }} 本</p>
-        <p class="kv"><b>近期书目：</b></p>
-        <ul v-if="recentBooks.length" class="mini-list">
-          <li v-for="r in recentBooks" :key="r.book_id">
-            《{{ r.title }}》<span v-if="r.key_points?.length"> · {{ r.key_points.length }} 条要点</span>
-          </li>
-        </ul>
-        <p v-else class="empty">暂无（读完归档后写入）</p>
-        <p class="kv"><b>相关领域书：</b></p>
-        <ul v-if="relatedBooks.length" class="mini-list">
-          <li v-for="r in relatedBooks" :key="r.book_id">《{{ r.title }}》</li>
-        </ul>
-        <p v-else class="empty">暂无</p>
-      </el-card>
-
-      <el-card class="layer-card cold" shadow="never">
-        <template #header><b>🧊 冷画像</b><span class="layer-sub">长期偏好</span></template>
-        <p class="kv"><b>领域偏好：</b></p>
-        <div v-if="prefs.length" class="tag-row">
-          <el-tag v-for="[k, v] in prefs" :key="k" size="small">{{ k }} ×{{ v }}</el-tag>
+    <!-- 统计卡片 -->
+    <section class="stat-grid">
+      <div v-for="s in statCards" :key="s.label" class="stat-card" :style="{ '--sc': s.color }">
+        <span class="stat-ico">{{ s.icon }}</span>
+        <div class="stat-body">
+          <b>{{ s.value }}</b>
+          <span>{{ s.label }}</span>
         </div>
-        <p v-else class="empty">暂无（跨 3 本后沉淀）</p>
-        <p class="kv"><b>长期兴趣：</b>{{ interests.join('、') || '—' }}</p>
-      </el-card>
-    </div>
+      </div>
+    </section>
 
-    <el-card class="thr-card" shadow="never">
-      <template #header><b>⚙️ 画像阈值</b><span class="layer-sub">系统按跨书节奏自动学习，可手动覆盖</span></template>
-      <p class="kv">自动学习：归档样本 <b>{{ thresholds?.learning?.sample_count ?? 0 }}</b> 条（≥{{ thresholds?.learning?.min_samples ?? 6 }} 触发调整）、相关度样本 <b>{{ thresholds?.learning?.related_sample_count ?? 0 }}</b> 条（≥{{ thresholds?.learning?.related_samples_min ?? 6 }} 参与相关度阈值学习）、确认关联 <b>{{ thresholds?.learning?.confirmed_edges_min ?? 3 }}</b> 条起参与相关度学习</p>
+    <!-- 三层画像 -->
+    <section class="layers">
+      <!-- L1 热画像 -->
+      <article class="layer-card layer-hot">
+        <header class="layer-head">
+          <span class="layer-ico">🔥</span>
+          <div class="layer-id">
+            <h3>热画像</h3>
+            <p>L1 · 当前书细节</p>
+          </div>
+          <el-tag size="small" type="danger" effect="plain">{{ profiles.hot?.current_title ? '进行中' : '空闲' }}</el-tag>
+        </header>
+        <div class="layer-body">
+          <div v-if="!profiles.hot?.current_book_id" class="layer-empty">
+            <span class="empty-ico">📭</span>
+            <p>暂无当前书（归档后清空）</p>
+          </div>
+          <template v-else>
+            <div class="kv-grid">
+              <div class="kv-item">
+                <span>当前书</span>
+                <b>{{ profiles.hot.current_title }}</b>
+              </div>
+              <div class="kv-item">
+                <span>阅读进度</span>
+                <b>{{ hotProgress }}%</b>
+              </div>
+            </div>
+            <div class="kv-row">
+              <span>章节脉络</span>
+              <div class="chapter-flow">{{ chapterFlow }}</div>
+            </div>
+            <div class="kv-grid">
+              <div class="kv-item">
+                <span>高亮 / 不理解</span>
+                <b>{{ (profiles.hot.highlights as unknown[] || []).length }} 条</b>
+              </div>
+              <div class="kv-item">
+                <span>进行中的问题</span>
+                <b>{{ (profiles.hot.questions as string[] || []).length }} 个</b>
+              </div>
+            </div>
+          </template>
+        </div>
+      </article>
+
+      <!-- L2 暖画像 -->
+      <article class="layer-card layer-warm">
+        <header class="layer-head">
+          <span class="layer-ico">🌤️</span>
+          <div class="layer-id">
+            <h3>暖画像</h3>
+            <p>L2 · 近 1~2 本 + 相关领域</p>
+          </div>
+          <el-tag size="small" type="warning" effect="plain">{{ profiles.warm?.archived_count || 0 }} 本归档</el-tag>
+        </header>
+        <div class="layer-body">
+          <div class="sub-head"><span>📕 近期书目</span><span class="sub-count">{{ recentBooks.length }}</span></div>
+          <ul v-if="recentBooks.length" class="book-list">
+            <li v-for="r in recentBooks" :key="r.book_id">
+              <span class="book-dot warm-dot"></span>
+              <span class="book-title">《{{ r.title }}》</span>
+              <el-tag v-if="r.key_points?.length" size="small" type="warning" effect="plain">{{ r.key_points.length }} 条要点</el-tag>
+            </li>
+          </ul>
+          <p v-else class="empty">暂无（读完归档后写入）</p>
+          <div class="sub-head"><span>📚 相关领域书</span><span class="sub-count">{{ relatedBooks.length }}</span></div>
+          <ul v-if="relatedBooks.length" class="book-list">
+            <li v-for="r in relatedBooks" :key="r.book_id">
+              <span class="book-dot cool-dot"></span>
+              <span class="book-title">《{{ r.title }}》</span>
+            </li>
+          </ul>
+          <p v-else class="empty">暂无</p>
+        </div>
+      </article>
+
+      <!-- L3 冷画像 -->
+      <article class="layer-card layer-cold">
+        <header class="layer-head">
+          <span class="layer-ico">🧊</span>
+          <div class="layer-id">
+            <h3>冷画像</h3>
+            <p>L3 · 长期偏好</p>
+          </div>
+          <el-tag size="small" effect="plain">{{ prefs.length }} 项偏好</el-tag>
+        </header>
+        <div class="layer-body">
+          <div class="sub-head"><span>🏷️ 领域偏好</span><span class="sub-count">{{ prefs.length }}</span></div>
+          <div v-if="prefs.length" class="tag-cloud">
+            <el-tag v-for="[k, v] in prefs" :key="k" size="small" :type="tagTypeOf(v)">{{ k }} ×{{ v }}</el-tag>
+          </div>
+          <p v-else class="empty">暂无（跨 3 本后沉淀）</p>
+          <div class="sub-head"><span>🧭 长期兴趣</span></div>
+          <div v-if="interests.length" class="chip-flow">{{ interests.join(' · ') }}</div>
+          <p v-else class="empty">—</p>
+        </div>
+      </article>
+    </section>
+
+    <!-- 画像阈值 -->
+    <section class="panel">
+      <header class="panel-head">
+        <div>
+          <h3>⚙️ 画像阈值</h3>
+          <p>系统按跨书节奏自动学习，可手动覆盖</p>
+        </div>
+      </header>
+      <div class="learn-banner">
+        <div class="learn-item">
+          <span class="learn-label">归档样本</span>
+          <el-progress :percentage="pct(learningStats.archive)" :stroke-width="8" :show-text="false" />
+          <span class="learn-val">{{ learningStats.archive.cur }} / {{ learningStats.archive.min }}</span>
+        </div>
+        <div class="learn-item">
+          <span class="learn-label">相关度样本</span>
+          <el-progress :percentage="pct(learningStats.related)" :stroke-width="8" :show-text="false" />
+          <span class="learn-val">{{ learningStats.related.cur }} / {{ learningStats.related.min }}</span>
+        </div>
+        <div class="learn-item learn-text">
+          <span class="learn-label">确认关联</span>
+          <span class="learn-val">{{ learningStats.confirmedMin }} 条起参与学习</span>
+        </div>
+      </div>
       <div class="thr-grid">
         <div class="thr-item">
           <label>暖转冷跨书数</label>
@@ -73,34 +170,48 @@
       <div class="thr-actions">
         <el-button size="small" type="primary" :loading="savingThresholds" @click="onSaveThresholds">保存阈值</el-button>
         <el-button size="small" :loading="learningThresholds" @click="onLearnThresholds">立即按样本学习</el-button>
-        <span class="thr-hint" v-if="thresholds?.learning?.learned">上次学习：{{ thresholds.learning.learned.at || '—' }}</span>
+        <span v-if="thresholds?.learning?.learned" class="thr-hint">上次学习：{{ thresholds.learning.learned.at || '—' }}</span>
       </div>
-    </el-card>
+    </section>
 
-    <el-card class="rec-card" shadow="never">
-      <template #header><b>💡 阅读建议</b><span class="layer-sub">统计 · 薄弱概念 · 复习提醒 · 节奏</span></template>
+    <!-- 阅读建议 -->
+    <section class="panel">
+      <header class="panel-head">
+        <div>
+          <h3>💡 阅读建议</h3>
+          <p>习惯统计 · 薄弱概念 · 复习提醒 · 阅读节奏</p>
+        </div>
+      </header>
       <div class="rec-stats">
-        <div class="rec-stat"><b>{{ rec?.stats?.archived_books ?? 0 }}</b><span>已归档书</span></div>
-        <div class="rec-stat"><b>{{ rec?.stats?.read_chapters ?? 0 }}</b><span>已读章节</span></div>
-        <div class="rec-stat"><b>{{ rec?.stats?.notes ?? 0 }}</b><span>笔记</span></div>
-        <div class="rec-stat"><b>{{ rec?.stats?.questions ?? 0 }}</b><span>不理解标记</span></div>
-        <div class="rec-stat"><b>{{ rec?.stats?.chat_messages ?? 0 }}</b><span>对话消息</span></div>
+        <div class="rec-stat"><b class="c1">{{ rec?.stats?.archived_books ?? 0 }}</b><span>已归档书</span></div>
+        <div class="rec-stat"><b class="c2">{{ rec?.stats?.read_chapters ?? 0 }}</b><span>已读章节</span></div>
+        <div class="rec-stat"><b class="c3">{{ rec?.stats?.notes ?? 0 }}</b><span>笔记</span></div>
+        <div class="rec-stat"><b class="c4">{{ rec?.stats?.questions ?? 0 }}</b><span>不理解标记</span></div>
+        <div class="rec-stat"><b class="c5">{{ rec?.stats?.chat_messages ?? 0 }}</b><span>对话消息</span></div>
       </div>
-      <p class="kv"><b>薄弱概念：</b></p>
-      <div v-if="weakConcepts.length" class="tag-row">
-        <el-tag v-for="w in weakConcepts" :key="w.concept" type="warning" size="small">{{ w.concept }} ×{{ w.count }}</el-tag>
+      <div class="rec-cols">
+        <div class="rec-col">
+          <div class="sub-head"><span>⚠️ 薄弱概念</span></div>
+          <div v-if="weakConcepts.length" class="tag-cloud">
+            <el-tag v-for="w in weakConcepts" :key="w.concept" type="warning" size="small">{{ w.concept }} ×{{ w.count }}</el-tag>
+          </div>
+          <p v-else class="empty">暂无（标记「不理解」后聚合）</p>
+        </div>
+        <div class="rec-col">
+          <div class="sub-head"><span>⏰ 复习提醒</span></div>
+          <ul v-if="rec?.review?.length" class="book-list">
+            <li v-for="r in rec.review" :key="(r.book_id ?? r.title) as any">
+              <span class="book-dot" :class="r.due ? 'due-dot' : 'ok-dot'"></span>
+              <span class="book-title">《{{ r.title }}》</span>
+              <span class="rec-days">归档 {{ r.days_ago }} 天</span>
+              <el-tag v-if="r.due" type="danger" size="small">建议复习</el-tag>
+            </li>
+          </ul>
+          <p v-else class="empty">暂无到期复习</p>
+        </div>
       </div>
-      <p v-else class="empty">暂无（标记「不理解」后聚合）</p>
-      <p class="kv"><b>复习提醒：</b></p>
-      <ul v-if="rec?.review?.length" class="mini-list">
-        <li v-for="r in rec.review" :key="(r.book_id ?? r.title) as any">
-          《{{ r.title }}》归档 {{ r.days_ago }} 天
-          <el-tag v-if="r.due" type="danger" size="small">建议复习</el-tag>
-        </li>
-      </ul>
-      <p v-else class="empty">暂无到期复习</p>
-      <p class="kv rhythm"><b>阅读节奏：</b>{{ rec?.rhythm?.tip || '—' }}</p>
-    </el-card>
+      <div class="rhythm"><b>阅读节奏：</b>{{ rec?.rhythm?.tip || '—' }}</div>
+    </section>
   </div>
 </template>
 
@@ -108,8 +219,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getProfile, getRecommendations, getThresholds, learnProfileThresholds, resetProfile, saveThresholds } from '@/api/profile'
-import type { ProfileThresholds } from '@/types'
-import type { ProfileData, RecommendationsData } from '@/types'
+import type { ProfileData, ProfileThresholds, RecommendationsData } from '@/types'
 
 const profiles = ref<ProfileData>({ cold: {}, warm: {}, hot: {} })
 const busy = ref(false)
@@ -120,11 +230,39 @@ const savingThresholds = ref(false)
 const learningThresholds = ref(false)
 
 const weakConcepts = computed(() => rec.value?.weak_concepts || [])
-
 const recentBooks = computed(() => (profiles.value.warm?.recent_books as any[] || []))
 const relatedBooks = computed(() => (profiles.value.warm?.related_books as any[] || []))
 const prefs = computed(() => Object.entries((profiles.value.cold?.domain_preferences as Record<string, number>) || {}).slice(0, 12))
+const dueReviewCount = computed(() => (rec.value?.review ?? []).filter((r) => r.due).length)
 const interests = computed(() => (profiles.value.cold?.long_term_interests as string[] || []))
+
+const hotProgress = computed(() => Math.round((Number(profiles.value.hot?.progress) || 0) * 100))
+const chapterFlow = computed(() => ((profiles.value.hot?.chapter_titles as string[] | undefined) || []).join(' → ') || '—')
+
+const statCards = computed(() => [
+  { icon: '🔥', label: '热画像', value: profiles.value.hot?.current_title ? 1 : 0, color: '#f56c6c' },
+  { icon: '🌤️', label: '暖画像归档', value: Number(profiles.value.warm?.archived_count ?? 0), color: '#e6a23c' },
+  { icon: '🧊', label: '领域偏好', value: prefs.value.length, color: '#409eff' },
+  { icon: '📖', label: '已读章节', value: rec.value?.stats?.read_chapters ?? 0, color: '#67c23a' },
+  { icon: '⏰', label: '建议复习', value: dueReviewCount.value, color: '#9b59b6' },
+])
+
+const learningStats = computed(() => {
+  const l = thresholds.value?.learning
+  return {
+    archive: { cur: l?.sample_count ?? 0, min: l?.min_samples ?? 6 },
+    related: { cur: l?.related_sample_count ?? 0, min: l?.related_samples_min ?? 6 },
+    confirmedMin: l?.confirmed_edges_min ?? 3,
+  }
+})
+
+function pct(p: { cur: number; min: number }): number {
+  return Math.min(100, Math.round((p.cur / Math.max(1, p.min)) * 100))
+}
+
+function tagTypeOf(count: number): 'danger' | 'warning' | 'info' {
+  return count >= 5 ? 'danger' : count >= 3 ? 'warning' : 'info'
+}
 
 async function refresh() {
   profiles.value = await getProfile()
@@ -186,29 +324,98 @@ async function onReset() {
 
 onMounted(refresh)
 </script>
-
 <style scoped>
-.profile-page { padding: 20px; max-width: 1100px; }
-.page-head { display: flex; align-items: center; gap: 16px; }
-.tip { color: var(--text-secondary); font-size: 13px; }
-.layer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
-.layer-card :deep(.el-card__header) { display: flex; align-items: baseline; gap: 8px; font-size: 15px; }
-.layer-sub { color: var(--text-secondary); font-size: 12px; }
-.kv { margin: 6px 0; font-size: 13px; }
-.mini-list { margin: 4px 0 10px 18px; font-size: 13px; }
-.empty { color: var(--text-secondary); font-size: 13px; }
-.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
-.thr-card { margin-top: 16px; }
-.thr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 8px 0; }
-.thr-item { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-.thr-item label { color: var(--text-secondary); }
-.thr-desc { color: var(--text-secondary); font-size: 12px; }
-.thr-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.profile-page { padding: 20px 24px; max-width: 1180px; margin: 0 auto; }
+
+/* 顶部工具栏 */
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.head-left { display: flex; flex-direction: column; gap: 4px; }
+.page-head h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+.title-ico { font-size: 20px; }
+.head-sub { color: var(--text-secondary); font-size: 12px; line-height: 1.6; max-width: 720px; margin: 0; }
+.head-actions { display: flex; gap: 8px; }
+
+/* 统计卡片 */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 14px 0; }
+.stat-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
+.stat-ico { font-size: 20px; }
+.stat-body { display: flex; flex-direction: column; line-height: 1.25; }
+.stat-body b { font-size: 19px; color: var(--sc, var(--primary-color)); }
+.stat-body span { font-size: 12px; color: var(--text-secondary); }
+
+/* 三层画像 */
+.layers { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.layer-card { background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
+.layer-hot { border-top: 4px solid #f56c6c; }
+.layer-warm { border-top: 4px solid #e6a23c; }
+.layer-cold { border-top: 4px solid #409eff; }
+.layer-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border-color); }
+.layer-ico { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--panel-bg); }
+.layer-hot .layer-ico { background: rgba(245, 108, 108, .12); }
+.layer-warm .layer-ico { background: rgba(230, 162, 60, .12); }
+.layer-cold .layer-ico { background: rgba(64, 158, 255, .12); }
+.layer-id { flex: 1; min-width: 0; }
+.layer-id h3 { margin: 0; font-size: 15px; }
+.layer-id p { margin: 2px 0 0; font-size: 12px; color: var(--text-secondary); }
+.layer-body { padding: 12px 16px 14px; }
+.layer-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 0; color: var(--text-secondary); }
+.layer-empty p { margin: 0; font-size: 13px; }
+.empty-ico { font-size: 26px; }
+
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.kv-item { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--panel-bg); border-radius: 8px; }
+.kv-item span { font-size: 12px; color: var(--text-secondary); }
+.kv-item b { font-size: 13px; line-height: 1.5; word-break: break-all; }
+.kv-row { margin-bottom: 8px; }
+.kv-row > span { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.chapter-flow { font-size: 13px; line-height: 1.9; background: var(--panel-bg); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
+
+.sub-head { display: flex; align-items: center; justify-content: space-between; margin: 10px 0 6px; font-size: 13px; font-weight: 600; }
+.sub-count { font-size: 12px; color: var(--text-secondary); font-weight: 400; }
+.book-list { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.book-list li { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--panel-bg); border-radius: 8px; font-size: 13px; }
+.book-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.warm-dot { background: #e6a23c; }
+.cool-dot { background: #409eff; }
+.due-dot { background: #f56c6c; }
+.ok-dot { background: #67c23a; }
+.book-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-days { color: var(--text-secondary); font-size: 12px; }
+.tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-flow { font-size: 13px; line-height: 1.9; background: var(--panel-bg); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
+.empty { color: var(--text-secondary); font-size: 13px; margin: 6px 0; }
+
+/* 通用面板（阈值 / 建议） */
+.panel { background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 14px; padding: 14px 18px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
+.panel-head { margin-bottom: 10px; }
+.panel-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.panel-head p { margin: 2px 0 0; font-size: 12px; color: var(--text-secondary); }
+
+/* 阈值 */
+.learn-banner { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 12px; margin-bottom: 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; }
+.learn-item { display: flex; flex-direction: column; gap: 6px; }
+.learn-label { font-size: 12px; color: var(--text-secondary); }
+.learn-val { font-size: 12px; }
+.learn-text { justify-content: center; }
+.learn-text .learn-val { font-size: 13px; }
+.thr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.thr-item { display: flex; flex-direction: column; gap: 6px; font-size: 13px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--panel-bg); }
+.thr-item label { font-size: 13px; font-weight: 600; }
+.thr-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.thr-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .thr-hint { color: var(--text-secondary); font-size: 12px; }
-.rec-card { margin-top: 16px; }
-.rec-stats { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
-.rec-stat { min-width: 90px; padding: 6px 10px; background: var(--bg-secondary, #f5f7fa); border-radius: 8px; text-align: center; }
-.rec-stat b { display: block; font-size: 16px; }
+
+/* 阅读建议 */
+.rec-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.rec-stat { padding: 10px 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; text-align: center; }
+.rec-stat b { display: block; font-size: 18px; }
 .rec-stat span { font-size: 12px; color: var(--text-secondary); }
-.rhythm { padding: 8px 10px; background: var(--bg-secondary, #f5f7fa); border-radius: 8px; }
+.rec-stat .c1 { color: #f56c6c; }
+.rec-stat .c2 { color: #e6a23c; }
+.rec-stat .c3 { color: #67c23a; }
+.rec-stat .c4 { color: #409eff; }
+.rec-stat .c5 { color: #909399; }
+.rec-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.rec-col { min-width: 0; }
+.rhythm { padding: 10px 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; font-size: 13px; line-height: 1.7; margin-top: 12px; }
 </style>

@@ -39,6 +39,8 @@ export function useReaderAi(opts: {
   const streamError = ref('')
   let chatAbort: (() => void) | null = null
   let pendingSelection = ''
+  /** 预设能力模式（解读/概论/思考逻辑）：随下一条消息发送给后端附加结构化 system 模板 */
+  let pendingMode: string | null = null
 
   const currentChapterTitle = computed(() => {
     const ch = currentChapter.value
@@ -72,6 +74,7 @@ export function useReaderAi(opts: {
       void openMindmap()
       return
     }
+    pendingMode = ['解读', '概论', '思考逻辑'].includes(kind) ? kind : null
     const ch = currentChapter.value
     const ctx = ch ? `当前章节：第${ch.index}章「${ch.title}」。` : '当前未选择章节。'
     const prompts: Record<string, string> = {
@@ -88,6 +91,7 @@ export function useReaderAi(opts: {
     aiInput.value = ''
     const selection = pendingSelection || currentSelection() || undefined
     pendingSelection = ''
+    pendingMode = null
     streamError.value = ''
     chatMessages.value.push({
       id: Date.now(), role: 'user', content: question,
@@ -101,7 +105,7 @@ export function useReaderAi(opts: {
     streaming.value = true
     const { promise, abort } = streamChat(
       bookId.value,
-      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label },
+      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: pendingMode },
       (ev) => {
         if (ev.type === 'delta') {
           assistant.content += ev.text
@@ -158,6 +162,7 @@ export function useReaderAi(opts: {
   function askSelection() {
     const sel = takeSelection()
     if (!sel) return
+    pendingMode = null
     pendingSelection = sel
     aiInput.value = `请解读我选中的这段内容，引用须标注【第X章 第Y段】出处：\n${sel}`
     void sendChat()

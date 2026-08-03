@@ -25,6 +25,7 @@ from app.services.ai_context import (
     page_image_data_uri,
 )
 from app.services.citations import extract_citations
+from app.services.profile_service import get_all_profiles
 from app.services.vision_extract import ensure_window_caches
 
 
@@ -41,6 +42,8 @@ def build_messages(
     crop_label: str = "",
     page_context: str | None = None,
     page_mode: bool = False,
+    mode: str | None = None,
+    profiles: dict | None = None,
 ) -> list[dict]:
     """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段。
 
@@ -63,7 +66,12 @@ def build_messages(
         question,
         page_context=page_context,
     )
-    messages: list[dict] = [{"role": "system", "content": build_system_prompt(skills, page_mode=page_mode)}]
+    messages: list[dict] = [
+        {
+            "role": "system",
+            "content": build_system_prompt(skills, page_mode=page_mode, mode=mode, profiles=profiles),
+        }
+    ]
     images = [img for img in (page_image, crop_image) if img]
     if images and enable_body_send:
         content: list[dict] = [{"type": "text", "text": user}]
@@ -97,6 +105,7 @@ def prepare_chat_job(
     selection: str = "",
     crop_image: str | None = None,
     crop_label: str = "",
+    mode: str | None = None,
 ) -> dict:
     """组装一次对话请求任务：隐私/视觉覆盖、页缓存窗口或页图附件、RAG/Skill、messages、client。
 
@@ -121,7 +130,8 @@ def prepare_chat_job(
     else:
         page_image = page_image_data_uri(book, chapter, enable_body and send_page)
     rag_chunks = retrieve_rag_chunks(db, book.id, question)
-    skills = load_skills(db, book.id)
+    skills = load_skills(db, book.id, task_text=question)
+    profiles = get_all_profiles(db) if enable_body else None
     messages = build_messages(
         book,
         chapter,
@@ -135,6 +145,8 @@ def prepare_chat_job(
         crop_label,
         page_context,
         page_mode,
+        mode,
+        profiles,
     )
     return {
         "client": build_client(db),

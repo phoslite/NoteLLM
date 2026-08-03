@@ -25,7 +25,8 @@ MINDMAP_SYSTEM = """你是知识图谱与思维导图专家。根据提供的章
 
 只输出一个 JSON 对象，不要 Markdown 代码块、不要多余解释。结构：
 {"title": "章节标题", "children": [{"name": "节点名", "nodeType": "大纲|细节|重要定理", "ref": {"chapter": 1, "para": "3"}, "children": []}]}
-规则：nodeType 省略时视为「大纲」；ref 引用正文出处【第X章 第Y段】，无法确定时可为 null；children 为数组，叶节点可为空数组。"""
+规则：nodeType 省略时视为「大纲」；ref 引用正文出处【第X章 第Y段】，无法确定时可为 null；children 为数组，叶节点可为空数组。
+数学表达：节点名中的公式必须用 $...$ 包裹（如 $\\Lambda^n V$），禁止输出无定界符的裸 LaTeX 或 Unicode 数学字符（如 Λ^n V、∈、ℝ）。JSON 字符串内反斜杠须写成双反斜杠（\\）。"""
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 _BULLET_RE = re.compile(r"^\s*[-*+]\s+")
@@ -187,7 +188,7 @@ def generate_mindmap(
         else page_image_data_uri(book, chapter, enable_body and send_page)
     )
     rag_chunks = retrieve_rag_chunks(db, book.id, "思维导图 " + (focus or selection or ""))
-    skills = load_skills(db, book.id)
+    skills = load_skills(db, book.id, task_text=f"思维导图 {focus or selection or ''}")
     messages = build_mindmap_messages(
         book, chapter, selection, focus, rag_chunks, skills, enable_body, page_image, page_context
     )

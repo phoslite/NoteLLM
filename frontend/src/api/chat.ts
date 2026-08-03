@@ -18,6 +18,7 @@ export function streamChat(
     selection?: string
     crop_image?: string | null
     crop_label?: string | null
+    mode?: string | null
   },
   onEvent: (ev: ChatStreamEvent) => void,
 ) {
