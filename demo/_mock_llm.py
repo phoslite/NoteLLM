@@ -8,10 +8,13 @@
 用法：先运行本脚本，再把「设置」中的 Base URL 改为
 http://127.0.0.1:18999/v1（或 http://127.0.0.1:18999），模型名任意，API Key 留空。
 """
+import argparse
 import json
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 18999
+_DELAY = 0.0  # 每次请求的模拟延迟秒数（--delay，用于并发演示）
 MOCK = {
     "思维导图": "高效阅读术\n\t阅读准备\n\t\t明确目标\n\t核心技巧\n\t\t速读\n\t\t精读\n\t输出与复盘\n\t\t笔记\n\t\t讲述",
     "画像": ('{"reader_name":"体验用户","preferences":["喜欢比喻式讲解","偏爱短段落"],'
@@ -69,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        if _DELAY:
+            time.sleep(_DELAY)
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
 
@@ -113,5 +118,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"mock LLM 服务运行于 http://127.0.0.1:{PORT}/v1 （Ctrl+C 停止）")
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    p = argparse.ArgumentParser(description="本地模拟 AI 接口（OpenAI 兼容）")
+    p.add_argument("--port", type=int, default=PORT, help="监听端口（默认 18999）")
+    p.add_argument("--delay", type=float, default=0.0, help="每次请求的模拟延迟秒数（默认 0，用于并发演示）")
+    args = p.parse_args()
+    _DELAY = args.delay
+    print(f"mock LLM 服务运行于 http://127.0.0.1:{args.port}/v1  delay={args.delay}s （Ctrl+C 停止）")
+    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
