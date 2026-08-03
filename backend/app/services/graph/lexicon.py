@@ -23,6 +23,11 @@ _GENERIC_DOMAIN_TERMS = {
     "系列", "全集", "选集", "卷", "册", "页",
 }
 
+def generic_domain_terms() -> frozenset[str]:
+    """通用领域过滤词（学术/出版元词），供图谱与总结链路过滤泛化词。"""
+    return _GENERIC_DOMAIN_TERMS
+
+
 _LEXICON_CACHE_MARKER = "# ================= 系统缓存区（自动追加，可编辑/删除） ================="
 
 _DOMAIN_LEXICON_CACHE: tuple[frozenset[str], frozenset[str], float] | None = None

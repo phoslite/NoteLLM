@@ -4,7 +4,7 @@
 - Skill 资产：可复用技能列表（名称/适用场景/用法/出处）。
 - 重复总结在原资产上 version + 1（技术栈规范 AI 接入规范）。
 - M9 归档链路：PDF 书读完归档时先视觉通读全书并缓存页文本，再以缓存全文总结
-  （archive_book_task → page_chunks/_build_page_input），成功后触发 post-classify。
+  （archive_book_task → page_chunks/build_page_input），成功后触发 post-classify。
 """
 import json
 
@@ -19,135 +19,18 @@ from app.ai.prompts.rag_skill import (
     build_incremental_user_prompt,
     build_user_prompt,
 )
-from app.core.config import settings
 from app.repositories import books as book_repo
 from app.repositories.assets import delete_asset, get_asset, read_asset_content, upsert_asset
 from app.repositories.reading import set_all_chapters_read_flag
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import sanitize_cluster_name
-
-CHUNK_CHARS = 1600   # 长章节按段落切块的字数阈值
-SEND_BUDGET = 8000   # 发送给 LLM 的正文总字数上限（防止超长书籍超 token）
-
-
-def chunk_chapter(chapter, chunk_chars: int = CHUNK_CHARS) -> list[dict]:
-    """单个章节 → RAG 片段列表；每段记录 chapter_index/chapter_title/para_pos 出处。"""
-    paras = [p.strip() for p in (chapter.content_text or "").splitlines() if p.strip()]
-    chunks: list[dict] = []
-    buf: list[str] = []
-    start: int | None = None
-
-    def flush(end: int):
-        nonlocal buf, start
-        if buf:
-            chunks.append(
-                {
-                    "chapter_index": chapter.index,
-                    "chapter_title": chapter.title,
-                    "para_pos": f"{start}-{end}",
-                    "text": "\n".join(buf),
-                }
-            )
-            buf, start = [], None
-
-    for i, para in enumerate(paras, 1):
-        if start is None:
-            start = i
-        buf.append(para)
-        if sum(len(x) for x in buf) >= chunk_chars:
-            flush(i)
-    flush(len(paras))
-    if not chunks:  # 空章节兜底
-        chunks.append(
-            {
-                "chapter_index": chapter.index,
-                "chapter_title": chapter.title,
-                "para_pos": "-",
-                "text": chapter.content_text or "",
-            }
-        )
-    return chunks
-
-
-def chunk_book(chapters) -> list[dict]:
-    """整本书 → 全部 RAG 片段（按章节顺序）。"""
-    return [c for ch in chapters for c in chunk_chapter(ch)]
-
-
-def page_chunks(page_texts: dict[int, str]) -> list[dict]:
-    """PDF 页缓存 → RAG 片段列表；每段记录页号出处（chapter_index=页号，para_pos=页）。"""
-    chunks: list[dict] = []
-    for page_index in sorted(page_texts):
-        text = (page_texts[page_index] or "").strip()
-        if not text:
-            continue
-        chunks.append(
-            {
-                "chapter_index": page_index,
-                "chapter_title": f"第 {page_index} 页",
-                "para_pos": "页",
-                "page_index": page_index,
-                "text": text,
-            }
-        )
-    return chunks
-
-
-
-def _normalize_skills(raw: list) -> list[dict]:
-    """把 LLM 返回的技能列表归一化为 dict 结构（兼容字符串列表）。"""
-    out = []
-    for item in raw or []:
-        if isinstance(item, str):
-            out.append({"name": item, "applicable": "", "usage": "", "sources": []})
-        elif isinstance(item, dict):
-            out.append(
-                {
-                    "name": item.get("name", ""),
-                    "applicable": item.get("applicable", item.get("场景", "")),
-                    "usage": item.get("usage", item.get("用法", "")),
-                    "sources": item.get("sources", []),
-                }
-            )
-    return out
-
-
-def _build_llm_input(chapters, chunks: list[dict]) -> str:
-    """按章节组织正文（chunks 由调用方一次性切好）；隐私开关关闭时仅发送章节标题。"""
-    if not settings.ai_enable_body_send:
-        return "\n".join(f"第{ch.index}章 {ch.title}" for ch in chapters)
-
-    by_chapter: dict[int, list[str]] = {}
-    for c in chunks:
-        by_chapter.setdefault(c["chapter_index"], []).append(c["text"])
-
-    parts: list[str] = []
-    used = 0
-    for ch in chapters:
-        block = f"【第{ch.index}章 {ch.title}】\n" + "\n".join(by_chapter.get(ch.index, []))
-        if used + len(block) > SEND_BUDGET and parts:
-            break
-        parts.append(block)
-        used += len(block)
-    return "\n\n".join(parts) if parts else "(无可发送的正文内容)"
-
-
-def _build_page_input(page_texts: dict[int, str]) -> str:
-    """PDF 页缓存 → LLM 输入正文（隐私开关关闭时仅发送页标题；超 SEND_BUDGET 截断）。"""
-    if not settings.ai_enable_body_send:
-        return "\n".join(f"第 {n} 页" for n in sorted(page_texts))
-    parts: list[str] = []
-    used = 0
-    for n in sorted(page_texts):
-        text = (page_texts[n] or "").strip()
-        if not text:
-            continue
-        block = f"【第 {n} 页】\n{text}"
-        if used + len(block) > SEND_BUDGET and parts:
-            break
-        parts.append(block)
-        used += len(block)
-    return "\n\n".join(parts) if parts else "(无可发送的正文内容)"
+from app.services.rag_input import (
+    build_llm_input,
+    build_page_input,
+    chunk_book,
+    normalize_skills,
+    page_chunks,
+)
 
 
 def _collect_new_material(db: Session, book) -> str:
@@ -235,10 +118,10 @@ def generate_rag_skill(
 
     if page_texts:
         chunks = page_chunks(page_texts)
-        llm_input = _build_page_input(page_texts)
+        llm_input = build_page_input(page_texts)
     else:
         chunks = chunk_book(chapters)
-        llm_input = _build_llm_input(chapters, chunks)
+        llm_input = build_llm_input(chapters, chunks)
 
     # 再次阅读归档：已有**实质**资产 → 增量增改模式（旧资产概要 + 新笔记/对话 + 正文）。
     # 图谱联动可能留下空存根（summary/key_points 为空，v1.68 起不 bump 版本）——
@@ -288,7 +171,7 @@ def generate_rag_skill(
     skill = {
         "name": parsed.get("skill_name") or f"{book.title} 技能包",
         "domains": domains,
-        "skills": _normalize_skills(parsed.get("skills")),
+        "skills": normalize_skills(parsed.get("skills")),
         "usage": parsed.get("usage", ""),
     }
 

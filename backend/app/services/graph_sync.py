@@ -20,7 +20,7 @@ from app.models.graph import BookRelation
 from app.repositories.assets import read_asset_content, save_asset_content, upsert_asset
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import extract_keywords
-from app.services.graph.lexicon import _GENERIC_DOMAIN_TERMS
+from app.services.graph.lexicon import generic_domain_terms
 
 # 本地联动存根的关联强度下限（与相关度阈值初值对齐）
 LINK_MIN_STRENGTH = 50.0
@@ -70,7 +70,7 @@ def link_domain_terms(db: Session) -> int:
         texts = [book.title or ""]
         for kp in rag.get("key_points") or []:
             texts.append(kp if isinstance(kp, str) else str(kp.get("title") or kp.get("point") or ""))
-        terms = [t for t in extract_keywords(" ".join(texts), 40) if t not in _GENERIC_DOMAIN_TERMS]
+        terms = [t for t in extract_keywords(" ".join(texts), 40) if t not in generic_domain_terms()]
         existing = set(rag.get("domain_terms") or [])
         fresh = [t for t in terms if t not in existing]
         if not fresh:

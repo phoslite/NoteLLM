@@ -14,6 +14,7 @@ from app.ai.factory import build_client, is_configured
 from app.ai.parsing import parse_llm_json
 from app.ai.prompts.graph_edge import SYSTEM_PROMPT, build_edge_user_prompt
 from app.models.book import Book
+from app.services.graph.edges import pair_key
 
 # 每次重建/增量 LLM 打分对数的上限（数百本书时控制成本与耗时）
 MAX_LLM_PAIRS = 40
@@ -90,8 +91,6 @@ def enrich_pairs_with_llm(
     """
     if not is_configured(db) or not candidates:
         return {}
-    from app.services.graph.cross_book import pair_key
-
     results: dict[tuple[int, int], dict] = {}
     for a_id, b_id, _kw in sorted(candidates, key=lambda x: -x[2])[:MAX_LLM_PAIRS]:
         a = books_by_id.get(a_id)

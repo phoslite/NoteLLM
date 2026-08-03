@@ -9,8 +9,10 @@ from app.models.book import Book
 from app.models.graph import BookRelation, KnowledgePoint
 from app.services.graph.clustering import assign_clusters
 from app.services.graph.corpus import book_corpus
+from app.services.graph.edges import pair_key
 from app.services.graph.intra_book import build_intra_book_graph
 from app.services.graph.keywords import extract_keywords
+from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
 
 
 def _note_keywords(note: Note, top_n: int = 30) -> set[str]:
@@ -46,10 +48,6 @@ def _pair_score(
     score = min(100.0, round(score + _note_weight(db, a.id, b.id, common), 1))
     reasons = sorted(common, key=lambda t: min(ka[t], kb[t]), reverse=True)[:5]
     return score, reasons
-
-
-def pair_key(x: int, y: int) -> tuple[int, int]:
-    return (x, y) if x < y else (y, x)
 
 
 def compute_cross_book_graph(db: Session) -> dict:
@@ -100,9 +98,6 @@ def compute_cross_book_graph(db: Session) -> dict:
                 )
             )
     db.flush()
-    # LLM 打分与方向/原因增强（有界调用，失败回退关键词分）
-    from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
-
     books_by_id = {b.id: b for b in books}
     llm_results = enrich_pairs_with_llm(db, books_by_id, keywords, candidates)
     for key, result in llm_results.items():
@@ -160,9 +155,6 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
             if clusters.get(other.id, "其他") == ca:
                 add_pair(book, other, 8.0, [f"同属「{ca}」领域"], "主题相似")
     db.commit()
-    # LLM 打分与方向/原因增强（有界调用，失败回退关键词分）
-    from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
-
     books_by_id = {b.id: b for b in [book, *others]}
     llm_results = enrich_pairs_with_llm(db, books_by_id, keywords, candidates)
     for key, result in llm_results.items():

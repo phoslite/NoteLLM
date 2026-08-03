@@ -15,7 +15,7 @@ from app.repositories.assets import (
     save_asset_content,
     upsert_asset,
 )
-from app.services.rag_service import _normalize_skills, chunk_chapter
+from app.services.rag_input import chunk_chapter, normalize_skills
 
 
 def _chapter(index: int, title: str, text: str):
@@ -44,7 +44,7 @@ def test_parse_llm_json_tolerates_fences():
 
 
 def test_normalize_skills_mixed():
-    out = _normalize_skills(
+    out = normalize_skills(
         [
             "速读法",
             {"name": "精读", "applicable": "非虚构", "usage": "步骤", "sources": ["第1章"]},

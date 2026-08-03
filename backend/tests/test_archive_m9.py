@@ -6,7 +6,8 @@ import pytest
 from app.core.database import SessionLocal
 from app.models.book import Book
 from app.repositories.assets import get_asset
-from app.services.rag_service import _build_page_input, archive_book_task, page_chunks
+from app.services.rag_input import build_page_input, page_chunks
+from app.services.rag_service import archive_book_task
 
 REPLY_VAR = json.dumps(
     {
@@ -68,7 +69,7 @@ def test_page_chunks_and_page_input(fake_llm):
     assert chunks[0]["chapter_index"] == 1
     assert chunks[0]["page_index"] == 1
     assert chunks[0]["para_pos"] == "页"
-    body = _build_page_input({1: "内容A", 2: "内容B"})
+    body = build_page_input({1: "内容A", 2: "内容B"})
     assert "【第 1 页】" in body and "内容B" in body
 
 

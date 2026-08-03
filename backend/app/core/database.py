@@ -49,18 +49,6 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
-    _migrate_book_media()
-
-
-def _migrate_book_media() -> None:
-    """启动时迁移旧版扁平书籍目录并回填封面；失败不阻塞启动。"""
-    try:
-        from app.services.media_service import migrate_all_books
-
-        with SessionLocal() as db:
-            migrate_all_books(db)
-    except Exception:
-        pass
 
 
 def get_db():

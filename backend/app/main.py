@@ -29,6 +29,7 @@ async def lifespan(_app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     (settings.data_dir / "books").mkdir(parents=True, exist_ok=True)
     init_db()
+    migrate_book_media()
     yield
 
 
@@ -56,3 +57,15 @@ app.include_router(vision.router)
 app.include_router(graph.router)
 app.include_router(profile.router)
 app.include_router(settings_routes.router)
+
+
+def migrate_book_media() -> None:
+    """启动迁移：旧版扁平书籍目录 → 独立子目录 + 封面回填；失败不阻塞启动。"""
+    try:
+        from app.core.database import SessionLocal
+        from app.services.media_service import migrate_all_books
+
+        with SessionLocal() as db:
+            migrate_all_books(db)
+    except Exception:
+        pass

@@ -4,8 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getBook } from '@/api/books'
 import { exportNotesPdfUrl, exportNotesUrl, getChapterContent, getProgress, listNotes, setAllChaptersRead, setChapterRead } from '@/api/reading'
-import { getPageTextStatus, getPageTextTask, rebuildPageText, reextractPage } from '@/api/vision'
-import { archiveBook, getTask } from '@/api/rag'
 import { useBookStore } from '@/stores/book'
 import type { BookDetail, BookmarkItem, BookItem, ChapterItem } from '@/types'
 import { splitBlocks } from '@/utils/content'
@@ -22,6 +20,8 @@ import { useReaderNotes } from '@/composables/useReaderNotes'
 import { useReaderProgress } from '@/composables/useReaderProgress'
 import { useReaderMindmap } from '@/composables/useReaderMindmap'
 import { useReaderAi } from '@/composables/useReaderAi'
+import { useReaderArchive } from '@/composables/useReaderArchive'
+import { useReaderPageCache } from '@/composables/useReaderPageCache'
 
 const route = useRoute()
 const router = useRouter()
@@ -70,69 +70,8 @@ function onPageImgLoad(e: Event) {
 const totalCount = computed(() => book.value?.chapters.length ?? 0)
 
 /* ---------- PDF 页缓存（M7 多模态视觉提取） ---------- */
-const pageCacheStatus = ref<{ total: number; cached: number } | null>(null)
-const pageCacheBusy = ref(false)
-
-async function refreshPageCacheStatus() {
-  if (book.value?.format !== 'pdf' || !bookId.value) {
-    pageCacheStatus.value = null
-    return
-  }
-  try {
-    pageCacheStatus.value = await getPageTextStatus(bookId.value)
-  } catch {
-    pageCacheStatus.value = null
-  }
-}
-
-async function reExtractCurrentPage() {
-  if (pageIndex.value == null || !book.value) return
-  pageCacheBusy.value = true
-  try {
-    await reextractPage(bookId.value, pageIndex.value)
-    ElMessage.success(`第 ${pageIndex.value} 页已重新提取`)
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    pageCacheBusy.value = false
-    await refreshPageCacheStatus()
-  }
-}
-
-async function rebuildPageCache() {
-  if (!book.value) return
-  try {
-    await ElMessageBox.confirm(
-      '将重建本书全部页缓存（多模态逐页提取，可能耗时较长）。是否继续？',
-      '重建页缓存',
-      { type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  pageCacheBusy.value = true
-  try {
-    const { task_id } = await rebuildPageText(bookId.value, true)
-    ElMessage.success('已提交重建任务，完成后自动刷新')
-    const timer = window.setInterval(async () => {
-      try {
-        const st = await getPageTextTask(bookId.value, task_id)
-        if (st.status === 'success' || st.status === 'failed') {
-          window.clearInterval(timer)
-          pageCacheBusy.value = false
-          if (st.status === 'failed') ElMessage.error(`重建失败：${st.error || '未知错误'}`)
-          await refreshPageCacheStatus()
-        }
-      } catch {
-        window.clearInterval(timer)
-        pageCacheBusy.value = false
-      }
-    }, 2000)
-  } catch (err) {
-    pageCacheBusy.value = false
-    ElMessage.error((err as Error).message)
-  }
-}
+const pageCache = useReaderPageCache({ bookId, book, pageIndex })
+const { pageCacheStatus, pageCacheBusy, refreshPageCacheStatus, reExtractCurrentPage, rebuildPageCache } = pageCache
 
 /* ---------- 书签 ---------- */
 const bookmarkDrawer = ref(false)
@@ -314,7 +253,6 @@ function onChapterClick(chapterId: number) {
   void flushAndLoad(chapterId)
 }
 
-const archiving = ref(false)
 
 async function toggleChapterRead(c: ChapterItem) {
   const target = !c.read_flag
@@ -350,45 +288,15 @@ async function toggleFinished() {
   }
 }
 
-async function archiveAndSummarize() {
-  if (!book.value) return
-  try {
-    await ElMessageBox.confirm(
-      '将整本书归档：标记读完，并总结为 RAG/Skill 资产（PDF 书籍会先用视觉模型通读全书并缓存）。继续？',
-      '归档并总结',
-      { type: 'info', confirmButtonText: '归档' },
-    )
-  } catch {
-    return
-  }
-  archiving.value = true
-  try {
-    const { task_id } = await archiveBook(bookId.value)
-    ElMessage.info('归档任务已提交，正在总结…')
-    let ok = false
-    for (let i = 0; i < 120; i++) {
-      await new Promise((r) => setTimeout(r, 1500))
-      const st = await getTask(task_id)
-      if (st.status === 'success') {
-        ElMessage.success('归档完成：RAG/Skill 资产已生成')
-        ok = true
-        break
-      }
-      if (st.status === 'failed') {
-        ElMessage.error(`归档失败：${st.error || '未知错误'}`)
-        break
-      }
-    }
-    if (!ok) ElMessage.warning('归档任务超时，请稍后在资料页查看资产状态')
+const { archiving, archiveAndSummarize } = useReaderArchive({
+  bookId,
+  book,
+  onDone: async () => {
     const detail = await getBook(bookId.value).catch(() => null)
     if (detail) book.value = detail
     store.fetchBooks()
-  } catch (err) {
-    ElMessage.error((err as Error).message)
-  } finally {
-    archiving.value = false
-  }
-}
+  },
+})
 
 watch(bookId, () => {
   resetForBook()

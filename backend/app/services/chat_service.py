@@ -8,12 +8,24 @@
 import json
 from collections.abc import Iterator
 
+from sqlalchemy.orm import Session
+
 from app.ai.client import LLMError
+from app.ai.factory import build_client
 from app.ai.prompts.chat import build_system_prompt, build_user_prompt
+from app.core.config import settings
 from app.core.database import SessionLocal
-from app.repositories.chat import persist_chat
-from app.services.ai_context import build_context_block
+from app.repositories import books as book_repo
+from app.repositories.assets import load_skills, retrieve_rag_chunks
+from app.repositories.chat import clear_messages, list_messages, persist_chat
+from app.repositories.settings import load_ai_overrides, vision_configured
+from app.services.ai_context import (
+    build_context_block,
+    build_page_context_block,
+    page_image_data_uri,
+)
 from app.services.citations import extract_citations
+from app.services.vision_extract import ensure_window_caches
 
 
 def build_messages(
@@ -64,6 +76,86 @@ def build_messages(
     else:
         messages.append({"role": "user", "content": user})
     return messages
+
+
+def resolve_chat_chapter(db: Session, book_id: int, chapter_id: int | None) -> tuple[list, object | None]:
+    """解析对话目标章节：返回 (chapters, chapter)；章节不存在或未指定时由调用方处理。"""
+    chapters = book_repo.list_chapters(db, book_id)
+    if not chapters:
+        return [], None
+    chapter = None
+    if chapter_id is not None:
+        chapter = next((c for c in chapters if c.id == chapter_id), None)
+    return chapters, chapter
+
+
+def prepare_chat_job(
+    db: Session,
+    book,
+    chapter,
+    question: str,
+    selection: str = "",
+    crop_image: str | None = None,
+    crop_label: str = "",
+) -> dict:
+    """组装一次对话请求任务：隐私/视觉覆盖、页缓存窗口或页图附件、RAG/Skill、messages、client。
+
+    - PDF 按页阅读且隐私开启：优先注入 [P-1,P,P+1] 窗口页缓存；未配置多模态/提取失败回退页图附件。
+    - crop_image：涂鸦划线区域裁剪图（chat 模式，需模型支持视觉输入）。
+    """
+    overrides = load_ai_overrides(db)
+    enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
+    send_page = overrides.get("ai_send_page_image", settings.ai_send_page_image)
+    page_mode = chapter.page_index is not None
+    page_context = None
+    page_image = None
+    if page_mode and enable_body:
+        if vision_configured(db):
+            try:
+                window = ensure_window_caches(db, book, chapter.page_index)
+                page_context = build_page_context_block(window, enable_body)
+            except Exception:  # noqa: BLE001 提取失败回退页图附件
+                page_context = None
+        if page_context is None:
+            page_image = page_image_data_uri(book, chapter, enable_body and send_page)
+    else:
+        page_image = page_image_data_uri(book, chapter, enable_body and send_page)
+    rag_chunks = retrieve_rag_chunks(db, book.id, question)
+    skills = load_skills(db, book.id)
+    messages = build_messages(
+        book,
+        chapter,
+        question,
+        selection,
+        rag_chunks,
+        skills,
+        enable_body,
+        page_image,
+        crop_image if (enable_body and crop_image) else None,
+        crop_label,
+        page_context,
+        page_mode,
+    )
+    return {
+        "client": build_client(db),
+        "messages": messages,
+        "persist": {
+            "book_id": book.id,
+            "chapter_id": chapter.id,
+            "selection": selection,
+            "question": question,
+        },
+    }
+
+
+def list_history(db: Session, book_id: int) -> list:
+    """读取本书对话历史（按时间正序）。"""
+    return list_messages(db, book_id)
+
+
+def clear_history(db: Session, book_id: int) -> None:
+    """清空本书对话历史。"""
+    clear_messages(db, book_id)
 
 
 def stream_chat(job: dict) -> Iterator[str]:
