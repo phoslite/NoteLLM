@@ -5,10 +5,16 @@ echo ================================================
 echo   读书阅读助手 一键启动
 echo   - 后端 API  http://127.0.0.1:8321
 echo   - 前端页面  http://127.0.0.1:5173
-echo   关闭弹出的两个窗口即停止服务
+echo   - 停止服务：start.bat stop
+echo     （或本窗口启动完成后按任意键停止）
 echo ================================================
 echo.
 
+rem --- 子命令：stop / restart ---
+if /i "%~1"=="stop" goto :do_stop
+if /i "%~1"=="restart" goto :do_restart
+
+:main
 where node >nul 2>nul
 if errorlevel 1 (
     echo [错误] 未找到 Node.js，请先安装 https://nodejs.org
@@ -78,4 +84,34 @@ echo [3/3] 等待服务就绪，自动打开浏览器...
 ping -n 9 127.0.0.1 >nul
 start "" http://127.0.0.1:5173
 echo.
-echo 启动完成。两个服务窗口保持运行，关闭它们即停止服务。
+echo 启动完成。两个服务窗口保持运行。
+echo 本窗口保持等待：按任意键停止前后端服务并退出；
+echo 或随时另开窗口运行：start.bat stop
+echo.
+pause >nul
+call :stop_services
+exit /b 0
+
+rem --- 停止前后端服务（按端口找 PID，结束进程树） ---
+:do_stop
+call :stop_services
+exit /b %errorlevel%
+
+:do_restart
+call :stop_services
+echo.
+echo 正在重新启动...
+goto :main
+
+:stop_services
+echo [停止] 正在关闭前后端服务...
+set "FOUND="
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8321 " ^| findstr "LISTENING"') do (
+    taskkill /F /T /PID %%a >nul 2>nul && (echo   已停止后端进程 PID=%%a & set "FOUND=1")
+)
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173 " ^| findstr "LISTENING"') do (
+    taskkill /F /T /PID %%a >nul 2>nul && (echo   已停止前端进程 PID=%%a & set "FOUND=1")
+)
+if not defined FOUND echo   [提示] 未检测到运行中的前后端服务（8321/5173 均未监听）
+echo [停止] 完成
+exit /b 0

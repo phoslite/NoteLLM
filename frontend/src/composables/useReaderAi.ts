@@ -7,17 +7,31 @@ export type UiChatMsg = ChatMessageItem & { local?: boolean; citations?: { chapt
 
 export interface ReaderAi {
   chatMessages: Ref<UiChatMsg[]>
+  /** 会话模式：''=默认对话；解读/概论/思考逻辑=能力模式分池（决策 30）。 */
+  chatMode: Ref<string>
   aiInput: Ref<string>
   streaming: Ref<boolean>
   streamError: Ref<string>
   currentChapterTitle: ComputedRef<string>
   presetPrompt: (kind: string) => void
+  switchMode: (mode: string) => void
   sendChat: (opts?: { crop_image?: string; crop_label?: string }) => Promise<void>
   abortChat: () => void
   clearChat: () => Promise<void>
   resetChat: () => void
   copyChat: (text: string) => void
   askSelection: () => void
+}
+
+/** 渲染节流（手册 §18）：每 80ms 批量刷出一次；公式未闭合时最多等待 500ms 再强制刷出。 */
+const FLUSH_INTERVAL_MS = 80
+const MATH_MAX_WAIT_MS = 500
+
+/** 检测缓冲区尾部是否有未闭合的 $$…$$ 或 $…$（避免流式中 KaTeX 闪错）。 */
+function hasUnclosedMath(text: string): boolean {
+  const blockPairs = (text.match(/\$\$/g) ?? []).length
+  const inlineDollars = (text.replace(/\$\$/g, '').match(/\$/g) ?? []).length
+  return blockPairs % 2 === 1 || inlineDollars % 2 === 1
 }
 
 /** AI 助手：按章节上下文流式问答、预设能力按钮、划词追问、清空与复制。 */
@@ -34,13 +48,17 @@ export function useReaderAi(opts: {
   const { bookId, currentChapterId, currentChapter, scrollEl, takeSelection, openMindmap, scrollChat } = opts
 
   const chatMessages = ref<UiChatMsg[]>([])
+  const chatMode = ref('')
   const aiInput = ref('')
   const streaming = ref(false)
   const streamError = ref('')
   let chatAbort: (() => void) | null = null
   let pendingSelection = ''
-  /** 预设能力模式（解读/概论/思考逻辑）：随下一条消息发送给后端附加结构化 system 模板 */
-  let pendingMode: string | null = null
+  let historySeq = 0
+  // 流式渲染节流缓冲
+  let pendingText = ''
+  let flushTimer: ReturnType<typeof setTimeout> | null = null
+  let lastFlushAt = 0
 
   const currentChapterTitle = computed(() => {
     const ch = currentChapter.value
@@ -55,11 +73,25 @@ export function useReaderAi(opts: {
   }
 
   async function loadChatHistory() {
+    const seq = ++historySeq
+    const mode = chatMode.value
     try {
-      chatMessages.value = await listChatMessages(bookId.value)
+      const rows = await listChatMessages(bookId.value, mode)
+      if (seq !== historySeq) return // 已切换模式，丢弃过期响应
+      chatMessages.value = rows
     } catch {
       /* 历史加载失败不影响阅读 */
     }
+  }
+
+  /** 切换会话模式（默认/解读/概论/思考逻辑）：中断进行中的流、重载该模式历史。 */
+  function switchMode(mode: string) {
+    if (mode === chatMode.value) return
+    if (streaming.value) chatAbort?.()
+    chatMode.value = mode
+    pendingSelection = ''
+    streamError.value = ''
+    void loadChatHistory()
   }
 
   function resetChat() {
@@ -74,7 +106,7 @@ export function useReaderAi(opts: {
       void openMindmap()
       return
     }
-    pendingMode = ['解读', '概论', '思考逻辑'].includes(kind) ? kind : null
+    if (['解读', '概论', '思考逻辑'].includes(kind)) switchMode(kind)
     const ch = currentChapter.value
     const ctx = ch ? `当前章节：第${ch.index}章「${ch.title}」。` : '当前未选择章节。'
     const prompts: Record<string, string> = {
@@ -85,13 +117,38 @@ export function useReaderAi(opts: {
     aiInput.value = prompts[kind] ?? ''
   }
 
+  /** 把累积的缓冲一次性写入消息并滚动（渲染节流的核心刷出点）。 */
+  function flushDelta(assistant: UiChatMsg) {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    if (!pendingText) return
+    assistant.content += pendingText
+    pendingText = ''
+    lastFlushAt = Date.now()
+    scrollChat()
+  }
+
+  /** 计划下一次批量刷出；公式未闭合且等待未超时则推迟。 */
+  function scheduleFlush(assistant: UiChatMsg) {
+    if (flushTimer !== null) return
+    flushTimer = setTimeout(() => {
+      flushTimer = null
+      if (hasUnclosedMath(pendingText) && Date.now() - lastFlushAt < MATH_MAX_WAIT_MS) {
+        scheduleFlush(assistant)
+        return
+      }
+      flushDelta(assistant)
+    }, FLUSH_INTERVAL_MS)
+  }
+
   async function sendChat(opts?: { crop_image?: string; crop_label?: string }) {
     const question = aiInput.value.trim()
     if (!question || streaming.value || !currentChapterId.value) return
     aiInput.value = ''
     const selection = pendingSelection || currentSelection() || undefined
     pendingSelection = ''
-    pendingMode = null
     streamError.value = ''
     chatMessages.value.push({
       id: Date.now(), role: 'user', content: question,
@@ -103,28 +160,33 @@ export function useReaderAi(opts: {
     }
     chatMessages.value.push(assistant)
     streaming.value = true
+    pendingText = ''
+    lastFlushAt = Date.now()
     const { promise, abort } = streamChat(
       bookId.value,
-      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: pendingMode },
+      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: chatMode.value },
       (ev) => {
         if (ev.type === 'delta') {
-          assistant.content += ev.text
+          pendingText += ev.text
+          scheduleFlush(assistant)
         } else if (ev.type === 'end') {
+          flushDelta(assistant)
           assistant.content = ev.text
           assistant.citations = ev.citations
           assistant.local = false
           streaming.value = false
         } else if (ev.type === 'error') {
+          flushDelta(assistant)
           streaming.value = false
           streamError.value = ev.message
         }
-        scrollChat()
       },
     )
     chatAbort = abort
     try {
       await promise
     } catch (err) {
+      flushDelta(assistant)
       streaming.value = false
       streamError.value = (err as Error).message
     } finally {
@@ -143,7 +205,7 @@ export function useReaderAi(opts: {
   async function clearChat() {
     if (streaming.value) abortChat()
     try {
-      await clearChatMessages(bookId.value)
+      await clearChatMessages(bookId.value, chatMode.value)
       chatMessages.value = []
       streamError.value = ''
     } catch (err) {
@@ -162,14 +224,13 @@ export function useReaderAi(opts: {
   function askSelection() {
     const sel = takeSelection()
     if (!sel) return
-    pendingMode = null
     pendingSelection = sel
     aiInput.value = `请解读我选中的这段内容，引用须标注【第X章 第Y段】出处：\n${sel}`
     void sendChat()
   }
 
   return {
-    chatMessages, aiInput, streaming, streamError, currentChapterTitle,
-    presetPrompt, sendChat, abortChat, clearChat, resetChat, copyChat, askSelection,
+    chatMessages, chatMode, aiInput, streaming, streamError, currentChapterTitle,
+    presetPrompt, switchMode, sendChat, abortChat, clearChat, resetChat, copyChat, askSelection,
   }
 }

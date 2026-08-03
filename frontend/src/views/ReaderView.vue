@@ -169,7 +169,7 @@ const ai = useReaderAi({
   openMindmap,
   scrollChat: () => chatPanel.value?.scrollToBottom(),
 })
-const { chatMessages, aiInput, streaming, streamError, currentChapterTitle, presetPrompt, sendChat, abortChat, clearChat, copyChat, resetChat, askSelection } = ai
+const { chatMessages, chatMode, aiInput, streaming, streamError, currentChapterTitle, presetPrompt, switchMode, sendChat, abortChat, clearChat, copyChat, resetChat, askSelection } = ai
 
 const chatPanel = ref<InstanceType<typeof ReaderChatPanel> | null>(null)
 
@@ -474,6 +474,8 @@ onBeforeUnmount(() => {
       :streaming="streaming"
       :stream-error="streamError"
       :context-title="currentChapterTitle"
+      :chat-mode="chatMode"
+      @mode-change="switchMode"
       @preset="presetPrompt"
       @send="sendChat"
       @abort="abortChat"

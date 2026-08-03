@@ -60,15 +60,15 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
 
 
 @router.get("/{book_id}/chat/messages")
-def list_chat_messages(book_id: int, db: Session = Depends(get_db)):
-    """读取本书对话历史（按时间正序）。"""
+def list_chat_messages(book_id: int, mode: str | None = None, db: Session = Depends(get_db)):
+    """读取本书指定会话的对话历史（mode 为空=默认对话；解读/概论/思考逻辑为能力模式分池）。"""
     require_book(db, book_id)
-    return ok([chat_message_to_dict(m) for m in list_history(db, book_id)])
+    return ok([chat_message_to_dict(m) for m in list_history(db, book_id, mode)])
 
 
 @router.delete("/{book_id}/chat/messages")
-def clear_chat_messages(book_id: int, db: Session = Depends(get_db)):
-    """清空本书对话历史。"""
+def clear_chat_messages(book_id: int, mode: str | None = None, db: Session = Depends(get_db)):
+    """清空本书指定会话的对话历史。"""
     require_book(db, book_id)
-    clear_history(db, book_id)
+    clear_history(db, book_id, mode)
     return ok(None, "已清空")

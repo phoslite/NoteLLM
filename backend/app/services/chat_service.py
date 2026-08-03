@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories import books as book_repo
 from app.repositories.assets import load_skills, retrieve_rag_chunks
-from app.repositories.chat import clear_messages, list_messages, persist_chat
+from app.repositories.chat import clear_messages, list_messages, persist_chat, recent_history_texts
 from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.ai_context import (
     build_context_block,
@@ -43,6 +43,7 @@ def build_messages(
     page_context: str | None = None,
     page_mode: bool = False,
     mode: str | None = None,
+    history: list[dict] | None = None,
     profiles: dict | None = None,
 ) -> list[dict]:
     """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段。
@@ -72,6 +73,8 @@ def build_messages(
             "content": build_system_prompt(skills, page_mode=page_mode, mode=mode, profiles=profiles),
         }
     ]
+    if history:
+        messages.extend(history)
     images = [img for img in (page_image, crop_image) if img]
     if images and enable_body_send:
         content: list[dict] = [{"type": "text", "text": user}]
@@ -132,6 +135,9 @@ def prepare_chat_job(
     rag_chunks = retrieve_rag_chunks(db, book.id, question)
     skills = load_skills(db, book.id, task_text=question)
     profiles = get_all_profiles(db) if enable_body else None
+    history = None
+    if enable_body:
+        history = recent_history_texts(db, book.id, mode)
     messages = build_messages(
         book,
         chapter,
@@ -146,6 +152,7 @@ def prepare_chat_job(
         page_context,
         page_mode,
         mode,
+        history,
         profiles,
     )
     return {
@@ -156,18 +163,19 @@ def prepare_chat_job(
             "chapter_id": chapter.id,
             "selection": selection,
             "question": question,
+            "mode": mode,
         },
     }
 
 
-def list_history(db: Session, book_id: int) -> list:
-    """读取本书对话历史（按时间正序）。"""
-    return list_messages(db, book_id)
+def list_history(db: Session, book_id: int, mode: str | None = None) -> list:
+    """读取本书指定会话的对话历史（按时间正序）。"""
+    return list_messages(db, book_id, mode)
 
 
-def clear_history(db: Session, book_id: int) -> None:
-    """清空本书对话历史。"""
-    clear_messages(db, book_id)
+def clear_history(db: Session, book_id: int, mode: str | None = None) -> None:
+    """清空本书指定会话的对话历史。"""
+    clear_messages(db, book_id, mode)
 
 
 def stream_chat(job: dict) -> Iterator[str]:
@@ -195,6 +203,7 @@ def stream_chat(job: dict) -> Iterator[str]:
                 chapter_id=job["persist"]["chapter_id"],
                 selection=job["persist"]["selection"],
                 question=job["persist"]["question"],
+                mode=job["persist"].get("mode"),
                 answer=full,
             )
         finally:

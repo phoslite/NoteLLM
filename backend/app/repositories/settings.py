@@ -2,6 +2,9 @@
 
 约定（技术栈规范 §3.4）：API Key 禁止硬编码、禁止写日志、前端不回显明文。
 """
+from pathlib import Path
+
+from dotenv import dotenv_values
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -60,6 +63,14 @@ _FLOAT_KEYS = {
 def get_setting(db: Session, key: str, default: str | None = None) -> str | None:
     row = db.get(Setting, key)
     return row.value if row else default
+
+
+def delete_setting(db: Session, key: str) -> None:
+    """删除单条运行时覆盖（不存在时静默）。"""
+    row = db.get(Setting, key)
+    if row:
+        db.delete(row)
+        db.commit()
 
 
 def set_setting(db: Session, key: str, value: str) -> None:
@@ -219,3 +230,47 @@ def ai_settings_view(db: Session) -> dict:
         "vision_enable_thinking": overrides.get("vision_enable_thinking", settings.vision_enable_thinking),
         "vision_thinking_budget": overrides.get("vision_thinking_budget", settings.vision_thinking_budget),
     }
+
+def find_env_file() -> Path | None:
+    """定位 .env 配置文件：兼容 uvicorn 在 backend/ 下启动与从仓库根目录运行。"""
+    candidates = [
+        Path(".env"),
+        Path("backend/.env"),
+        Path(__file__).resolve().parents[2] / ".env",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
+def reload_ai_overrides_from_env(db: Session, env_path: Path | None = None) -> dict:
+    """强制载入 .env 配置文件：以 .env 当前内容为准重置运行时 AI/视觉配置。
+
+    - .env 中存在的 AI_OVERRIDE_KEYS 项 → 写入 DB 覆盖（与 .env 一致，立即生效）；
+    - .env 中不存在的项 → 删除 DB 覆盖（回落默认值）；
+    - 返回掩码后的最新视图（API Key 不回显明文）。
+    """
+    env = env_path or find_env_file()
+    if env is None or not env.is_file():
+        raise FileNotFoundError(".env 配置文件不存在（backend/.env）")
+    values = dotenv_values(env)  # 只读解析，不回写文件
+    changed = False
+    for settings_key, env_name in AI_OVERRIDE_KEYS.items():
+        raw = values.get(env_name)
+        row = db.get(Setting, settings_key)
+        if raw is None or not str(raw).strip():
+            if row is not None:
+                db.delete(row)
+                changed = True
+            continue
+        text = str(raw).strip()
+        if row is None:
+            db.add(Setting(key=settings_key, value=text))
+            changed = True
+        elif row.value != text:
+            row.value = text
+            changed = True
+    if changed:
+        db.commit()
+    return ai_settings_view(db)

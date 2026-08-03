@@ -1,12 +1,17 @@
 import type { ChatMessageItem, ChatStreamEvent } from '@/types'
 import { del, get } from './client'
 
-export function listChatMessages(bookId: number) {
-  return get<ChatMessageItem[]>(`/books/${bookId}/chat/messages`)
+function withMode(url: string, mode: string) {
+  return mode ? `${url}?mode=${encodeURIComponent(mode)}` : url
 }
 
-export function clearChatMessages(bookId: number) {
-  return del<null>(`/books/${bookId}/chat/messages`)
+/** 读取本书指定会话的对话历史（mode 为空=默认对话；解读/概论/思考逻辑为能力模式分池）。 */
+export function listChatMessages(bookId: number, mode = '') {
+  return get<ChatMessageItem[]>(withMode(`/books/${bookId}/chat/messages`, mode))
+}
+
+export function clearChatMessages(bookId: number, mode = '') {
+  return del<null>(withMode(`/books/${bookId}/chat/messages`, mode))
 }
 
 /** 流式对话（SSE）：逐块回调事件；返回 { promise, abort } 支持中断。 */

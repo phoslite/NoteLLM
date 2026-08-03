@@ -102,3 +102,46 @@ def test_citation_and_numbering_helpers():
         {"chapter": 1, "para": "5"},
     ]
     assert extract_citations("无引用") == []
+
+def test_chat_session_mode_pooling_and_history(client, monkeypatch):
+    """决策 30：会话按 mode 分池 + 历史窗口注入（最近轮次回传 LLM）。"""
+    _configure(client)
+    book_id = _upload(client)
+    ch = client.get(f"/api/books/{book_id}").json()["data"]["chapters"][0]["id"]
+    seen = []
+
+    def fake_stream(self, messages):
+        seen.append(messages)
+        yield "回复占位"
+
+    monkeypatch.setattr(LLMClient, "stream", fake_stream)
+
+    def ask(question, mode=None):
+        body = {"question": question, "chapter_id": ch}
+        if mode:
+            body["mode"] = mode
+        with client.stream("POST", f"/api/books/{book_id}/chat", json=body) as resp:
+            assert resp.status_code == 200
+            for _ in resp.iter_lines():
+                pass
+
+    ask("默认第一问")
+    ask("解读第一问", mode="解读")
+    ask("解读追问", mode="解读")
+
+    # 分池：默认会话只含默认问题，解读会话含两轮
+    default_msgs = client.get(f"/api/books/{book_id}/chat/messages").json()["data"]
+    interpret_msgs = client.get(f"/api/books/{book_id}/chat/messages?mode=解读").json()["data"]
+    assert [m["content"] for m in default_msgs if m["role"] == "user"] == ["默认第一问"]
+    assert [m["content"] for m in interpret_msgs if m["role"] == "user"] == ["解读第一问", "解读追问"]
+
+    # 历史注入：第三轮请求 messages = [system, user(第一问), assistant, user(追问)]
+    third = seen[2]
+    assert [m["role"] for m in third] == ["system", "user", "assistant", "user"]
+    assert third[1]["content"] == "解读第一问"
+    assert "解读追问" in third[3]["content"]
+
+    # 清空按模式：只清解读会话
+    assert client.delete(f"/api/books/{book_id}/chat/messages?mode=解读").status_code == 200
+    assert client.get(f"/api/books/{book_id}/chat/messages?mode=解读").json()["data"] == []
+    assert len(client.get(f"/api/books/{book_id}/chat/messages").json()["data"]) == 2

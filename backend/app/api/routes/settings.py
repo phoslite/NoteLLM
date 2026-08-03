@@ -13,6 +13,7 @@ from app.repositories.settings import (
     VISION_CLIENT_KWARG_KEYS,
     ai_settings_view,
     client_kwargs,
+    reload_ai_overrides_from_env,
     save_ai_overrides,
     vision_client_kwargs,
 )
@@ -121,6 +122,19 @@ def test_ai_settings(body: AiSettingsIn | None = None, db: Session = Depends(get
     except Exception as exc:  # noqa: BLE001 兜底：未知异常也按失败返回
         return ok({"ok": False, "message": f"未知错误: {exc}"}, "连接失败")
     return ok({"ok": True, "message": "连接成功，回复：" + (reply or "")[:50]}, "连接成功")
+
+
+@router.post("/ai/reload-env")
+def reload_env_ai_settings(db: Session = Depends(get_db)):
+    """强制载入 .env 配置文件：清除/覆盖运行时 AI 与视觉配置，全部以 .env 当前内容为准。
+
+    适用于：手工编辑 .env 后立即生效（无需重启）、或误改设置页后一键还原到 .env。
+    """
+    try:
+        view = reload_ai_overrides_from_env(db)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ok(view, "已从 .env 强制载入")
 
 
 @router.post("/ai/test-vision")

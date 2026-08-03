@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { getAiSettings, saveAiSettings, testAiSettings, testVisionAiSettings } from '@/api/settings'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getAiSettings, reloadEnvSettings, saveAiSettings, testAiSettings, testVisionAiSettings } from '@/api/settings'
 import type { AiSettings } from '@/types'
 
 const loading = ref(false)
 const testing = ref(false)
 const visionTesting = ref(false)
+const reloadingEnv = ref(false)
 const activeTab = ref('text')
 const form = reactive<AiSettings>({
   base_url: '',
@@ -196,6 +197,28 @@ async function save() {
   }
 }
 
+async function reloadEnv() {
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃设置页未保存的修改，并以 backend/.env 文件当前内容为准重置全部 AI/视觉配置（含已保存的运行时覆盖）。继续？',
+      '强制载入 .env',
+      { confirmButtonText: '载入', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  reloadingEnv.value = true
+  try {
+    const view = await reloadEnvSettings()
+    Object.assign(form, view, { api_key: '', vision_api_key: '' })
+    ElMessage.success('已从 .env 强制载入')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    reloadingEnv.value = false
+  }
+}
+
 async function test() {
   testing.value = true
   try {
@@ -236,6 +259,7 @@ onMounted(load)
         <p class="head-sub">文本模型负责阅读问答与 RAG/Skill 总结；多模态视觉模型负责 PDF 页面信息提取（扫描件与文本型统一），两者独立配置</p>
       </div>
       <div class="head-actions">
+        <el-button :loading="reloadingEnv" @click="reloadEnv">🔄 强制载入 .env</el-button>
         <el-button type="primary" :loading="testing || visionTesting" @click="save">💾 保存配置</el-button>
       </div>
     </header>

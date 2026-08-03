@@ -8,7 +8,16 @@ defineProps<{
   streaming: boolean
   streamError: string
   contextTitle: string
+  /** 会话模式：''=默认对话；解读/概论/思考逻辑=能力模式分池（决策 30）。 */
+  chatMode: string
 }>()
+
+const MODE_TABS = [
+  { value: '', label: '默认' },
+  { value: '解读', label: '解读' },
+  { value: '概论', label: '概论' },
+  { value: '思考逻辑', label: '思考逻辑' },
+]
 
 const chatBodyEl = ref<HTMLElement | null>(null)
 
@@ -25,6 +34,7 @@ const input = defineModel<string>('input', { required: true })
 
 const emit = defineEmits<{
   (e: 'preset', kind: string): void
+  (e: 'mode-change', mode: string): void
   (e: 'send'): void
   (e: 'abort'): void
   (e: 'clear'): void
@@ -35,6 +45,17 @@ const emit = defineEmits<{
 <template>
   <aside class="ai-panel">
     <h3 class="panel-title">AI 助手</h3>
+    <div class="ai-modes">
+      <button
+        v-for="m in MODE_TABS"
+        :key="m.value"
+        type="button"
+        class="mode-tab"
+        :class="{ active: chatMode === m.value }"
+        :disabled="streaming"
+        @click="emit('mode-change', m.value)"
+      >{{ m.label }}</button>
+    </div>
     <div class="ai-presets">
       <button
         v-for="p in ['解读', '概论', '脑图', '思考逻辑']"
@@ -96,6 +117,19 @@ const emit = defineEmits<{
   gap: 12px;
 }
 .panel-title { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary); font-weight: 600; letter-spacing: 0.5px; }
+.ai-modes { display: flex; gap: 4px; flex-wrap: wrap; flex: none; padding-bottom: 2px; }
+.mode-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.mode-tab:hover:not(:disabled) { color: var(--primary-color); }
+.mode-tab.active { border-color: var(--primary-color); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 10%, transparent); }
+.mode-tab:disabled { opacity: 0.5; cursor: not-allowed; }
 .ai-presets { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
 .preset-btn {
   border: 1px solid var(--border-color);
