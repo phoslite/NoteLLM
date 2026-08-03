@@ -1,102 +1,111 @@
 # 读书阅读助手（LLMnotebook）
 
-本地单用户的读书阅读助手：导入 PDF / Markdown / TXT / EPUB 书籍，阅读页左侧为书架 + 目录、中间为正文阅读区、右侧为 AI 助手（解读 / 概论 / 脑图 / 思考逻辑），并持续沉淀个性化画像与跨书知识谱系。
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-> 详细文档：`需求文档.md`、`技术栈规范.md`、`重构规范.md`、`docs/使用手册.md`
+本地单用户、本地优先的读书阅读助手：导入 PDF / Markdown / TXT / EPUB 书籍，提供三栏阅读工作台（左：书架 + 目录；中：正文阅读区；右：AI 助手），持续沉淀三层个性化画像与跨书知识谱系，把读过的书连成一张可检索、可追问的知识网络。
+
+项目仓库：[cml-04/NoteLLM](https://github.com/cml-04/NoteLLM.git)
+
+## 文档索引
+
+| 文档 | 版本 | 内容 |
+| --- | --- | --- |
+| [需求文档.md](需求文档.md) | v1.38 | 需求边界、开放项与验收标准 |
+| [技术栈规范.md](技术栈规范.md) | v1.44 | 技术选型、工程规范、解耦/重构规则 |
+| [重构规范.md](重构规范.md) | v1.23 | 重构记录表与变更记录 |
+| [docs/使用手册.md](docs/使用手册.md) | v1.68 | 已实现函数的使用与修改手册 |
+
+## 功能总览
+
+- **书架与主页**：左侧「近期阅读」（最近 5 本，按打开时间倒序），右侧「书架」；文件夹多级归类（未打 tag 的书默认继承文件夹 tag）、拖拽排序、搜索/标签筛选、手动 tag；书籍卡片渲染封面（PDF/EPUB 自动提取）；阅读进度（已读章节/总章节 + 进度条，自动与手动标记）。
+- **阅读体验**：正文支持 Markdown / LaTeX 渲染；PDF 统一按页处理（含文本型，规避公式乱码），直接以原图分辨率阅读并支持缩放（适配宽度 / 原始大小 / ＋－）；位置书签（全格式，支持分组与跳转）；PDF 页图涂鸦（笔刷 / 高亮 / 橡皮 / 文本、撤销最多 5 步、划线批注与划线区域提问）；笔记支持 Markdown/LaTeX 并可导出 Markdown / PDF。
+- **AI 助手**：设置页配置 OpenAI 兼容 API（文本与多模态独立配置）；按章节上下文问答、SSE 流式输出、自动标注出处【第X章 第Y段】；划词菜单（解释选中段 / 该段脑图 / 加入思考清单）；生成解读 / 概论 / 脑图 / 思考逻辑；脑图为 ECharts 三层树图（大纲 / 细节 / 重要定理），支持下载大纲 .md、导出 PNG、插入为本章批注。
+- **多模态视觉提取（M7）**：对 PDF 提问时按 `[P-1, P, P+1]` 滑动窗口调用视觉模型提取页面完整信息，缓存到书籍目录 `page_text/`，缓存命中不重复调用；导入 PDF 作为知识库时后台批量预提取；读完归档时全书批量提取。
+- **知识图谱（M8）**：`/graph` 书籍级谱系图，先按用户 tag → 文件夹 → 领域自动聚类分层（优先匹配用户可编辑的专业术语词库）；点击书籍展示书内知识点分布谱系（章节级 + 重要段落 + 用户笔记/不理解段落）；关联强度 = LLM 打分 + 关键词共现 + 笔记加权，边带理论传承方向箭头与关联原因；支持人工反馈、重建与跨书知识检索；图谱更新自动联动 RAG/Skill 增量增改与暖画像。
+- **个性化画像（M9）**：三层画像（冷 = 重要但不常调用 / 暖 = 近期 1-2 本书 / 热 = 当前书细节）；归档迁移阈值按对话跨越 1 / 3 / >3 本书界定并自动学习；相关度阈值函数已落地。
+- **RAG / Skill 资产**：资料页（`/rag`）上传 Markdown / PDF / TXT / EPUB → AI 自动总结生成 RAG（摘要 + 关键知识点 + 段落级检索片段，带出处）与 Skill（技能）资产；再次阅读同一本书并结束对话时在原资产上增量增改；按书籍内容 hash 自动合并重复资产（多书共享一份），支持单条删除资产条目、手动合并重复资产；删除书籍级联移除资产（共享时解除引用或自动转移主资产）；结束对话归档为触发方式（优先用户主动归档）。
+- **一键启动**：`start.bat` 自动检查依赖与端口占用（已在运行则跳过，避免 10048），找不到 pnpm 时自动回退用 node 直接运行 vite。
+
+## 页面导航
+
+| 路由 | 页面 |
+| --- | --- |
+| `/` | 主页（近期阅读 + 书架，可切换谱系图视图） |
+| `/reader/:bookId` | 三栏阅读工作台 |
+| `/graph` | 跨书谱系图 / 书内知识图谱 |
+| `/rag` | 资料页（外部资料 → RAG/Skill 资产） |
+| `/profile` | 个性化画像 |
+| `/settings` | 文本 AI / 多模态 / 隐私配置 |
 
 ## 环境要求
 
 - Python 3.11+
-- Node.js 18+ 与 pnpm（推荐 pnpm 11，配置见 `frontend/pnpm-workspace.yaml`）
+- Node.js 18+（pnpm 优先；缺失时 `start.bat` 自动回退 node 直接运行 vite）
 
-## 一键启动
+## 快速开始（一键启动）
 
-双击根目录的 `start.bat`：自动启动后端（8321）与前端（5173），并打开浏览器。前端命令会自动解析 pnpm（找不到时直接用 node 运行 vite，无需额外安装）。首次使用需先完成下方「首次准备」。
+1. 先完成下方「首次准备」。
+2. 双击根目录 `start.bat`：自动启动后端（8321）与前端（5173）并打开浏览器；服务已在运行时自动跳过启动。
 
-## 启动步骤
+### 首次准备
 
-### 0. 首次准备
-
-```bash
+```powershell
 cd backend
 python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
-copy .env.example .env          # 填写 AI_API_KEY（DeepSeek 等 OpenAI 兼容服务）
-
+copy .env.example .env        # 填写 AI_API_KEY；可选 VISION_API_KEY（多模态）
 cd ..\frontend
 pnpm install
 ```
 
-### 1. 启动后端（端口 8321）
+## 手动启动
 
-```bash
+### 后端（端口 8321）
+
+```powershell
 cd backend
-python -m venv .venv                              # 首次
-.venv\Scripts\python -m pip install -e ".[dev]"   # 首次安装依赖
-copy .env.example .env                            # 首次：填写 AI_API_KEY（DeepSeek 等 OpenAI 兼容服务）
 .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8321
 ```
 
-- 健康检查：`GET http://127.0.0.1:8321/api/health`，返回 `{"code":0,...}` 即正常。
-- 首次启动自动建表（SQLite WAL，数据在 `backend/data/`）。
+- 健康检查：`GET http://127.0.0.1:8321/api/health` 返回 `{"code":0,...}` 即正常。
+- 数据目录 `backend/data/`（SQLite WAL + 书籍文件与页图缓存），首次启动自动建表。
 
-### 2. 启动前端（端口 5173）
+### 前端（端口 5173）
 
-```bash
+```powershell
 cd frontend
-pnpm install     # 首次
 pnpm dev
 ```
 
-- 浏览器打开 http://127.0.0.1:5173
-- Vite 已配置代理：`/api` → `http://127.0.0.1:8321`，无需处理跨域。
+- 打开 http://127.0.0.1:5173；Vite 已配置代理 `/api → http://127.0.0.1:8321`。
 
-### 3. 生产构建（可选）
+### 生产构建（可选）
 
-```bash
+```powershell
 cd frontend
-pnpm build       # vue-tsc 类型检查 + vite 构建，产物在 frontend/dist/
+pnpm build      # vue-tsc 类型检查 + vite 构建，产物 frontend/dist/
 ```
 
-### 4. LLM 对话 Demo（可选）
+## 配置说明（backend/.env）
 
-```bash
-python demo/chat_demo.py --mock --prompt "你好"          # 本地 mock，无需 API Key
-python demo/chat_demo.py --prompt "你好"                 # 使用 demo/.env 的真实配置
+| 配置项 | 说明 |
+| --- | --- |
+| `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` / `AI_MODE` | 文本大模型（OpenAI 兼容，默认 DeepSeek `responses` 模式） |
+| `AI_ENABLE_BODY_SEND` | 隐私开关，`false` 时不向模型发送书籍正文 |
+| `AI_MAX_TOKENS` / `AI_THINKING_TYPE` / `AI_REASONING_EFFORT` 等 | 文本模型精细参数（`chat` 模式生效，参考 DeepSeek 思考模式文档） |
+| `VISION_BASE_URL` / `VISION_API_KEY` / `VISION_MODEL` / `VISION_MAX_TOKENS` 等 | 多模态视觉 API（默认 SiliconFlow，强制 `chat` 模式，独立于文本 AI） |
+| `DOMAIN_TERMS_FILE` | 专业术语词库路径（默认 `domain_terms.txt`，与 `.env` 同级） |
+
+- **专业术语词库** `backend/domain_terms.txt`：每行一个术语（中文词组或英文词组），上方为用户自定义区（最高优先级，修改即时生效），下方为系统缓存区（可编辑/删除）；模板见 `backend/domain_terms.txt.example`。
+
+## LLM 对话 Demo（无 Key 联调）
+
+```powershell
+python demo/chat_demo.py --mock --prompt "你好"     # 本地 mock，无需 API Key
+python demo/_mock_llm.py                            # 启动 mock 服务（18999）
 ```
 
-## AI 助手对话（M4）
-
-- 设置页（`/settings`）配置 Base URL / API Key / 模型 / 接口模式（`responses` 或 `chat`）/ 超时 / 隐私开关（是否发送书籍正文），支持「测试连接」。
-- M5 AI 增强：阅读页「脑图」生成 ECharts 树形脑图（大纲/细节/重要定理三层，节点名自动清洗 LaTeX/Markdown 记号；节点点击跳转原文；支持复制大纲、下载大纲 .md、导出 PNG、插入为本章批注）；划词菜单支持「解释选中段」「该段脑图」「加入思考清单」；笔记正文支持 Markdown/LaTeX 渲染。
-- 阅读页右栏 AI 助手：基于当前章节上下文问答，自动附带阅读区划词选区；回复支持 Markdown / LaTeX 并标注 `【第X章 第Y段】` 出处；对话历史按书保存，可清空。
-- 无 API Key 联调：`python demo/_mock_llm.py` 启动 mock（18999），设置页填 `http://127.0.0.1:18999/v1` 与任意 Key。
-- 相关 API：`POST /api/books/{id}/chat`（SSE 流式）、`GET / DELETE /api/books/{id}/chat/messages`、`GET / PATCH /api/settings/ai`、`POST /api/settings/ai/test`。
-- 排查：若 AI 面板报 `网络错误: ... WinError 10013`，通常是系统防火墙/安全软件拦截出站连接、代理/VPN 抢占端口，或程序运行在受限沙箱中（出站 TCP 被禁止）。请用 `start.bat` 或普通终端启动后端后重试；也可先点设置页「测试连接」确认连通性。
-
-## PDF 封面 / 按页阅读（M4 补充）
-
-- 导入 PDF/EPUB 时自动提取封面，书架卡片渲染封面图（无封面时显示格式徽章）。
-- PDF **统一按页处理（含文本型，需求 v1.9）**：不再区分扫描版/文本型——文本型 PDF 直接抽取文本时数学公式/符号会乱码，因此统一按原始页数切章、阅读页直接展示**原图**（按 PDF 内嵌原图分辨率渲染，支持「适配宽度 / 原始大小 / ＋/－」缩放与横向滚动），目录为「第 N 页」；本地文本抽取仅保留为**全文检索索引**，不用于正文展示与 AI 上下文。
-- 设置页「发送页面图片」开启后，对 PDF（按页处理）提问会自动把当前页图片作为附件发送给 LLM（chat 模式，需模型支持视觉输入；关闭隐私开关时不发送）。
-- PDF（含文本型）AI 解读统一走页图 + 多模态提取（M7 已实现，见需求文档 3.4.11）：配置多模态 API 后，用户在当前页提问时按 `[P-1,P,P+1]` 滑动窗口提取页面完整信息并缓存到书籍目录（`page_text/`），文本大模型基于缓存解读，缓存命中不重复调用多模态 API；导入 PDF 作为知识库时后台批量预提取，设置页可独立配置多模态 API（含视觉推理参数）。
-- 阅读增强（M6 已实现）：任意格式支持位置书签并跳转（PDF 整页 / 文本书章节+段落，书签可分组归类）；PDF 按页阅读时支持页图涂鸦划线标注（画板式：笔刷/高亮/橡皮/文本、撤销最多 5 步、划线批注与划线区域提问，随页保存）。
-- 相关 API：`GET /api/books/{id}/cover`、`GET /api/books/{id}/pages/{page_index}`；封面缺失的旧书会在启动时自动回填，新书每本独立子目录存储，避免封面串书。
-- 书架卡片悬停显示 🗑 删除按钮：删除书籍会一并清理其笔记、对话记录、RAG/Skill 资产与本地文件（`DELETE /api/books/{id}`）。
-
-## 外部资料 → RAG / Skill
-
-- 页面：顶部导航「资料」（`/rag`），上传 Markdown / PDF / TXT / EPUB 文件。
-- 流程：导入书籍 → 后台调用 AI 总结 → 生成 RAG 资产（摘要 + 关键知识点 + 段落级检索片段，含章节/段落出处）与 Skill 资产（可复用技能），存入 `BookAsset` 表，重复总结在原资产上 `version + 1`。
-- 无 API Key 时可先用本地 mock 验证链路：`python demo/_mock_llm.py`，然后以环境变量启动后端：
-  `set AI_BASE_URL=http://127.0.0.1:18999/v1 && set AI_API_KEY=mock && .venv\Scripts\python -m uvicorn app.main:app --port 8321`
-- 相关 API：`POST /api/books/{id}/summarize`（提交任务）、`GET /api/tasks/{task_id}`（轮询状态）、`GET /api/books/{id}/asset`（读取资产）。
-
-## M10 打磨（v1.31）
-
-- **笔记导出 Markdown + PDF**：阅读页笔记抽屉「导出 Markdown / 导出 PDF」；API `GET /api/books/{id}/notes/export?fmt=md|pdf`（默认 md）。PDF 由后端 PyMuPDF 内嵌 CJK 字体生成 A4，保留章节定位/引文/正文结构，笔记中的 LaTeX 公式以源码保留（PDF 端不做公式排版）。
-- **性能优化**：PDF 页图目标宽度进程内缓存（翻页不再重开 PDF）、页图 `Cache-Control` 10 分钟（翻页走浏览器缓存）、前端预加载相邻页、vite vendor 分包（echarts 按需加载，阅读页主 chunk 189KB→56KB）。
-- **验收测试**：新增笔记导出 pytest（MD/PDF/参数校验）；测试环境与真实 `.env` 的 AI/视觉配置隔离，后端全量 **128 通过**、ruff 全绿、vue-tsc + vite build 通过。
+设置页填入 `http://127.0.0.1:18999/v1` 与任意 Key 即可全链路联调。
 
 ## 端口约定
 
@@ -106,9 +115,33 @@ python demo/chat_demo.py --prompt "你好"                 # 使用 demo/.env �
 | 前端开发服务器 | http://127.0.0.1:5173 |
 | Mock LLM（demo） | http://127.0.0.1:18999 |
 
-## 常用命令
+## 测试与检查
 
-```bash
-cd backend && .\.venv\Scripts\python.exe -m pytest -q   # 后端测试
-cd backend && .\.venv\Scripts\python.exe -m ruff check app tests   # 后端 lint
+```powershell
+cd backend && .\.venv\Scripts\python.exe -m pytest -q          # 后端 151 项全过
+cd backend && .\.venv\Scripts\python.exe -m ruff check app tests
+cd frontend && pnpm build                                      # vue-tsc + vite 构建
 ```
+
+## 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| `'pnpm' is not recognized...` | 安装 pnpm（`npm install -g pnpm`），或直接用 `start.bat`（自动回退 node 运行 vite） |
+| 后端启动 `[Errno 10048] ... address already in use` | 后端已在运行；`start.bat` 会检测端口占用并跳过重复启动，或先结束占用 8321 的进程 |
+| AI 面板 `网络错误: ... WinError 10013` | 防火墙/安全软件拦截出站连接、代理/VPN 抢占端口或受限沙箱；先点设置页「测试连接」排查 |
+| `git push` 报 `Failed to connect to github.com port 443` | ping 通不代表 443 通；给 git 配置本地代理后重试，例如 `git config --global http.proxy socks5h://127.0.0.1:1080`（端口按代理工具调整） |
+| Git 提示 LF/CRLF 换行符警告 | Windows 下正常现象，不影响提交与推送 |
+
+## 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源：
+
+- 可自由使用、修改、分发与商用，但须保留版权声明与许可文本。
+- 软件按「现状」提供，不附带任何明示或暗示的担保。
+- 第三方依赖（FastAPI / Vue / ECharts / PyMuPDF 等）遵循其各自的开源协议。
+
+## 开发约定
+
+- 提交信息使用 Conventional Commits，主要开发分支 `main`。
+- 每轮任务后更新 `docs/使用手册.md`（已实现函数的使用与修改说明），并按要求在 `重构规范.md` 记录审查与解耦重构。
