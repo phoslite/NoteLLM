@@ -137,7 +137,11 @@ onMounted(load)
       </template>
       <el-form label-width="130px" label-position="left">
         <el-form-item label="Base URL">
-          <el-input v-model="form.base_url" placeholder="https://api.deepseek.com 或兼容端点 /v1" />
+          <el-input
+            v-model="form.base_url"
+            placeholder="基础地址或完整 URL：https://api.deepseek.com 或 https://host/v1/chat/completions"
+          />
+          <span class="tip">两种写法：① 基础地址（如 https://api.deepseek.com 或 https://host/v1），按接口模式自动补全（chat→/v1/chat/completions、responses→/v1/responses、anthropic→/v1/messages）；② 完整接口 URL（如 https://host/v1/chat/completions），直接使用不再补全</span>
         </el-form-item>
         <el-form-item label="API Key">
           <el-input
@@ -154,6 +158,7 @@ onMounted(load)
           <el-select v-model="form.mode" style="width: 100%">
             <el-option label="responses（instructions/input）" value="responses" />
             <el-option label="chat（messages）" value="chat" />
+            <el-option label="anthropic（Messages API）" value="anthropic" />
           </el-select>
         </el-form-item>
         <el-form-item label="超时（秒）">
@@ -223,7 +228,11 @@ onMounted(load)
       </template>
       <el-form label-width="130px" label-position="left">
         <el-form-item label="Base URL">
-          <el-input v-model="form.vision_base_url" placeholder="https://api.siliconflow.cn/v1（OpenAI 兼容 /chat/completions）" />
+          <el-input
+            v-model="form.vision_base_url"
+            placeholder="基础地址或完整 URL：https://api.siliconflow.cn/v1 或 https://host/v1/chat/completions"
+          />
+          <span class="tip">两种写法：① 基础地址（如 https://api.siliconflow.cn/v1），自动补全 /chat/completions；② 完整接口 URL（如 https://host/v1/chat/completions），直接使用不再补全</span>
         </el-form-item>
         <el-form-item label="API Key">
           <el-input

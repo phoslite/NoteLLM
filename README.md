@@ -9,16 +9,17 @@
 
 | 文档 | 版本 | 内容 |
 | --- | --- | --- |
-| [需求文档.md](需求文档.md) | v1.38 | 需求边界、开放项与验收标准 |
-| [技术栈规范.md](技术栈规范.md) | v1.45 | 技术选型、工程规范、解耦/重构规则 |
-| [重构规范.md](重构规范.md) | v1.24 | 重构记录表与变更记录 |
-| [docs/使用手册.md](docs/使用手册.md) | v1.69 | 已实现函数的使用与修改手册 |
+| [需求文档.md](需求文档.md) | v1.39 | 需求边界、开放项与验收标准 |
+| [技术栈规范.md](技术栈规范.md) | v1.49 | 技术选型、工程规范、解耦/重构规则 |
+| [重构规范.md](重构规范.md) | v1.25 | 重构记录表与变更记录 |
+| [docs/使用手册.md](docs/使用手册.md) | v1.73 | 已实现函数的使用与修改手册 |
+| [docs/知识图谱聚类算法.md](docs/知识图谱聚类算法.md) | — | 聚类算法（pre/post-classify、阈值、术语命名）说明 |
 
 ## 功能总览
 
 - **书架与主页**：左侧「近期阅读」（最近 5 本，按打开时间倒序），右侧「书架」；文件夹多级归类（未打 tag 的书默认继承文件夹 tag）、拖拽排序、搜索/标签筛选、手动 tag；书籍卡片渲染封面（PDF/EPUB 自动提取）；阅读进度（已读章节/总章节 + 进度条，自动与手动标记）。
 - **阅读体验**：正文支持 Markdown / LaTeX 渲染；PDF 统一按页处理（含文本型，规避公式乱码），直接以原图分辨率阅读并支持缩放（适配宽度 / 原始大小 / ＋－）；位置书签（全格式，支持分组与跳转）；PDF 页图涂鸦（笔刷 / 高亮 / 橡皮 / 文本、撤销最多 5 步、划线批注与划线区域提问）；笔记支持 Markdown/LaTeX 并可导出 Markdown / PDF。
-- **AI 助手**：设置页配置 OpenAI 兼容 API（文本与多模态独立配置）；按章节上下文问答、SSE 流式输出、自动标注出处【第X章 第Y段】；划词菜单（解释选中段 / 该段脑图 / 加入思考清单）；生成解读 / 概论 / 脑图 / 思考逻辑；脑图为 ECharts 三层树图（大纲 / 细节 / 重要定理），支持下载大纲 .md、导出 PNG、插入为本章批注。
+- **AI 助手**：设置页配置大模型 API（`responses` / `chat` / `anthropic` 三种接口格式，文本与多模态独立配置；`base_url` 支持基础地址自动补全或完整 URL 直填；自动携带浏览器 UA 规避 Cloudflare 拦截）；按章节上下文问答、SSE 流式输出、自动标注出处【第X章 第Y段】；划词菜单（解释选中段 / 该段脑图 / 加入思考清单）；生成解读 / 概论 / 脑图 / 思考逻辑；脑图为 ECharts 三层树图（大纲 / 细节 / 重要定理），支持下载大纲 .md、导出 PNG、插入为本章批注。
 - **多模态视觉提取（M7）**：对 PDF 提问时按 `[P-1, P, P+1]` 滑动窗口调用视觉模型提取页面完整信息，缓存到书籍目录 `page_text/`，缓存命中不重复调用；导入 PDF 作为知识库时后台批量预提取；读完归档时全书批量提取。
 - **知识图谱（M8）**：`/graph` 书籍级谱系图，先按用户 tag → 文件夹 → 领域自动聚类分层（优先匹配用户可编辑的专业术语词库）；点击书籍展示书内知识点分布谱系（章节级 + 重要段落 + 用户笔记/不理解段落）；关联强度 = LLM 打分 + 关键词共现 + 笔记加权，边带理论传承方向箭头与关联原因；支持人工反馈、重建与跨书知识检索；图谱更新自动联动 RAG/Skill 增量增改与暖画像。
 - **个性化画像（M9）**：三层画像（冷 = 重要但不常调用 / 暖 = 近期 1-2 本书 / 热 = 当前书细节）；归档迁移阈值按对话跨越 1 / 3 / >3 本书界定并自动学习；相关度阈值函数已落地。
@@ -89,9 +90,10 @@ pnpm build      # vue-tsc 类型检查 + vite 构建，产物 frontend/dist/
 
 | 配置项 | 说明 |
 | --- | --- |
-| `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` / `AI_MODE` | 文本大模型（OpenAI 兼容，默认 DeepSeek `responses` 模式） |
+| `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` / `AI_MODE` | 文本大模型（`AI_MODE`：`responses` / `chat` / `anthropic`，默认 DeepSeek responses） |
 | `AI_ENABLE_BODY_SEND` | 隐私开关，`false` 时不向模型发送书籍正文 |
-| `AI_MAX_TOKENS` / `AI_THINKING_TYPE` / `AI_REASONING_EFFORT` 等 | 文本模型精细参数（`chat` 模式生效，参考 DeepSeek 思考模式文档） |
+| `AI_MAX_TOKENS` / `AI_THINKING_TYPE` / `AI_REASONING_EFFORT` 等 | 文本模型精细参数（`chat` 模式生效，参考 DeepSeek 思考模式文档；`anthropic` 模式仅用 max_tokens/temperature/top_p/stop） |
+| `AI_ANTHROPIC_VERSION` | anthropic 模式 Messages API 版本头（默认 `2023-06-01`） |
 | `VISION_BASE_URL` / `VISION_API_KEY` / `VISION_MODEL` / `VISION_MAX_TOKENS` 等 | 多模态视觉 API（默认 SiliconFlow，强制 `chat` 模式，独立于文本 AI） |
 | `DOMAIN_TERMS_FILE` | 专业术语词库路径（默认 `domain_terms.txt`，与 `.env` 同级） |
 
@@ -117,7 +119,7 @@ python demo/_mock_llm.py                            # 启动 mock 服务（18999
 ## 测试与检查
 
 ```powershell
-cd backend && .\.venv\Scripts\python.exe -m pytest -q          # 后端 151 项全过
+cd backend && .\.venv\Scripts\python.exe -m pytest -q          # 后端 163 项全过
 cd backend && .\.venv\Scripts\python.exe -m ruff check app tests
 cd frontend && pnpm build                                      # vue-tsc + vite 构建
 ```
@@ -129,6 +131,7 @@ cd frontend && pnpm build                                      # vue-tsc + vite 
 | `'pnpm' is not recognized...` | 安装 pnpm（`npm install -g pnpm`），或直接用 `start.bat`（自动回退 node 运行 vite） |
 | 后端启动 `[Errno 10048] ... address already in use` | 后端已在运行；`start.bat` 会检测端口占用并跳过重复启动，或先结束占用 8321 的进程 |
 | AI 面板 `网络错误: ... WinError 10013` | 防火墙/安全软件拦截出站连接、代理/VPN 抢占端口或受限沙箱；先点设置页「测试连接」排查 |
+| AI 返回 `HTTP 403 error 1010` | 服务商前置 Cloudflare 拦截 urllib 默认 UA；已内置浏览器 UA 修复（`LLMClient._headers`），如仍出现请检查 Key/端点是否有效 |
 | `git push` 报 `Failed to connect to github.com port 443` | ping 通不代表 443 通；给 git 配置本地代理后重试，例如 `git config --global http.proxy socks5h://127.0.0.1:1080`（端口按代理工具调整） |
 | Git 提示 LF/CRLF 换行符警告 | Windows 下正常现象，不影响提交与推送 |
 

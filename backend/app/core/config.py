@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     ai_base_url: str = "https://api.deepseek.com"
     ai_api_key: str = ""
     ai_model: str = "deepseek-v4-flash"
-    ai_mode: str = "responses"  # responses | chat
+    ai_mode: str = "responses"  # responses | chat | anthropic
     ai_timeout: int = 120
     ai_verify_ssl: bool = True
     ai_enable_body_send: bool = True  # 隐私开关：是否向模型发送书籍正文
@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     ai_frequency_penalty: float | None = None
     ai_presence_penalty: float | None = None
     ai_stop: str = ""  # 停止词，多个用英文逗号分隔
+    ai_anthropic_version: str = "2023-06-01"  # Anthropic Messages API 版本头（仅 anthropic 模式）
 
     # 多模态视觉配置（M7）：PDF 页面信息提取用，独立于文本 AI，无需额度管理
     vision_base_url: str = ""

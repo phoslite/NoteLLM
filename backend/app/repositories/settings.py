@@ -26,6 +26,7 @@ AI_OVERRIDE_KEYS: dict[str, str] = {
     "ai_frequency_penalty": "AI_FREQUENCY_PENALTY",
     "ai_presence_penalty": "AI_PRESENCE_PENALTY",
     "ai_stop": "AI_STOP",
+    "ai_anthropic_version": "AI_ANTHROPIC_VERSION",
     # 多模态视觉配置（M7）：独立于文本 AI
     "vision_base_url": "VISION_BASE_URL",
     "vision_api_key": "VISION_API_KEY",
@@ -86,6 +87,7 @@ CLIENT_KWARG_KEYS: dict[str, str] = {
     "ai_frequency_penalty": "frequency_penalty",
     "ai_presence_penalty": "presence_penalty",
     "ai_stop": "stop",
+    "ai_anthropic_version": "anthropic_version",
 }
 
 

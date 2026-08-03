@@ -1,10 +1,14 @@
-"""LLM 客户端（OpenAI 兼容，stdlib 实现，零额外依赖）。
+"""LLM 客户端（stdlib 实现，零额外依赖），支持三种接口格式（均含普通与流式 SSE）：
 
-支持两种接口模式（均含普通与流式 SSE）：
-- responses：POST {base_url}/responses（instructions/input，DeepSeek 官方用法）
-- chat：     POST {base_url}/chat/completions（messages）
+- responses：POST {endpoint}/responses（instructions/input，DeepSeek 官方用法）
+- chat：     POST {endpoint}/chat/completions（messages，OpenAI 兼容）
+- anthropic：POST {endpoint}/v1/messages（Anthropic Messages API，x-api-key 鉴权）
 
-流式输出：`stream()` 返回逐块文本生成器，供 M4 对话 SSE 使用。
+`base_url` 支持两种写法（见 resolve_endpoint）：
+1. 基础地址（如 https://api.deepseek.com 或 https://host/v1），系统按接口模式自动补全路径；
+2. 完整接口 URL（如 https://host/v1/chat/completions），系统直接使用不再补全。
+
+`stream()` 返回逐块文本生成器，供 M4 对话 SSE 使用。
 """
 import json
 import ssl
@@ -19,6 +23,45 @@ class LLMError(RuntimeError):
     """LLM 调用失败（网络/鉴权/解析）。"""
 
 
+# 部分服务商（如 opencode.ai 前的 Cloudflare）会拦截 urllib 默认 UA（HTTP 403 error 1010）
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+# 各接口模式的完整路径后缀（用于识别「已填写完整 URL」）与自动补全路径
+_PATH_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "responses": ("/responses",),
+    "anthropic": ("/v1/messages", "/messages"),
+    "chat": ("/chat/completions",),
+}
+_AUTO_PATHS: dict[str, tuple[str, str]] = {
+    # (base 不含 /v1 时补全, base 以 /v1 结尾时补全)
+    "responses": ("/v1/responses", "/responses"),
+    "anthropic": ("/v1/messages", "/messages"),
+    "chat": ("/v1/chat/completions", "/chat/completions"),
+}
+
+
+def resolve_endpoint(base_url: str, mode: str) -> str:
+    """解析最终请求端点，支持两种 base_url 写法：
+
+    1. 完整接口 URL：以当前模式的接口路径结尾（如 /chat/completions、/responses、/v1/messages）
+       ——直接使用，不再补全；
+    2. 基础地址：其余情况自动补全 —— base 以 /v1 结尾补相对路径（/chat/completions 等），
+       否则补带 /v1 前缀的完整路径（/v1/chat/completions 等）。
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise LLMError("base_url 未配置")
+    for suffix in _PATH_SUFFIXES.get(mode, _PATH_SUFFIXES["chat"]):
+        if base.endswith(suffix):
+            return base
+    with_v1, without_v1 = _AUTO_PATHS.get(mode, _AUTO_PATHS["chat"])
+    return base + (without_v1 if base.endswith("/v1") else with_v1)
+
+
 class LLMClient:
     def __init__(
         self,
@@ -26,6 +69,7 @@ class LLMClient:
         api_key: str | None = None,
         model: str | None = None,
         mode: str | None = None,
+        anthropic_version: str | None = None,
         timeout: int | None = None,
         verify_ssl: bool | None = None,
         temperature: float | None = None,
@@ -43,6 +87,7 @@ class LLMClient:
         self.api_key = api_key if api_key is not None else settings.ai_api_key
         self.model = model or settings.ai_model
         self.mode = mode or settings.ai_mode
+        self.anthropic_version = anthropic_version or getattr(settings, "ai_anthropic_version", "2023-06-01")
         self.timeout = timeout or settings.ai_timeout
         self.verify_ssl = settings.ai_verify_ssl if verify_ssl is None else verify_ssl
         self.temperature = temperature if temperature is not None else getattr(settings, "ai_temperature", None)
@@ -62,16 +107,24 @@ class LLMClient:
         self.enable_thinking = enable_thinking
         self.thinking_budget = thinking_budget
 
+    def _headers(self) -> dict:
+        """请求头：anthropic 用 x-api-key + 版本头，其余用 Bearer。"""
+        headers = {"Content-Type": "application/json", "User-Agent": _USER_AGENT}
+        if self.mode == "anthropic":
+            if self.api_key:
+                headers["x-api-key"] = self.api_key
+            headers["anthropic-version"] = self.anthropic_version
+        elif self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        return headers
+
     def _request(self, body: dict, stream: bool = False):
         """构造并发送请求，返回响应体（流式时返回可迭代行）。"""
-        path = "/responses" if self.mode == "responses" else "/chat/completions"
-        url = self.base_url + path
+        url = resolve_endpoint(self.base_url, self.mode)
         if stream:
             body["stream"] = True
         payload = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = "Bearer " + self.api_key
+        headers = self._headers()
         ctx = ssl.create_default_context()
         if not self.verify_ssl:
             ctx.check_hostname = False
@@ -101,7 +154,53 @@ class LLMClient:
             return "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
         return ""
 
+    @staticmethod
+    def _anthropic_image_block(part: dict) -> dict:
+        """OpenAI 兼容 image_url 部件 → Anthropic image 块（data URI → base64 source）。"""
+        raw = part.get("image_url")
+        url = raw.get("url", "") if isinstance(raw, dict) else ""
+        if isinstance(url, str) and url.startswith("data:"):
+            head, _, data = url.partition(",")
+            media_type = head[len("data:"):].split(";")[0] or "image/png"
+            return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+        return {"type": "image", "source": {"type": "url", "url": url}}
+
+    def _anthropic_content(self, content) -> list[dict]:
+        """消息内容 → Anthropic content 块列表（文本 / 图片）。"""
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        blocks: list[dict] = []
+        for part in content if isinstance(content, list) else []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                blocks.append({"type": "text", "text": part.get("text", "")})
+            elif part.get("type") == "image_url":
+                blocks.append(self._anthropic_image_block(part))
+        return blocks
+
     def _build_body(self, messages: list[dict]) -> dict:
+        if self.mode == "anthropic":
+            system = "\n".join(self._content_text(m["content"]) for m in messages if m["role"] == "system")
+            merged: list[dict] = []
+            for m in messages:
+                if m["role"] == "system":
+                    continue
+                blocks = self._anthropic_content(m["content"])
+                if merged and merged[-1]["role"] == m["role"]:
+                    merged[-1]["content"] += blocks
+                else:
+                    merged.append({"role": m["role"], "content": blocks})
+            body: dict = {"model": self.model, "max_tokens": self.max_tokens or 4096, "messages": merged}
+            if system:
+                body["system"] = system
+            if self.temperature is not None:
+                body["temperature"] = self.temperature
+            if self.top_p is not None:
+                body["top_p"] = self.top_p
+            if self.stop:
+                body["stop_sequences"] = self.stop.split(",") if isinstance(self.stop, str) else list(self.stop)
+            return body
         if self.mode == "responses":
             system = "\n".join(self._content_text(m["content"]) for m in messages if m["role"] == "system")
             user = "\n".join(self._content_text(m["content"]) for m in messages if m["role"] == "user")
@@ -135,6 +234,10 @@ class LLMClient:
     @staticmethod
     def _extract_reply(data: dict) -> str:
         """从普通响应中提取文本。"""
+        if isinstance(data.get("content"), list):  # anthropic messages 模式
+            return "".join(
+                c.get("text", "") for c in data["content"] if isinstance(c, dict) and c.get("type") == "text"
+            )
         if "output" in data:  # responses 模式
             for item in data.get("output", []):
                 if item.get("type") == "message":
@@ -149,6 +252,10 @@ class LLMClient:
     @staticmethod
     def _extract_delta(data: dict, mode: str) -> str:
         """从 SSE 事件中提取增量文本。"""
+        if mode == "anthropic":
+            if data.get("type") == "content_block_delta" and (data.get("delta") or {}).get("type") == "text_delta":
+                return data["delta"].get("text", "") or ""
+            return ""
         if mode == "responses":
             if data.get("type") == "response.output_text.delta":
                 return data.get("delta", "") or ""
