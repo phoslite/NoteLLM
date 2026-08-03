@@ -129,8 +129,6 @@ cd frontend && pnpm build                                      # vue-tsc + vite 
 | `'pnpm' is not recognized...` | 安装 pnpm（`npm install -g pnpm`），或直接用 `start.bat`（自动回退 node 运行 vite） |
 | 后端启动 `[Errno 10048] ... address already in use` | 后端已在运行；`start.bat` 会检测端口占用并跳过重复启动，或先结束占用 8321 的进程 |
 | AI 面板 `网络错误: ... WinError 10013` | 防火墙/安全软件拦截出站连接、代理/VPN 抢占端口或受限沙箱；先点设置页「测试连接」排查 |
-| `git push` 报 `Failed to connect to github.com port 443` | ping 通不代表 443 通；给 git 配置本地代理后重试，例如 `git config --global http.proxy socks5h://127.0.0.1:1080`（端口按代理工具调整） |
-| Git 提示 LF/CRLF 换行符警告 | Windows 下正常现象，不影响提交与推送 |
 
 ## 开源协议
 
