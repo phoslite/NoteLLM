@@ -1,4 +1,4 @@
-"""运行时设置仓储：AI 配置等存 Setting 表（key/value），可覆盖 .env 默认值。
+﻿"""运行时设置仓储：AI 配置等存 Setting 表（key/value），可覆盖 .env 默认值。
 
 约定（技术栈规范 §3.4）：API Key 禁止硬编码、禁止写日志、前端不回显明文。
 """
@@ -43,11 +43,25 @@ AI_OVERRIDE_KEYS: dict[str, str] = {
     "vision_presence_penalty": "VISION_PRESENCE_PENALTY",
     "vision_enable_thinking": "VISION_ENABLE_THINKING",
     "vision_thinking_budget": "VISION_THINKING_BUDGET",
+    # 决策 34：LLM 自主挑选 RAG/Skill（挑选器独立模型配置，.env 可配；未填项回退主模型）
+    "ai_rag_select_enabled": "AI_RAG_SELECT_ENABLED",
+    "rag_select_base_url": "RAG_SELECT_BASE_URL",
+    "rag_select_api_key": "RAG_SELECT_API_KEY",
+    "rag_select_model": "RAG_SELECT_MODEL",
+    "rag_select_mode": "RAG_SELECT_MODE",
+    "rag_select_timeout": "RAG_SELECT_TIMEOUT",
+    "rag_select_verify_ssl": "RAG_SELECT_VERIFY_SSL",
+    "rag_select_max_tokens": "RAG_SELECT_MAX_TOKENS",
+    "rag_select_temperature": "RAG_SELECT_TEMPERATURE",
+    "rag_select_thinking_type": "RAG_SELECT_THINKING_TYPE",
+    "rag_select_max_books": "RAG_SELECT_MAX_BOOKS",
+    "rag_select_max_skills": "RAG_SELECT_MAX_SKILLS",
+    "rag_select_cache_ttl_minutes": "RAG_SELECT_CACHE_TTL_MINUTES",
 }
 
 # 布尔/数值字段类型转换
-_BOOL_KEYS = {"ai_verify_ssl", "ai_enable_body_send", "ai_send_page_image", "vision_verify_ssl", "vision_enable_thinking"}
-_INT_KEYS = {"ai_timeout", "ai_max_tokens", "vision_timeout", "vision_max_tokens", "vision_thinking_budget"}
+_BOOL_KEYS = {"ai_verify_ssl", "ai_enable_body_send", "ai_send_page_image", "vision_verify_ssl", "vision_enable_thinking", "rag_select_verify_ssl", "ai_rag_select_enabled"}
+_INT_KEYS = {"ai_timeout", "ai_max_tokens", "vision_timeout", "vision_max_tokens", "vision_thinking_budget", "rag_select_timeout", "rag_select_max_tokens", "rag_select_max_books", "rag_select_max_skills", "rag_select_cache_ttl_minutes"}
 _FLOAT_KEYS = {
     "ai_temperature",
     "ai_top_p",
@@ -55,6 +69,7 @@ _FLOAT_KEYS = {
     "ai_presence_penalty",
     "vision_temperature",
     "vision_top_p",
+    "rag_select_temperature",
     "vision_frequency_penalty",
     "vision_presence_penalty",
 }
@@ -123,6 +138,43 @@ VISION_CLIENT_KWARG_KEYS: dict[str, str] = {
     "vision_enable_thinking": "enable_thinking",
     "vision_thinking_budget": "thinking_budget",
 }
+
+
+# 决策 34 挑选器客户端构造参数映射（rag_select_* → client 关键字；空值回退主模型 ai_*）
+SELECTOR_CLIENT_KWARG_KEYS: dict[str, str] = {
+    "rag_select_base_url": "base_url",
+    "rag_select_api_key": "api_key",
+    "rag_select_model": "model",
+    "rag_select_mode": "mode",
+    "rag_select_timeout": "timeout",
+    "rag_select_verify_ssl": "verify_ssl",
+    "rag_select_max_tokens": "max_tokens",
+    "rag_select_temperature": "temperature",
+    "rag_select_thinking_type": "thinking_type",
+}
+# 空值回退到主文本模型的对应项
+_SELECTOR_FALLBACK: dict[str, str] = {
+    "rag_select_base_url": "ai_base_url",
+    "rag_select_api_key": "ai_api_key",
+    "rag_select_model": "ai_model",
+    "rag_select_mode": "ai_mode",
+    "rag_select_timeout": "ai_timeout",
+    "rag_select_verify_ssl": "ai_verify_ssl",
+}
+
+
+def selector_client_kwargs(db: Session) -> dict:
+    """决策 34：LLM 挑选器客户端参数——独立 rag_select_* 配置优先，未填项回退主文本模型。"""
+    overrides = load_ai_overrides(db)
+    kwargs: dict = {}
+    for key, client_key in SELECTOR_CLIENT_KWARG_KEYS.items():
+        value = overrides.get(key, getattr(settings, key))
+        fallback_key = _SELECTOR_FALLBACK.get(key)
+        if value in (None, "") and fallback_key:
+            value = overrides.get(fallback_key, getattr(settings, fallback_key))
+        kwargs[client_key] = value
+    kwargs["kind"] = "text"  # 挑选器走文本限流池
+    return kwargs
 
 
 def vision_client_kwargs(db: Session) -> dict:

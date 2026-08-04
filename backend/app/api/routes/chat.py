@@ -33,6 +33,8 @@ class ChatIn(BaseModel):
     crop_label: str | None = None
     # 预设能力模式：解读 / 概论 / 思考逻辑（附加结构化 system 模板）
     mode: str | None = None
+    # 会话标识（决策 34）：同会话内复用 LLM 挑选结果；前端每次进入对话会话生成
+    session_id: str | None = None
 
 
 @router.post("/{book_id}/chat")
@@ -54,7 +56,9 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
         chapter = chapters[0]
 
     # 预设模式问答缓存（性能优化 §7 决策 5）：同书同章同提问/选区命中时直接回放完整回答
-    cache_key_val = build_mode_cache_key(db, book, chapter, question, body.selection or "", body.mode)
+    cache_key_val = build_mode_cache_key(
+        db, book, chapter, question, body.selection or "", body.mode, body.session_id
+    )
     hit = mode_cache_hit(db, book.id, body.mode or "", cache_key_val)
     if hit is not None:
         try:
@@ -75,7 +79,7 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     job = prepare_chat_job(
-        db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or "", body.mode
+        db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or "", body.mode, body.session_id
     )
     cache_meta = {"book_id": book.id, "kind": body.mode, "key": cache_key_val} if cache_key_val else None
     return StreamingResponse(

@@ -14,8 +14,8 @@ MATH_RULE = (
 SYSTEM_PROMPT = (
     "你是一位阅读辅导专家，熟悉读者已投喂书籍的内容。回答要求：\n"
     "1) 必须基于用户提供的书籍正文与相关片段回答，不要编造书中没有的内容；\n"
-    "2) 引用书中原文或关键结论时，必须在句末标注出处，格式为【第X章 第Y段】（来自当前章节）"
-    "或【第X章 第Y-Z段】（来自检索片段）；\n"
+    "2) 引用书中原文或关键结论时，必须在句末标注出处：来自当前章节用【第X章 第Y段】；"
+    "来自检索片段用【第X章 第Y-Z段】；跨书片段（其他书）用【《书名》第X章 第Y段】；\n"
     "3) 回答使用 Markdown（支持 LaTeX 公式），结构清晰、先结论后展开；" + MATH_RULE + "\n"
     "4) 如果问题超出书籍内容，先说明书中未涉及，再结合常识简要回答。"
 )
@@ -118,7 +118,10 @@ def build_system_prompt(
     profiles 非空时注入三层画像（热全量摘要 + 暖近期书 + 冷领域偏好）；Skill 资产注入可复用技能指令。"""
     prompt = SYSTEM_PROMPT
     if page_mode:
-        prompt += "\n本书记载为 PDF 按页阅读：引用出处标注为【第X页】（来自当前页或相邻页窗口）。"
+        prompt += (
+            "\n本书记载为 PDF 按页阅读：当前页与相邻页内容引用出处标注为【第X页】；"
+            "同时注入的跨书检索片段仍标注【《书名》第X章 第Y段】。"
+        )
     if mode and mode in MODE_INSTRUCTIONS:
         prompt += "\n\n" + MODE_INSTRUCTIONS[mode]
     prompt += build_profile_block(profiles)
@@ -151,7 +154,7 @@ def build_user_prompt(
     else:
         parts.append("【当前章节正文】")
         parts.append(context_text or "（正文未发送，遵循隐私设置）")
-    if rag_block and not page_context:
+    if rag_block:
         parts.append("\n【检索到的相关片段（含出处）】")
         parts.append(rag_block)
     if selection:

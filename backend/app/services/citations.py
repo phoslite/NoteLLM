@@ -1,8 +1,8 @@
 """引用出处解析：LLM 输出形如【第X章 第Y段】/【第X页】→ 结构化引用。"""
 import re
 
-# 引用出处：LLM 输出形如 【第X章 第Y段】 / 【第X章 第Y-Z段】 / 【第X页】（PDF 按页阅读）
-CITATION_RE = re.compile(r"【第\s*(\d+)\s*章\s*第\s*([\d\-]+)\s*段】|【第\s*(\d+)\s*页】")
+# 引用出处：LLM 输出形如 【第X章 第Y段】 / 【第X章 第Y-Z段】 / 【《书名》第X章 第Y段】（跨书，决策 34） / 【第X页】（PDF 按页阅读）
+CITATION_RE = re.compile(r"【(?:《[^】]*》)?第\s*(\d+)\s*章\s*第\s*([\d\-]+)\s*段】|【第\s*(\d+)\s*页】")
 
 
 def extract_citations(text: str) -> list[dict]:

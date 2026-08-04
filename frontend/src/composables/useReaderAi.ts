@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { clearChatMessages, listChatMessages, streamChat } from '@/api/chat'
 import type { ChapterItem, ChatMessageItem } from '@/types'
@@ -55,6 +55,13 @@ export function useReaderAi(opts: {
   let chatAbort: (() => void) | null = null
   let pendingSelection = ''
   let historySeq = 0
+  // 会话标识（决策 34）：同会话内后端复用 LLM 挑选结果；换书/换模式/清空后重新生成
+  let sessionId = ''
+  function newSession() {
+    sessionId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  }
+  newSession()
+  watch(bookId, () => newSession())
   // 流式渲染节流缓冲
   let pendingText = ''
   let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -91,6 +98,7 @@ export function useReaderAi(opts: {
     chatMode.value = mode
     pendingSelection = ''
     streamError.value = ''
+    newSession() // 模式分池视为独立会话（决策 30/34）
     void loadChatHistory()
   }
 
@@ -164,7 +172,7 @@ export function useReaderAi(opts: {
     lastFlushAt = Date.now()
     const { promise, abort } = streamChat(
       bookId.value,
-      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: chatMode.value },
+      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: chatMode.value, session_id: sessionId },
       (ev) => {
         if (ev.type === 'delta') {
           pendingText += ev.text
@@ -209,6 +217,7 @@ export function useReaderAi(opts: {
       await clearChatMessages(bookId.value, chatMode.value)
       chatMessages.value = []
       streamError.value = ''
+      newSession() // 新对话 = 新会话（挑选缓存重新生效）
     } catch (err) {
       ElMessage.error((err as Error).message)
     }

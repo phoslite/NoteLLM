@@ -48,6 +48,15 @@
 | 18.2 流式渲染节流（已实现） |
 | 18.3 会话分池与历史注入（已实现） |
 | 18.4 落地范围 |
+| 19. 决策 34：LLM 自主挑选 RAG/Skill（跨书知识路由，v1.96 新增） |
+| 19.1 总体流程与调用链 |
+| 19.2 候选目录构建（`build_catalog`） |
+| 19.3 LLM 挑选与降级（`_select_llm` / `_select_fallback`） |
+| 19.4 会话缓存（session_id + 章节） |
+| 19.5 跨书注入与出处（`_selection_payload` / `_cross_book_rag_block`） |
+| 19.6 配置项（`.env`） |
+| 19.7 前端 session_id 传递 |
+| 19.8 修改指引 |
 
 ---
 
@@ -460,3 +469,97 @@ python demo/parallel_llm.py --tasks 3 --workers 3 --skip-scan --vision-env backe
 | `frontend/src/api/chat.ts` | 历史 API 带 `?mode=` 参数 |
 
 
+---
+
+## 19. 决策 34：LLM 自主挑选 RAG/Skill（跨书知识路由，v1.96 新增）
+
+> 验收 15 / 里程碑 §8.1-1。阅读页提问时，由 LLM（独立挑选器配置）结合冷/暖画像与当前需求，从全库候选目录中挑选本次对话需要的书与 Skill，再对选中书逐个做规则关键词检索注入（跨书出处【《书名》第X章 第Y段】）。实现细节（§9.3.1 四项）已在 需求-决策.md 9.1 决策 34 定稿。
+
+### 19.1 总体流程与调用链
+
+```
+ReaderChatPanel 提问（携带 session_id）
+  → POST /api/books/{id}/chat（ChatIn.session_id）
+  → chat_service.prepare_chat_job(db, book, chapter, question, selection, mode, session_id)
+      → rag_router.select_knowledge(...)
+          1) 会话缓存命中（session_id + chapter.id，TTL 内）→ 直接复用（source="cache"）
+          2) 未命中 → _select_llm：build_catalog（领域分组目录）→ 挑选器 LLM（chat 非流式）→ parse_llm_json → 预算裁剪/当前书兜底
+          3) LLM 失败/未配置/关闭开关 → _select_fallback（当前书 + 暖画像 related_books top3 + 谱系关联 top2 + 关键词）
+          4) _selection_payload：对选中书 retrieve_rag_chunks(每书 ≤3 段) + Skill 全文注入 → 写会话缓存
+      → _cross_book_rag_block(chunks)：组装【《书名》第X章 第Y段】块
+      → build_messages（页模式同样注入 rag 块；隐私关闭只注入 Skill 不注入 chunks）
+  → stream_chat SSE 流式返回
+```
+
+### 19.2 候选目录构建（`build_catalog`）
+
+| 函数 | 说明 |
+| --- | --- |
+| `build_catalog(db, current_book_id) -> (text, index)` | 遍历全部书，仅收录有 RAG/Skill 资产的书；按领域分组（用户 tag 首个 → 文件夹名 → 聚类领域 → 「未分类」），冷画像 `domain_preferences` 偏好领域排前；每书一行 = `id=.. 《书名》（【当前阅读】）摘要：前 60 字，技能：≤5 个技能名`；目录硬上限 150 条 |
+
+- 使用：仅 `rag_router._select_llm` 内部调用。
+- 修改：分组优先级、摘要/技能名截断长度（`CATALOG_SUMMARY_CHARS` / `CATALOG_SKILL_NAMES` / `CATALOG_MAX_ENTRIES`）、目录行格式改这里。
+
+### 19.3 LLM 挑选与降级（`_select_llm` / `_select_fallback`）
+
+| 函数 | 说明 |
+| --- | --- |
+| `_select_llm(db, book, chapter, question, selection, mode, profiles) -> SelectionResult \| None` | 构建画像摘要 + 目录文本，调用挑选器 `client.chat`（提示词 `ai/prompts/rag_select.py`），`parse_llm_json` 解析；校验 book_id 必须在目录内、去重、预算裁剪（`RAG_SELECT_MAX_BOOKS` / `RAG_SELECT_MAX_SKILLS`）；**当前书有资产时始终选入**；任何异常/坏 JSON → 返回 None |
+| `_select_fallback(db, book, question) -> SelectionResult` | 规则降级：当前书（有资产）→ 暖画像 `related_books` 前 3 → 谱系 `BookRelation`（非忽略）按 strength 降序补齐预算；Skill 取选中书按问题相关度排序的前 N 个（N=预算） |
+
+- 使用：`select_knowledge` 内部编排；`SelectionResult(source="llm"|"fallback", book_ids, skill_refs, reasons)`。
+- 修改：挑选提示词（角色/预算/输出 JSON 结构）改 `ai/prompts/rag_select.py`；降级排序规则改 `_select_fallback`。注意 `SYSTEM_PROMPT` 用 `.format()`，JSON 示例中的字面花括号必须写成 `{{`/`}}`。
+
+### 19.4 会话缓存（session_id + 章节）
+
+| 函数 | 说明 |
+| --- | --- |
+| `select_knowledge(..., session_id)` | 键 = `session_id:chapter_id`；TTL = `RAG_SELECT_CACHE_TTL_MINUTES`（默认 60，0=不缓存）；命中返回 `source="cache"` 并跳过挑选 |
+| `clear_session_cache(session_id=None)` | 清空指定会话缓存（空=全清），测试用 |
+
+- 缓存为**进程内 dict + 锁**，重启后丢失（重新挑选一次，可接受）；键含章节，同会话切章会重新挑选。
+- 使用：前端进入对话会话生成 `session_id`（换书/换模式/清空对话后重新生成），随每次提问传递。
+
+### 19.5 跨书注入与出处（`_selection_payload` / `_cross_book_rag_block`）
+
+| 函数 | 说明 |
+| --- | --- |
+| `_selection_payload(result, db, question)` | 对选中书逐个 `retrieve_rag_chunks(top_k=INJECT_TOP_K_PER_BOOK=3)`，chunk 附加 `book_id`/`book_title`；Skill 按 ref（book_id+name）从资产取全文 |
+| `_cross_book_rag_block(chunks)`（chat_service） | 组装【《书名》第X章 第Y段】片段块；页模式（`page_context`）下同样注入（决策 34 敲定） |
+
+- 出处解析：`services/citations.py::CITATION_RE` 已支持 `《书名》` 前缀，`extract_citations` 对跨书引用仍返回 `{chapter, para}`。
+- 修改：每书注入段数上限、chunk 块格式改 `chat_service._cross_book_rag_block` 与 `INJECT_TOP_K_PER_BOOK`。
+
+### 19.6 配置项（`.env`）
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `AI_RAG_SELECT_ENABLED` | `true` | 总开关；false=跳过 LLM 挑选，直接规则降级 |
+| `RAG_SELECT_BASE_URL/API_KEY/MODEL/MODE` | 空 | 挑选器独立模型配置；未填项回退主文本模型（AI_*） |
+| `RAG_SELECT_TIMEOUT` / `RAG_SELECT_VERIFY_SSL` | `60` / `true` | 挑选调用超时与 SSL |
+| `RAG_SELECT_MAX_TOKENS` | `512` | 挑选输出上限（轻量调用） |
+| `RAG_SELECT_TEMPERATURE` | `0.0` | 挑选要确定性，默认低温 |
+| `RAG_SELECT_THINKING_TYPE` | `disabled` | 挑选禁思考 |
+| `RAG_SELECT_MAX_BOOKS` | `3` | 预算：最多注入书数（含当前书） |
+| `RAG_SELECT_MAX_SKILLS` | `2` | 预算：最多注入 Skill 数 |
+| `RAG_SELECT_CACHE_TTL_MINUTES` | `60` | 会话挑选缓存 TTL（0=不缓存） |
+
+- 设置页不展示挑选器配置（仅 `.env` + 强制载入 env 生效）；`AI_OVERRIDE_KEYS` 已登记 `rag_select_*`，强制载入 env 可写覆盖。
+
+### 19.7 前端 session_id 传递
+
+| 位置 | 改动 |
+| --- | --- |
+| `frontend/src/composables/useReaderAi.ts` | `sessionId` 生成（`crypto.randomUUID`）；换书（watch bookId）/ `switchMode` / `clearChat` 后重新生成；`sendChat` 携带 `session_id` |
+| `frontend/src/api/chat.ts` | `streamChat` body 类型增加 `session_id` |
+| `frontend/src/types.ts` | （无改动；ChatStreamEvent 不变） |
+
+- 说明：预设模式问答缓存（llm_cache）键已加入 `session` 分量，避免跨会话挑选结果不同时误回放缓存回答。
+
+### 19.8 修改指引
+
+- 想调整「挑哪些书」：改挑选提示词（预算/规则/画像提示）或目录构建（分组/摘要截断）。
+- 想调整「注入多少」：`RAG_SELECT_MAX_BOOKS` / `RAG_SELECT_MAX_SKILLS` / `INJECT_TOP_K_PER_BOOK`。
+- 想换独立挑选模型：`.env` 填 `RAG_SELECT_*` 四项（base_url/api_key/model/mode），留空即用主模型。
+- 想关闭该功能：`AI_RAG_SELECT_ENABLED=false`（退回规则降级，行为与决策 34 落地前一致）。
+- 回归验证：`backend/tests/test_rag_router.py` 7 项（目录/预算/降级/会话缓存/页模式/隐私/跨书引用）。

@@ -16,17 +16,17 @@ from app.ai.prompts.chat import build_system_prompt, build_user_prompt
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories import books as book_repo
-from app.repositories.assets import load_skills, retrieve_rag_chunks
 from app.repositories.chat import clear_messages, list_messages, persist_chat, recent_history_texts
 from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.ai_context import (
-    build_context_block,
     build_page_context_block,
     page_image_data_uri,
+    paragraph_numbered,
 )
 from app.services.citations import extract_citations
 from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
 from app.services.profile_service import get_all_profiles
+from app.services.rag_router import select_knowledge
 from app.services.vision_extract import ensure_window_caches
 
 
@@ -35,7 +35,7 @@ def build_messages(
     chapter,
     question: str,
     selection: str,
-    rag_chunks: list[dict],
+    rag_block: str,
     skills: list[dict],
     enable_body_send: bool,
     page_image: str | None = None,
@@ -47,17 +47,16 @@ def build_messages(
     history: list[dict] | None = None,
     profiles: dict | None = None,
 ) -> list[dict]:
-    """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段。
+    """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段（Skill 仍注入）。
 
-    - page_context：PDF 按页阅读时注入 `[P-1,P,P+1]` 窗口的页缓存文本（出处「第 X 页」）；
-      提供时跳过章节正文与 RAG 片段（页上下文已足够，避免章节式引用混淆）。
+    - rag_block：跨书检索片段块（决策 34，出处【《书名》第X章 第Y段】），由调用方组装；
+      PDF 页模式下与页缓存文本一同注入（页模式 RAG 注入已定稿）。
+    - page_context：PDF 按页阅读时注入 `[P-1,P,P+1]` 窗口的页缓存文本（出处「第 X 页」）。
     - page_image：页缓存不可用时的回退——附加当前页原图（chat 模式，需模型支持视觉输入）。
     - crop_image：涂鸦划线区域裁剪图（data URI，chat 模式）；划线提问时用 crop_label 说明范围。
     - responses 模式由客户端降级为纯文本。
     """
-    context_text, rag_block = build_context_block(chapter, rag_chunks, enable_body_send)
-    if page_context:
-        rag_block = ""
+    context_text = paragraph_numbered(chapter.content_text or "") if enable_body_send else ""
     user = build_user_prompt(
         book.title,
         chapter.index,
@@ -101,6 +100,14 @@ def resolve_chat_chapter(db: Session, book_id: int, chapter_id: int | None) -> t
     return chapters, chapter
 
 
+def _cross_book_rag_block(chunks: list[dict]) -> str:
+    """跨书 chunks → 检索片段块：出处统一【《书名》第X章 第Y段】（决策 34）。"""
+    return "\n".join(
+        f"【《{c.get('book_title', '')}》第{c['chapter_index']}章 第{c.get('para_pos', '-')}段】{c.get('text', '')}"
+        for c in chunks
+    )
+
+
 def prepare_chat_job(
     db: Session,
     book,
@@ -110,9 +117,12 @@ def prepare_chat_job(
     crop_image: str | None = None,
     crop_label: str = "",
     mode: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
-    """组装一次对话请求任务：隐私/视觉覆盖、页缓存窗口或页图附件、RAG/Skill、messages、client。
+    """组装一次对话请求任务：隐私/视觉覆盖、页缓存窗口或页图附件、跨书 RAG/Skill、messages、client。
 
+    - 跨书注入（决策 34）：LLM 自主挑选相关书与 Skill（会话内缓存按 session_id），
+      降级回退规则方案；隐私关闭时只注入 Skill、不注入 chunks。
     - PDF 按页阅读且隐私开启：优先注入 [P-1,P,P+1] 窗口页缓存；未配置多模态/提取失败回退页图附件。
     - crop_image：涂鸦划线区域裁剪图（chat 模式，需模型支持视觉输入）。
     """
@@ -133,9 +143,13 @@ def prepare_chat_job(
             page_image = page_image_data_uri(book, chapter, enable_body and send_page)
     else:
         page_image = page_image_data_uri(book, chapter, enable_body and send_page)
-    rag_chunks = retrieve_rag_chunks(db, book.id, question)
-    skills = load_skills(db, book.id, task_text=question)
+    knowledge = select_knowledge(
+        db, book, chapter, question, selection, mode, session_id
+    )
+    rag_chunks = knowledge["chunks"] if enable_body else []
+    skills = knowledge["skills"]
     profiles = get_all_profiles(db) if enable_body else None
+    rag_block = _cross_book_rag_block(rag_chunks)
     history = None
     if enable_body:
         history = recent_history_texts(db, book.id, mode)
@@ -144,7 +158,7 @@ def prepare_chat_job(
         chapter,
         question,
         selection,
-        rag_chunks,
+        rag_block,
         skills,
         enable_body,
         page_image,
@@ -173,11 +187,11 @@ CACHEABLE_MODES = ("解读", "概论", "思考逻辑")
 
 
 def build_mode_cache_key(
-    db: Session, book, chapter, question: str, selection: str, mode: str | None
+    db: Session, book, chapter, question: str, selection: str, mode: str | None, session_id: str | None = None
 ) -> str | None:
     """预设模式问答的缓存键：仅对可缓存模式（解读/概论/思考逻辑）且缓存开启时返回 key，否则 None。
 
-    key 覆盖：模式 + 提问 + 选区 + 章节内容指纹 + 隐私/页图开关 + 页模式，
+    key 覆盖：模式 + 提问 + 选区 + 章节内容指纹 + 隐私/页图开关 + 页模式 + 会话（决策 34 跨书挑选按会话变化），
     任一输入变化都会得到新 key（长正文只取指纹，不占 key 空间）。
     """
     if mode not in CACHEABLE_MODES or not settings.llm_cache_max_entries:
@@ -194,6 +208,7 @@ def build_mode_cache_key(
         "body": enable_body,
         "send_page": send_page,
         "page_index": chapter.page_index,
+        "session": session_id or "",
     })
 
 

@@ -24,6 +24,7 @@ export function streamChat(
     crop_image?: string | null
     crop_label?: string | null
     mode?: string | null
+    session_id?: string | null
   },
   onEvent: (ev: ChatStreamEvent) => void,
 ) {
