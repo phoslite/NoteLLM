@@ -24,8 +24,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function refresh() {
   loading.value = true
   try {
-    book.value = await getBook(bookId)
-    asset.value = await getBookAsset(bookId).catch(() => null)
+    const [detail, assetResult] = await Promise.allSettled([getBook(bookId), getBookAsset(bookId)])
+    book.value = detail.status === 'fulfilled' ? detail.value : null
+    asset.value = assetResult.status === 'fulfilled' ? assetResult.value : null
   } finally {
     loading.value = false
   }

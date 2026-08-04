@@ -11,6 +11,8 @@ const props = defineProps<{
   loading: boolean
   error: string
   markdown: string
+  /** 命中 LLM 结果缓存直接回放（性能优化 §7 决策 5）。 */
+  cached?: boolean
 }>()
 const emit = defineEmits<{
   (e: 'jump', pos: { chapter: number; para: string }): void
@@ -126,6 +128,7 @@ watch(
   <div class="mindmap-panel">
     <div class="mindmap-toolbar">
       <span class="mindmap-title">{{ title || '思维导图' }}</span>
+      <span v-if="cached" class="mindmap-cached" title="命中 LLM 结果缓存，未重复调用大模型">已缓存</span>
       <div class="mindmap-actions">
         <button type="button" class="mini-btn" :disabled="!markdown" @click="copyMarkdown">复制大纲</button>
         <button type="button" class="mini-btn" :disabled="!markdown" @click="downloadMarkdown">下载大纲</button>
@@ -150,6 +153,7 @@ watch(
 .mindmap-panel { display: flex; flex-direction: column; height: 100%; }
 .mindmap-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 8px; }
 .mindmap-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mindmap-cached { font-size: 11px; color: var(--primary-color); border: 1px solid var(--primary-color); border-radius: 4px; padding: 0 6px; opacity: 0.85; flex: none; }
 .mindmap-actions { display: flex; gap: 6px; flex: none; flex-wrap: wrap; }
 .mindmap-legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; flex-wrap: wrap; }
 .mindmap-legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }

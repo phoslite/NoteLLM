@@ -246,7 +246,7 @@ function toggleTagFilter(tag: string) {
           </div>
 
           <div class="book-cover" @click="openBook(b)">
-            <img v-if="b.cover_url" :src="b.cover_url" :alt="b.title" class="cover-img" />
+            <img v-if="b.cover_url" :src="b.cover_url" :alt="b.title" class="cover-img" loading="lazy" decoding="async" />
             <span v-else>{{ b.format.toUpperCase() }}</span>
           </div>
           <div class="book-title" :title="b.title" @click="openBook(b)">{{ b.title }}</div>

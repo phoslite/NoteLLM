@@ -14,7 +14,7 @@ class Folder(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey("folders.id"), nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("folders.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
     children: Mapped[list["Folder"]] = relationship(back_populates="parent")
@@ -38,7 +38,7 @@ class Book(Base):
     page_count: Mapped[int] = mapped_column(Integer, default=0)  # 原始 PDF 页数
     graph_built: Mapped[bool] = mapped_column(default=False)
     tags_json: Mapped[str] = mapped_column(Text, default="[]")  # 用户分类 tag 列表
-    folder_id: Mapped[int | None] = mapped_column(ForeignKey("folders.id"), nullable=True)
+    folder_id: Mapped[int | None] = mapped_column(ForeignKey("folders.id"), nullable=True, index=True)
     position: Mapped[int] = mapped_column(Integer, default=0)  # 书架排序位（拖拽换位持久化）
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     last_opened_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -57,7 +57,7 @@ class Chapter(Base):
     __tablename__ = "chapters"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), index=True)
     index: Mapped[int] = mapped_column(Integer)
     title: Mapped[str] = mapped_column(String(200), default="")
     content_text: Mapped[str] = mapped_column(Text, default="")

@@ -25,6 +25,7 @@ from app.services.ai_context import (
     page_image_data_uri,
 )
 from app.services.citations import extract_citations
+from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
 from app.services.profile_service import get_all_profiles
 from app.services.vision_extract import ensure_window_caches
 
@@ -168,6 +169,49 @@ def prepare_chat_job(
     }
 
 
+CACHEABLE_MODES = ("解读", "概论", "思考逻辑")
+
+
+def build_mode_cache_key(
+    db: Session, book, chapter, question: str, selection: str, mode: str | None
+) -> str | None:
+    """预设模式问答的缓存键：仅对可缓存模式（解读/概论/思考逻辑）且缓存开启时返回 key，否则 None。
+
+    key 覆盖：模式 + 提问 + 选区 + 章节内容指纹 + 隐私/页图开关 + 页模式，
+    任一输入变化都会得到新 key（长正文只取指纹，不占 key 空间）。
+    """
+    if mode not in CACHEABLE_MODES or not settings.llm_cache_max_entries:
+        return None
+    overrides = load_ai_overrides(db)
+    enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
+    send_page = overrides.get("ai_send_page_image", settings.ai_send_page_image)
+    return cache_key({
+        "mode": mode,
+        "question": question,
+        "selection": selection or "",
+        "chapter": chapter.id,
+        "content": chapter_fingerprint(chapter),
+        "body": enable_body,
+        "send_page": send_page,
+        "page_index": chapter.page_index,
+    })
+
+
+def mode_cache_hit(db: Session, book_id: int, mode: str, key: str | None) -> dict | None:
+    """预设模式缓存命中：返回 {answer, citations}；未命中/关闭返回 None。"""
+    if not key:
+        return None
+    content = get_llm_cache(db, book_id, mode, key)
+    if content and "answer" in content:
+        return content
+    return None
+
+
+def sse_event(event: dict) -> str:
+    """SSE data 事件行（chat 路由与流式生成器共用）。"""
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
 def list_history(db: Session, book_id: int, mode: str | None = None) -> list:
     """读取本书指定会话的对话历史（按时间正序）。"""
     return list_messages(db, book_id, mode)
@@ -178,21 +222,23 @@ def clear_history(db: Session, book_id: int, mode: str | None = None) -> None:
     clear_messages(db, book_id, mode)
 
 
-def stream_chat(job: dict) -> Iterator[str]:
+def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
     """对话 SSE 事件生成器：data 行为 JSON 事件 {type: start/delta/end/error}。
 
     job 由路由预构建（含 client/messages/persist），确保 LLM 调用前的校验在请求作用域内完成。
+    cache: {book_id, kind, key} 可选——流结束后把完整回答写入 LLM 缓存（预设模式复用，
+    同 key 再次提问直接回放，见 chat 路由的 mode_cache_hit）。
     """
-    yield _sse({"type": "start"})
+    yield sse_event({"type": "start"})
     full = ""
     try:
         for delta in job["client"].stream(job["messages"]):
             full += delta
-            yield _sse({"type": "delta", "text": delta})
+            yield sse_event({"type": "delta", "text": delta})
     except LLMError as exc:
-        yield _sse({"type": "error", "message": str(exc)})
+        yield sse_event({"type": "error", "message": str(exc)})
         return
-    yield _sse({"type": "end", "text": full, "citations": extract_citations(full)})
+    yield sse_event({"type": "end", "text": full, "citations": extract_citations(full), "cached": False})
     # 历史落库使用独立会话，避免请求级会话在流式期间被关闭
     try:
         db = SessionLocal()
@@ -206,11 +252,13 @@ def stream_chat(job: dict) -> Iterator[str]:
                 mode=job["persist"].get("mode"),
                 answer=full,
             )
+            if cache:
+                set_llm_cache(db, cache["book_id"], cache["kind"], cache["key"], {
+                    "answer": full,
+                    "citations": extract_citations(full),
+                })
         finally:
             db.close()
-    except Exception:  # noqa: BLE001 历史落库失败不影响已输出的回答
+    except Exception:  # noqa: BLE001 历史落库/缓存写入失败不影响已输出的回答
         pass
 
-
-def _sse(event: dict) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

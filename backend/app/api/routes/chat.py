@@ -7,13 +7,17 @@ from sqlalchemy.orm import Session
 from app.ai.factory import is_configured
 from app.api.deps import require_book
 from app.core.database import get_db
+from app.repositories.chat import persist_chat
 from app.schemas.common import ok
 from app.schemas.serializers import chat_message_to_dict
 from app.services.chat_service import (
+    build_mode_cache_key,
     clear_history,
     list_history,
+    mode_cache_hit,
     prepare_chat_job,
     resolve_chat_chapter,
+    sse_event,
     stream_chat,
 )
 
@@ -49,11 +53,33 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
     if chapter is None:
         chapter = chapters[0]
 
+    # 预设模式问答缓存（性能优化 §7 决策 5）：同书同章同提问/选区命中时直接回放完整回答
+    cache_key_val = build_mode_cache_key(db, book, chapter, question, body.selection or "", body.mode)
+    hit = mode_cache_hit(db, book.id, body.mode or "", cache_key_val)
+    if hit is not None:
+        try:
+            persist_chat(
+                db, book.id, chapter.id, body.selection or "", question, hit["answer"], body.mode
+            )
+        except Exception:  # noqa: BLE001 历史落库失败不影响回放
+            pass
+        end_event = sse_event({
+            "type": "end",
+            "text": hit["answer"],
+            "citations": hit.get("citations") or [],
+            "cached": True,
+        })
+        return StreamingResponse(
+            iter([end_event]),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     job = prepare_chat_job(
         db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or "", body.mode
     )
+    cache_meta = {"book_id": book.id, "kind": body.mode, "key": cache_key_val} if cache_key_val else None
     return StreamingResponse(
-        stream_chat(job),
+        stream_chat(job, cache_meta),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

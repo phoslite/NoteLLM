@@ -6,7 +6,7 @@ import { getBook } from '@/api/books'
 import { exportNotesPdfUrl, exportNotesUrl, getChapterContent, getProgress, listNotes, setAllChaptersRead, setChapterRead } from '@/api/reading'
 import { useBookStore } from '@/stores/book'
 import type { BookDetail, BookmarkItem, BookItem, ChapterItem } from '@/types'
-import { splitBlocks } from '@/utils/content'
+import { cachedSplitBlocks } from '@/utils/content'
 import MdRender from '@/components/MdRender.vue'
 import MindMapPanel from '@/components/MindMapPanel.vue'
 import ReaderLeftPanel from '@/components/ReaderLeftPanel.vue'
@@ -202,7 +202,7 @@ async function loadChapter(chapterId: number, restore: boolean) {
     pageMode.value = content.page_index != null
     pageIndex.value = content.page_index
     await switchDoodlePage(prevPageMode, prevPage, content.page_index)
-    blocks.value = pageMode.value ? [] : splitBlocks(content.content_text)
+    blocks.value = pageMode.value ? [] : cachedSplitBlocks(content.content_text)
     await nextTick()
     if (!pageMode.value) applyHighlights()
     applyRestore(chapterId, restore)
@@ -571,6 +571,7 @@ onBeforeUnmount(() => {
         :loading="mindmapLoading"
         :error="mindmapError"
         :markdown="mindmapData?.markdown ?? ''"
+        :cached="mindmapData?.cached ?? false"
         @jump="jumpToMindmapPos"
         @insert-note="insertMindmapAsNote"
       />

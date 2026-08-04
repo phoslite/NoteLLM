@@ -1,4 +1,11 @@
-"""知识图谱基础文本工具：中文/英文关键词抽取与聚类名清洗（停用词、全角映射）。"""
+"""知识图谱基础文本工具：中文/英文关键词抽取与聚类名清洗（停用词、全角映射）。
+
+关键词缓存（性能优化第一梯队，docs/性能优化路径.md §4）：
+- 内容寻址缓存——按文本 sha256 命中，内容变化（content_hash 变更/重导入）自动失效；
+- 共享范围：聚类 / 跨书相关度 / 推荐 / 画像等全部走 `extract_keywords` 的调用点；
+- 进程内缓存有界（_KEYWORD_CACHE_MAX 条，溢出整体清空重算，仅损失命中率不影响正确性）。
+"""
+import hashlib
 import re
 from collections import Counter
 
@@ -24,19 +31,55 @@ def _cjk_bigrams(run: str):
     for i in range(len(run) - 1):
         yield run[i : i + 2]
 
+# 内容寻址缓存上限：2048 条 × 每条约 200 词，内存约 20MB 量级；溢出整体清空（简单淘汰）。
+_KEYWORD_CACHE_MAX = 2048
+_keyword_cache: dict[str, tuple[tuple[str, float], ...]] = {}
+
+
+def clear_keyword_cache() -> None:
+    """清空关键词缓存（测试隔离 / 手动重置用）。"""
+    _keyword_cache.clear()
+
+
+def _cached_terms(text: str) -> tuple[tuple[str, float], ...]:
+    """抽取并缓存前 200 高频词；相同文本直接命中（内容寻址，天然按内容失效）。
+
+    保持 `most_common` 的原始平局顺序（同频按首次出现），与历史行为完全一致，
+    避免平局排序变化影响聚类命名等下游结果。
+    """
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    cached = _keyword_cache.get(digest)
+    if cached is None:
+        counter: Counter = Counter()
+        for run in _CJK_RE.findall(text):
+            for term in _cjk_bigrams(run):
+                if term not in _STOPWORDS:
+                    counter[term] += 1
+        for word in _EN_RE.findall(text.lower()):
+            if word not in _STOPWORDS:
+                counter[word] += 1
+        cached = tuple(counter.most_common(200))
+        if len(_keyword_cache) >= _KEYWORD_CACHE_MAX:
+            _keyword_cache.clear()
+        _keyword_cache[digest] = cached
+    return cached
+
+
 def extract_keywords(text: str, top_n: int = 80) -> dict[str, float]:
-    """从文本抽取关键词：中文连续串拆二元组 + 英文词，返回 {词: 词频}（按频次取前 top_n）。"""
+    """从文本抽取关键词：中文连续串拆二元组 + 英文词，返回 {词: 词频}（按频次取前 top_n）。
+
+    结果带内容寻址缓存：聚类 / 相关度 / 推荐 / 画像共用，文本未变化不重复正则抽取。
+    """
     if not text:
         return {}
-    counter: Counter = Counter()
-    for run in _CJK_RE.findall(text):
-        for term in _cjk_bigrams(run):
-            if term not in _STOPWORDS:
-                counter[term] += 1
-    for word in _EN_RE.findall(text.lower()):
-        if word not in _STOPWORDS:
-            counter[word] += 1
-    return dict(counter.most_common(top_n))
+    return dict(_cached_terms(text)[:top_n])
+
+
+def book_keywords(book, top_n: int = 80) -> dict[str, float]:
+    """整书关键词（共享缓存入口）：语料组装后走内容寻址抽取，供聚类/跨书相关度/图谱共用。"""
+    from app.services.graph.corpus import book_corpus
+
+    return extract_keywords(book_corpus(book), top_n)
 
 _FW_ALNUM: dict[int, int] = {}
 for _fw, _hw in (

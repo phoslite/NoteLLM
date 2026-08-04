@@ -78,6 +78,7 @@ const emit = defineEmits<{
       >
         <div class="chat-msg-head">
           <div class="chat-role">{{ m.role === 'user' ? '我' : 'AI' }}</div>
+          <span v-if="m.cached" class="chat-cached" title="命中 LLM 结果缓存，未重复调用大模型">已缓存</span>
           <button v-if="m.content && !m.local" type="button" class="chat-copy" title="复制内容" @click="emit('copy', m.content)">复制</button>
         </div>
         <MdRender class="chat-content" :source="m.content || (m.local ? '思考中…' : '')" />
@@ -155,6 +156,7 @@ const emit = defineEmits<{
 .citation-chip { font-size: 11px; color: var(--primary-color); border: 1px solid var(--primary-color); border-radius: 10px; padding: 1px 8px; }
 .chat-error { color: #f56c6c; font-size: 12px; padding: 4px 2px; }
 .chat-msg-head { display: flex; align-items: center; justify-content: space-between; }
+.chat-cached { font-size: 11px; color: var(--primary-color); border: 1px solid var(--primary-color); border-radius: 4px; padding: 0 6px; opacity: 0.85; }
 .chat-copy { border: none; background: transparent; color: #909399; font-size: 12px; cursor: pointer; padding: 0 2px; }
 .chat-copy:hover { color: var(--primary-color); }
 .chat-toolbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }

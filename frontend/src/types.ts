@@ -157,7 +157,7 @@ export interface ChatMessageItem {
 export type ChatStreamEvent =
   | { type: 'start' }
   | { type: 'delta'; text: string }
-  | { type: 'end'; text: string; citations: { chapter: number; para: string }[] }
+  | { type: 'end'; text: string; citations: { chapter: number; para: string }[]; cached?: boolean }
   | { type: 'error'; message: string }
 
 export type NoteType = '高亮' | '批注' | '思考' | '不理解'
@@ -179,6 +179,8 @@ export interface MindMapResult {
   tree: MindMapNode
   markdown: string
   citations: { chapter: number; para: string }[]
+  /** 命中 LLM 结果缓存直接回放（性能优化 §7 决策 5）。 */
+  cached?: boolean
 }
 
 /** 位置书签（全格式）。 */

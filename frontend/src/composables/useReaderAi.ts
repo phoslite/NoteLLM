@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus'
 import { clearChatMessages, listChatMessages, streamChat } from '@/api/chat'
 import type { ChapterItem, ChatMessageItem } from '@/types'
 
-export type UiChatMsg = ChatMessageItem & { local?: boolean; citations?: { chapter: number; para: string }[] }
+export type UiChatMsg = ChatMessageItem & { local?: boolean; citations?: { chapter: number; para: string }[]; cached?: boolean }
 
 export interface ReaderAi {
   chatMessages: Ref<UiChatMsg[]>
@@ -173,6 +173,7 @@ export function useReaderAi(opts: {
           flushDelta(assistant)
           assistant.content = ev.text
           assistant.citations = ev.citations
+          assistant.cached = ev.cached
           assistant.local = false
           streaming.value = false
         } else if (ev.type === 'error') {

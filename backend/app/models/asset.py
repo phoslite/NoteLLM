@@ -1,7 +1,7 @@
 """书籍沉淀资产模型：RAG / Skill（读完归档，图谱更新联动增改）。"""
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -12,8 +12,10 @@ class BookAsset(Base):
     __tablename__ = "book_assets"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(10))  # rag / skill
+
+    __table_args__ = (Index("ix_book_assets_book_kind", "book_id", "kind"),)  # 资产读取/去重热点（性能优化第一梯队）
     content_json: Mapped[str] = mapped_column(Text, default="{}")
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)

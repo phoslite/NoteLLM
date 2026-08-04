@@ -9,10 +9,9 @@ from app.models.book import Book
 from app.models.graph import BookRelation, KnowledgePoint
 from app.repositories.assets import read_asset_content
 from app.services.graph.clustering import assign_clusters
-from app.services.graph.corpus import book_corpus
 from app.services.graph.edges import pair_key
 from app.services.graph.intra_book import build_intra_book_graph
-from app.services.graph.keywords import extract_keywords
+from app.services.graph.keywords import book_keywords, extract_keywords
 from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
 from app.services.graph_sync import link_graph_assets
 
@@ -55,7 +54,7 @@ def _pair_score(
 def compute_cross_book_graph(db: Session) -> dict:
     """重建全部书籍关联（先清空再计算）：关键词共现余弦分 + 笔记加权；同聚类低分「主题相似」边。"""
     books = db.query(Book).order_by(Book.id).all()
-    keywords = {b.id: extract_keywords(book_corpus(b)) for b in books}
+    keywords = {b.id: book_keywords(b) for b in books}
     db.query(BookRelation).delete()
     pairs: set[tuple[int, int]] = set()
     created: dict[tuple[int, int], BookRelation] = {}
@@ -118,7 +117,7 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
     others = [b for b in db.query(Book).filter(Book.id != book.id).order_by(Book.id).all()]
     if not others:
         return {"relations_added": 0, "linked": 0}
-    keywords = {b.id: extract_keywords(book_corpus(b)) for b in [book, *others]}
+    keywords = {b.id: book_keywords(b) for b in [book, *others]}
     existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in db.query(BookRelation).all()}
     added = 0
     created: dict[tuple[int, int], BookRelation] = {}

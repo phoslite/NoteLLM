@@ -16,6 +16,7 @@ from app.services.ai_context import (
     page_image_data_uri,
 )
 from app.services.citations import extract_citations
+from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
 from app.services.vision_extract import ensure_window_caches
 
 MINDMAP_SYSTEM = """你是知识图谱与思维导图专家。根据提供的章节内容，生成三层思维导图数据：
@@ -188,6 +189,19 @@ def generate_mindmap(
         else page_image_data_uri(book, chapter, enable_body and send_page)
     )
     rag_chunks = retrieve_rag_chunks(db, book.id, "思维导图 " + (focus or selection or ""))
+    # 缓存命中检查（性能优化 §7 决策 5）：同书同章同选区/焦点直接回放，不重复调用 LLM
+    cache_key_input = cache_key({
+        "chapter": chapter.id,
+        "content": chapter_fingerprint(chapter),
+        "selection": selection,
+        "focus": focus,
+        "body": enable_body,
+        "send_page": send_page,
+        "page_index": chapter.page_index,
+    })
+    hit = get_llm_cache(db, book.id, "mindmap", cache_key_input)
+    if hit is not None and hit.get("tree"):
+        return {**hit, "cached": True}
     skills = load_skills(db, book.id, task_text=f"思维导图 {focus or selection or ''}")
     messages = build_mindmap_messages(
         book, chapter, selection, focus, rag_chunks, skills, enable_body, page_image, page_context
@@ -209,4 +223,9 @@ def generate_mindmap(
         )
     except Exception:  # noqa: BLE001 历史落库失败不影响返回结果
         pass
-    return {"title": tree["name"], "tree": tree, "markdown": markdown, "citations": citations}
+    data = {"title": tree["name"], "tree": tree, "markdown": markdown, "citations": citations}
+    try:
+        set_llm_cache(db, book.id, "mindmap", cache_key_input, data)
+    except Exception:  # noqa: BLE001 缓存写入失败不影响本次结果
+        pass
+    return {**data, "cached": False}

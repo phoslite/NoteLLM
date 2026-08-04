@@ -265,13 +265,14 @@ function tagTypeOf(count: number): 'danger' | 'warning' | 'info' {
 }
 
 async function refresh() {
-  profiles.value = await getProfile()
-  rec.value = await getRecommendations()
-  thresholds.value = await getThresholds()
+  const [profile, recs, ths] = await Promise.all([getProfile(), getRecommendations(), getThresholds()])
+  profiles.value = profile
+  rec.value = recs
+  thresholds.value = ths
   thresholdForm.value = {
-    warm_threshold: thresholds.value.warm_threshold,
-    related_strength: thresholds.value.related_strength,
-    review_days: thresholds.value.review_days,
+    warm_threshold: ths.warm_threshold,
+    related_strength: ths.related_strength,
+    review_days: ths.review_days,
   }
 }
 

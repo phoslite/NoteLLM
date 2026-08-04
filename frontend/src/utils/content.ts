@@ -15,3 +15,29 @@ export function splitBlocks(source: string): string[] {
   }
   return blocksOut
 }
+
+/** 模块级正文解析缓存（性能优化第二梯队）：同一章节正文只切一次，LRU 上限 30 条。 */
+const splitCache = new Map<string, string[]>()
+const SPLIT_CACHE_MAX = 30
+
+function quickHash(source: string): string {
+  let h = 0
+  for (let i = 0; i < source.length; i++) {
+    h = (h * 31 + source.charCodeAt(i)) | 0
+  }
+  return (h >>> 0).toString(36)
+}
+
+/** 按 (长度+首 80 字符+hash) 缓存 splitBlocks 结果，章节切换/回退时避免重复切分大文本。 */
+export function cachedSplitBlocks(source: string): string[] {
+  const key = `${source.length}:${source.slice(0, 80)}:${quickHash(source)}`
+  const hit = splitCache.get(key)
+  if (hit) return hit
+  const blocks = splitBlocks(source)
+  splitCache.set(key, blocks)
+  if (splitCache.size > SPLIT_CACHE_MAX) {
+    const firstKey = splitCache.keys().next().value
+    if (firstKey !== undefined) splitCache.delete(firstKey)
+  }
+  return blocks
+}

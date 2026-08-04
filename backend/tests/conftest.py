@@ -21,6 +21,7 @@ for _k in ("AI_CONCURRENCY", "VISION_CONCURRENCY", "PAGE_RENDER_CONCURRENCY"):
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 from app.core.database import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -67,3 +68,6 @@ def client():
     with TestClient(app) as c:
         yield c
     Base.metadata.drop_all(bind=engine)
+    # FTS 虚表不在 Base.metadata：drop_all 不会清理，残留 rowid 会与重建后的章节触发器冲突（性能优化 §7 决策 3）
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS fts_chapters"))

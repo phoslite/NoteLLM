@@ -55,5 +55,11 @@ class Settings(BaseSettings):
     task_quota_text: int = 4  # 文本类任务全局配额（信号量分池）；0=不限制
     task_quota_vision: int = 4  # 视觉类任务全局配额；0=不限制
 
+    # 性能优化（docs/性能优化路径.md §4 第二/三梯队）
+    chat_history_limit: int = 200  # 每会话保留最近 N 条消息（性能决策 1 默认「只留最近 N 条」）；0=不限制
+    llm_cache_max_entries: int = 300  # LLM 结果缓存容量上限（脑图/预设模式解读，超限删最旧）；0=不缓存
+    llm_cache_ttl_days: int = 30  # LLM 结果缓存 TTL（天）
+    fts_search_enabled: bool = True  # FTS5 全书搜索开关；关闭时不建索引、搜索接口返回空
+
 
 settings = Settings()

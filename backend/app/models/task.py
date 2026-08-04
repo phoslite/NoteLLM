@@ -19,7 +19,7 @@ class Task(Base):
     stage: Mapped[str] = mapped_column(String(64), default="")  # 阶段文案（解析/页图/总结…）
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    related_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 关联书 id（任务中心展示用）
+    related_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # 关联书 id（任务中心展示用）
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
