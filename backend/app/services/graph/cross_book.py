@@ -277,15 +277,28 @@ def global_graph_payload(db: Session, books: list[Book] | None = None) -> dict:
         "edges": edges,
     }
 
-def rebuild_all_graph(db: Session) -> dict:
-    """重建全部图谱：先逐书重建内部图，再重算跨书关联并触发本地联动沉淀。"""
+def rebuild_all_graph(db: Session, on_progress=None) -> dict:
+    """重建全部图谱：先逐书重建内部图，再重算跨书关联并触发本地联动沉淀。
+
+    on_progress(progress, stage)：可选进度回调（决策 35 权重 20/50/30：
+    书内图 0→20、跨书 20→70、联动 70→100）。
+    """
     books = db.query(Book).order_by(Book.id).all()
-    for b in books:
+    total = max(1, len(books))
+    for idx, b in enumerate(books):
+        if on_progress:
+            on_progress(5 + 15 * idx // total, f"重建《{b.title}》书内图谱")
         build_intra_book_graph(db, b)
+    if on_progress:
+        on_progress(20, "重算跨书关联")
     compute_cross_book_graph(db)
     # 本地 RAG 联动存根（强度 ≥ 50 的关联补 linked_books / domain_terms，内容未变化不写）
+    if on_progress:
+        on_progress(70, "补本地联动存根")
 
     linked = link_graph_assets(db)
+    if on_progress:
+        on_progress(100, "图谱重建完成")
     return {
         "books": len(books),
         "relations": db.query(BookRelation).count(),

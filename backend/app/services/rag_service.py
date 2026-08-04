@@ -36,6 +36,7 @@ from app.services.rag_input import (
     page_chunks,
 )
 from app.services.vision_extract import read_page_cache, rebuild_book_caches
+from app.tasks import update_progress
 
 
 def _collect_new_material(db: Session, book) -> str:
@@ -70,10 +71,19 @@ def archive_book_task(book_id: int) -> dict:
         page_stats: dict | None = None
         page_texts: dict[int, str] | None = None
         if book.format == "pdf" and book.page_count:
-            page_stats = rebuild_book_caches(db, book)  # 视觉通读：补全缺失页
+            # 权重（决策 35）：视觉通读 60 / 文本总结 40
+            update_progress(5, "视觉通读全书")
+
+            def _on_page_progress(done: int, total: int) -> None:
+                update_progress(5 + 55 * max(0, min(total, done)) // max(1, total), f"视觉提取 {done}/{total} 页")
+
+            page_stats = rebuild_book_caches(db, book, progress=_on_page_progress)  # 视觉通读：补全缺失页
             texts = {i: read_page_cache(book, i) for i in range(1, book.page_count + 1)}
             page_texts = {k: v for k, v in texts.items() if v} or None
+            update_progress(60, "视觉通读完成")
+        update_progress(65, "文本模型总结 RAG/Skill")
         result = generate_rag_skill(db, book_id, page_texts=page_texts)
+        update_progress(95, "归档收尾")
         set_all_chapters_read_flag(db, book, True)  # 标记读完（状态=读完，进度=100%）
         # 三层画像迁移 + 暖记忆联动（失败不阻塞归档）
         try:

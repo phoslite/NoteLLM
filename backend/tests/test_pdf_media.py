@@ -26,6 +26,37 @@ def _make_text_pdf(path: Path) -> None:
     doc.close()
 
 
+def _render_all(path: Path, out_dir: Path, workers: int | None = None) -> int:
+    """渲染全部页（供并发/串行对比）。"""
+    from app.parsers.pdf import render_pdf_pages
+
+    return render_pdf_pages(path, out_dir, workers=workers)
+
+
+def test_render_pdf_pages_concurrent_matches_serial(tmp_path):
+    """并发渲染（worker 级 doc 复用）与串行结果一致：页数/文件齐全（决策 35）。"""
+    import pymupdf
+
+    pdf = tmp_path / "multi.pdf"
+    _make_scanned_pdf(pdf, pages=5)
+
+    serial_dir = tmp_path / "serial"
+    n_serial = _render_all(pdf, serial_dir, workers=None)
+    assert n_serial == 5
+
+    conc_dir = tmp_path / "conc"
+    n_conc = _render_all(pdf, conc_dir, workers=3)
+    assert n_conc == 5
+    files_serial = sorted(f.name for f in serial_dir.glob("page_*.jpg"))
+    files_conc = sorted(f.name for f in conc_dir.glob("page_*.jpg"))
+    assert files_serial == files_conc == [f"page_{i:03d}.jpg" for i in range(1, 6)]
+    # 并发产物非空且可打开
+    for name in files_conc:
+        doc = pymupdf.open(str(conc_dir / name))
+        doc.close()
+        assert (conc_dir / name).stat().st_size > 0
+
+
 def _import(client, path: Path, name: str):
     r = client.post("/api/books", files={"file": (name, path.read_bytes(), "application/pdf")})
     assert r.status_code == 200

@@ -73,6 +73,30 @@ def jpeg_width(path: str | Path) -> int:
         return 0
 
 
+def _render_page_from_doc(
+    doc,
+    page_index: int,
+    out_path: str | Path,
+    max_width: int = 0,
+    quality: int = 90,
+    zoom: float | None = None,
+) -> Path:
+    """用已打开的 doc 渲染指定页（page_index 从 1 开始）；供串行/并发渲染复用同一文档句柄。"""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not 1 <= page_index <= doc.page_count:
+        raise IndexError(f"页号越界: {page_index}（共 {doc.page_count} 页）")
+    page = doc[page_index - 1]
+    if zoom is None:
+        if max_width and page.rect.width > max_width:
+            zoom = max_width / page.rect.width
+        else:
+            zoom = _auto_page_zoom(page)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+    pix.save(str(out_path), jpg_quality=quality)
+    return out_path
+
+
 def render_pdf_page(
     path: str | Path,
     page_index: int,
@@ -87,23 +111,11 @@ def render_pdf_page(
     - 否则 max_width > 0 时保持旧行为（超过 max_width 才缩到该宽度，封面用）；
     - 否则按内嵌原图分辨率自动放大（PDF 页图阅读用），避免 72 DPI 低清。
     """
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open(str(path))
     try:
-        if not 1 <= page_index <= doc.page_count:
-            raise IndexError(f"页号越界: {page_index}（共 {doc.page_count} 页）")
-        page = doc[page_index - 1]
-        if zoom is None:
-            if max_width and page.rect.width > max_width:
-                zoom = max_width / page.rect.width
-            else:
-                zoom = _auto_page_zoom(page)
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-        pix.save(str(out_path), jpg_quality=quality)
+        return _render_page_from_doc(doc, page_index, out_path, max_width=max_width, quality=quality, zoom=zoom)
     finally:
         doc.close()
-    return out_path
 
 
 def extract_pdf_cover(path: str | Path, out_path: str | Path, max_width: int = 600, quality: int = 88) -> Path | None:
@@ -117,11 +129,37 @@ def extract_pdf_cover(path: str | Path, out_path: str | Path, max_width: int = 6
     return render_pdf_page(path, 1, out_path, max_width=max_width, quality=quality)
 
 
-def render_pdf_pages(path: str | Path, out_dir: str | Path, max_width: int = 0, quality: int = 90) -> int:
+def _render_worker(
+    path: str,
+    out_dir: Path,
+    max_width: int,
+    quality: int,
+    page_indices: list[int],
+) -> None:
+    """并发渲染 worker：每个 worker 打开一次 doc，循环渲染分配到的页（复用文档句柄）。"""
+    doc = pymupdf.open(path)
+    try:
+        for i in page_indices:
+            _render_page_from_doc(doc, i, out_dir / f"page_{i:03d}.jpg", max_width=max_width, quality=quality)
+    finally:
+        doc.close()
+
+
+def render_pdf_pages(
+    path: str | Path,
+    out_dir: str | Path,
+    max_width: int = 0,
+    quality: int = 90,
+    workers: int | None = None,
+) -> int:
     """把 PDF 全部页渲染为 page_XXX.jpg 存入 out_dir，返回渲染页数（M7 起文本型 PDF 同样渲染）。
 
-    max_width > 0 时全部页统一缩到该宽度；否则逐页按内嵌原图分辨率自动放大。
+    - workers 为 None 或 <=1 时串行（单文档句柄）；>1 时按 page_render_concurrency 并发，
+      每个 worker 复用各自的文档句柄（决策 35 并发化）。
+    - max_width > 0 时全部页统一缩到该宽度；否则逐页按内嵌原图分辨率自动放大。
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open(str(path))
@@ -129,6 +167,23 @@ def render_pdf_pages(path: str | Path, out_dir: str | Path, max_width: int = 0, 
         count = doc.page_count
     finally:
         doc.close()
+    if count <= 1 or workers is None or workers <= 1:
+        doc = pymupdf.open(str(path))
+        try:
+            for i in range(1, count + 1):
+                _render_page_from_doc(doc, i, out_dir / f"page_{i:03d}.jpg", max_width=max_width, quality=quality)
+        finally:
+            doc.close()
+        return count
+    chunks: list[list[int]] = [[] for _ in range(workers)]
     for i in range(1, count + 1):
-        render_pdf_page(path, i, out_dir / f"page_{i:03d}.jpg", max_width=max_width, quality=quality)
+        chunks[i % workers].append(i)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pdf-render") as pool:
+        futures = [
+            pool.submit(_render_worker, str(path), out_dir, max_width, quality, pages)
+            for pages in chunks
+            if pages
+        ]
+        for f in futures:
+            f.result()  # 任一页失败整体透出（导入任务级失败）
     return count

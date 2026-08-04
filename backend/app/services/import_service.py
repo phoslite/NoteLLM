@@ -110,15 +110,16 @@ def _import_background(book_id: int) -> dict:
         path = Path(book.file_path)
         if path.suffix.lower() == ".pdf":
             update_progress(10, "渲染 PDF 页图")
-            render_pdf_pages(path, path.parent / "pages")
-            update_progress(35, "生成本地全文索引")
+            render_pdf_pages(path, path.parent / "pages", workers=settings.page_render_concurrency)
+            update_progress(30, "生成本地全文索引")
             parsed = parse_book(path, title_hint=path.stem)
             local_dir = path.parent / "local_text"
             for i, page_text in enumerate(parsed.page_texts, 1):
                 if page_text.strip():
                     local_dir.mkdir(parents=True, exist_ok=True)
                     (local_dir / f"page_{i:03d}.txt").write_text(page_text, encoding="utf-8")
-        update_progress(50, "更新跨书关联")
+        # 权重（决策 35）：渲染 40 / 图谱 40 / 视觉 20
+        update_progress(40, "更新跨书关联")
         incremental_cross_book_graph(db, book.id)
         # M7 批量预提取：导入 PDF 作为知识库时补齐全书页缓存；
         # 受「发送书籍内容至模型」隐私开关与多模态配置约束。

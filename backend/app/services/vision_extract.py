@@ -100,27 +100,73 @@ def ensure_window_caches(db: Session, book, page_index: int, force: bool = False
     return out
 
 
+def _cache_one(db: Session, book, page_index: int, force: bool) -> tuple[str, str | None]:
+    """单页缓存处理：返回 (outcome, error)。outcome ∈ cached/extracted/failed。"""
+    try:
+        if not force and read_page_cache(book, page_index):
+            return ("cached", None)
+        ensure_page_cache(db, book, page_index, force=force)
+        return ("extracted", None)
+    except Exception as exc:  # noqa: BLE001 单页失败不中断整体
+        return ("failed", f"第 {page_index} 页: {exc}")
+
+
 def rebuild_book_caches(
     db: Session,
     book,
     force: bool = False,
     progress: object | None = None,
+    workers: int | None = None,
 ) -> dict:
-    """重建/补齐全书页缓存：force=False 仅补缺失页，force=True 全部重提取；返回统计。"""
+    """重建/补齐全书页缓存：force=False 仅补缺失页，force=True 全部重提取；返回统计。
+
+    workers>1 时并发提取（决策 35）：每 worker 独立会话（SQLAlchemy Session 非线程安全），
+    多模态请求受 vision 并发信号量限流；进度回调始终在主线程聚合调用。
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     total = getattr(book, "page_count", 0)
     stats = {"total": total, "extracted": 0, "cached": 0, "failed": 0, "errors": []}
-    for i in range(1, total + 1):
-        try:
-            if not force and read_page_cache(book, i):
+    if workers is None:
+        workers = settings.vision_concurrency
+    if workers <= 1 or total <= 1:
+        for i in range(1, total + 1):
+            outcome, err = _cache_one(db, book, i, force)
+            if outcome == "extracted":
+                stats["extracted"] += 1
+            elif outcome == "failed":
+                stats["failed"] += 1
+                stats["errors"].append(err)
+            else:
                 stats["cached"] += 1
-                continue
-            ensure_page_cache(db, book, i, force=force)
-            stats["extracted"] += 1
-        except Exception as exc:  # noqa: BLE001 单页失败不中断整体
-            stats["failed"] += 1
-            stats["errors"].append(f"第 {i} 页: {exc}")
-        if progress is not None:
-            progress(i, total)
+            if progress is not None:
+                progress(i, total)
+        return stats
+
+    # 并发：detach book（只读已加载属性），worker 各自独立会话
+    db.expunge(book)
+    lock = threading.Lock()
+    done = 0
+
+    def _worker_one(page_index: int) -> tuple[str, str | None]:
+        with SessionLocal() as session:
+            return _cache_one(session, book, page_index, force)
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vision-cache") as pool:
+        for outcome, err in pool.map(_worker_one, range(1, total + 1)):
+            with lock:
+                if outcome == "extracted":
+                    stats["extracted"] += 1
+                elif outcome == "failed":
+                    stats["failed"] += 1
+                    if err:
+                        stats["errors"].append(err)
+                else:
+                    stats["cached"] += 1
+                done += 1
+                if progress is not None:
+                    progress(done, total)
     return stats
 
 

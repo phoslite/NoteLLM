@@ -7,12 +7,16 @@
   合并进 BookRelation（强度取 max，方向/类型/原因/源头以 LLM 为准）。
 """
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
 from app.ai.factory import build_client, is_configured
 from app.ai.parsing import parse_llm_json
 from app.ai.prompts.graph_edge import SYSTEM_PROMPT, build_edge_user_prompt
+from app.core.config import settings
+from app.core.database import SessionLocal
 from app.models.book import Book
 from app.services.graph.edges import pair_key
 
@@ -88,18 +92,34 @@ def enrich_pairs_with_llm(
     """对候选书对做有界 LLM 打分，返回 {pair_key: llm_result}（失败对不返回）。
 
     candidates: [(a_id, b_id, 关键词分)]，按关键词分降序截断到 MAX_LLM_PAIRS。
+    并发化（决策 35）：按 ai_concurrency 并发调用，LLM 请求受统一限流信号量
+    约束；每 worker 独立会话（Session 非线程安全），book 先 detach 只读已加载属性。
     """
     if not is_configured(db) or not candidates:
         return {}
+    selected = sorted(candidates, key=lambda x: -x[2])[:MAX_LLM_PAIRS]
     results: dict[tuple[int, int], dict] = {}
-    for a_id, b_id, _kw in sorted(candidates, key=lambda x: -x[2])[:MAX_LLM_PAIRS]:
-        a = books_by_id.get(a_id)
-        b = books_by_id.get(b_id)
-        if not a or not b:
-            continue
-        res = score_pair_llm(db, a, b, keywords.get(a_id, {}), keywords.get(b_id, {}))
+    results_lock = threading.Lock()
+
+    def _score(pair: tuple[int, int, float]) -> None:
+        # worker 独立会话内重新查询书对象：不触碰主线程 Session 的对象，
+        # 避免 expunge/懒加载竞态（主线程后续序列化仍需这些对象）
+        a_id, b_id, _kw = pair
+        if a_id not in books_by_id or b_id not in books_by_id:
+            return
+        with SessionLocal() as session:
+            a = session.get(Book, a_id)
+            b = session.get(Book, b_id)
+            if not a or not b:
+                return
+            res = score_pair_llm(session, a, b, keywords.get(a_id, {}), keywords.get(b_id, {}))
         if res:
-            results[pair_key(a_id, b_id)] = res
+            with results_lock:
+                results[pair_key(a_id, b_id)] = res
+
+    workers = settings.ai_concurrency or 4
+    with ThreadPoolExecutor(max_workers=min(max(1, workers), 8), thread_name_prefix="llm-score") as pool:
+        list(pool.map(_score, selected))
     return results
 
 

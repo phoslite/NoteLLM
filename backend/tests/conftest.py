@@ -15,6 +15,10 @@ for _k in (
 ):
     os.environ[_k] = ""
 
+# 并发参数收敛为 1：测试确定性（并发路径由真实环境冒烟覆盖，决策 35）
+for _k in ("AI_CONCURRENCY", "VISION_CONCURRENCY", "PAGE_RENDER_CONCURRENCY"):
+    os.environ.setdefault(_k, "1")
+
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 

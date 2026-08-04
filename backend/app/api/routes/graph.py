@@ -21,7 +21,7 @@ from app.services.graph_sync import (
     link_relation_stubs,
     sync_assets_for_relations,
 )
-from app.tasks import find_active, submit
+from app.tasks import find_active, submit, update_progress
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -34,8 +34,11 @@ class FeedbackIn(BaseModel):
 def _lazy_global_build() -> dict:
     """懒构建后台任务：跨书关联计算（含 LLM 打分）+ 本地联动存根，独立会话执行。"""
     with SessionLocal() as session:
+        update_progress(20, "计算跨书关联")
         compute_cross_book_graph(session)
+        update_progress(80, "补本地联动存根")
         link_graph_assets(session)
+        update_progress(100, "图谱构建完成")
     return {"built": True}
 
 
@@ -45,7 +48,16 @@ def _build_intra_task(book_id: int) -> dict:
         book = session.get(Book, book_id)
         if not book:
             return {"error": "书籍不存在"}
-        return build_intra_book_graph(session, book)
+        update_progress(10, "构建书内知识图谱")
+        result = build_intra_book_graph(session, book)
+        update_progress(100, "构建完成")
+        return result
+
+
+def _rebuild_graph_task() -> dict:
+    """全量重建后台任务：书内图 20% / 跨书 50% / 联动 30% 进度权重（决策 35）。"""
+    with SessionLocal() as session:
+        return rebuild_all_graph(session, on_progress=lambda p, s: update_progress(p, s))
 
 
 def _submit_graph_task(task_type: str, name: str, fn, related_id: int | None = None) -> str:
@@ -83,7 +95,7 @@ def get_intra_book_graph(book_id: int, db: Session = Depends(get_db)):
 @router.post("/rebuild")
 def rebuild_graph(db: Session = Depends(get_db)):
     """重建全部图谱（跨书关联 + 全部书内知识图谱），并补本地联动存根（后台任务）。"""
-    task_id = _submit_graph_task("text", "graph-rebuild", lambda: rebuild_all_graph(SessionLocal()))
+    task_id = _submit_graph_task("text", "graph-rebuild", _rebuild_graph_task)
     return ok({"task_id": task_id}, "已提交图谱重建任务")
 
 
@@ -100,8 +112,11 @@ def knowledge_appears_in(kp_id: int, db: Session = Depends(get_db)):
 def _sync_assets_task() -> dict:
     """图谱资产联动后台任务：本地存根 + LLM 增量增改，独立会话执行。"""
     with SessionLocal() as session:
+        update_progress(20, "补本地联动存根")
         merged = sync_assets_for_relations(session)
+        update_progress(70, "RAG 术语补水")
         terms = link_domain_terms(session)
+        update_progress(100, "联动完成")
         return {**merged, "domain_terms": terms}
 
 
