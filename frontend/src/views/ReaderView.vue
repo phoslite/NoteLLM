@@ -306,17 +306,41 @@ watch(bookId, () => {
 
 let readCheckTimer: ReturnType<typeof setInterval> | null = null
 
+function startReadCheck() {
+  if (readCheckTimer) return
+  readCheckTimer = setInterval(() => void checkAutoRead(), 1000)
+}
+
+function stopReadCheck() {
+  if (readCheckTimer) {
+    clearInterval(readCheckTimer)
+    readCheckTimer = null
+  }
+}
+
+/** 页面隐藏/最小化时暂停自动读完检查：隐藏时长不计入阅读，且避免后台无用轮询。 */
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    startReadCheck()
+    void checkAutoRead()
+  } else {
+    stopReadCheck()
+  }
+}
+
 onMounted(() => {
   if (!store.books.length) store.fetchBooks()
   document.addEventListener('mouseup', onMouseUp)
   document.addEventListener('mousedown', onDocMouseDown)
-  readCheckTimer = setInterval(() => void checkAutoRead(), 1000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  startReadCheck()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mouseup', onMouseUp)
   document.removeEventListener('mousedown', onDocMouseDown)
-  if (readCheckTimer) clearInterval(readCheckTimer)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  stopReadCheck()
   dispose()
   disposeDoodle()
 })

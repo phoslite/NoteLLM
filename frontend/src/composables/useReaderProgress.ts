@@ -20,7 +20,8 @@ export interface ReaderProgress {
   dispose: () => void
 }
 
-/** 阅读进度：滚动防抖保存、章节位置恢复、自动标记读完（≥10s 且滚动到底）。 */
+/** 阅读进度：滚动防抖保存、章节位置恢复、自动标记读完（可见时长≥10s 且滚动到底）。
+ *  阅读时长做页面可见性感知：切换标签页/最小化期间不计入，恢复可见后继续累计。 */
 export function useReaderProgress(opts: {
   bookId: ComputedRef<number>
   scrollEl: Ref<HTMLElement | null>
@@ -37,11 +38,32 @@ export function useReaderProgress(opts: {
   const progressCache = ref<ReadingProgressCache | null>(null)
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let lastPos = { chapterId: 0, position: 0 }
-  let chapterOpenedAt = Date.now()
+  let visibleAccumMs = 0
+  /** 本章已累计的「页面可见」阅读时长（ms），隐藏/最小化期间不增长。 */
+  let visibleSinceAt: number | null = null
   let autoMarkedChapter = new Set<number>()
 
+  /** 可见性切换：隐藏时结算当前可见段，恢复可见时重新起算。 */
+  function onVisibilityChange() {
+    if (document.visibilityState === 'visible') {
+      visibleSinceAt = Date.now()
+      return
+    }
+    if (visibleSinceAt != null) {
+      visibleAccumMs += Date.now() - visibleSinceAt
+      visibleSinceAt = null
+    }
+  }
+
+  /** 本章累计的可见阅读时长（ms）。 */
+  function visibleElapsedMs(): number {
+    const now = Date.now()
+    return visibleAccumMs + (visibleSinceAt != null ? now - visibleSinceAt : 0)
+  }
+
   function markChapterOpened() {
-    chapterOpenedAt = Date.now()
+    visibleAccumMs = 0
+    visibleSinceAt = document.visibilityState === 'visible' ? Date.now() : null
   }
 
   function applyRestore(chapterId: number, restore: boolean) {
@@ -92,7 +114,7 @@ export function useReaderProgress(opts: {
     if (autoMarkedChapter.has(cid)) return
     const chapter = getCurrentChapter()
     if (!chapter || chapter.read_flag) return
-    if (Date.now() - chapterOpenedAt < AUTO_READ_MS) return
+    if (visibleElapsedMs() < AUTO_READ_MS) return
     if (!atScrollBottom(el)) return
     autoMarkedChapter.add(cid)
     try {
@@ -118,8 +140,11 @@ export function useReaderProgress(opts: {
   function dispose() {
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = null
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     void saveNow()
   }
+
+  document.addEventListener('visibilitychange', onVisibilityChange)
 
   return { progressCache, setCache, markChapterOpened, applyRestore, onScroll, saveNow, checkAutoRead, resetForBook, dispose }
 }

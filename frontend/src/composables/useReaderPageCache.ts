@@ -67,24 +67,51 @@ export function useReaderPageCache(opts: {
     try {
       const { task_id } = await rebuildPageText(bookId.value, true)
       ElMessage.success('已提交重建任务，完成后自动刷新')
-      const timer = window.setInterval(async () => {
-        try {
-          const st = await getPageTextTask(bookId.value, task_id)
-          if (st.status === 'success' || st.status === 'failed') {
-            window.clearInterval(timer)
-            pageCacheBusy.value = false
-            if (st.status === 'failed') ElMessage.error(`重建失败：${st.error || '未知错误'}`)
-            await refreshPageCacheStatus()
-          }
-        } catch {
-          window.clearInterval(timer)
-          pageCacheBusy.value = false
-        }
-      }, 2000)
+      pollTaskId = task_id
+      startPolling()
     } catch (err) {
       pageCacheBusy.value = false
       ElMessage.error((err as Error).message)
     }
+  }
+
+  /* ---------- 重建任务轮询（页面可见性感知：隐藏/最小化时暂停 2s 轮询，恢复后继续） ---------- */
+  let pollTimer: number | null = null
+  let pollTaskId: string | null = null
+
+  function stopPolling() {
+    if (pollTimer != null) {
+      window.clearInterval(pollTimer)
+      pollTimer = null
+    }
+    document.removeEventListener('visibilitychange', onTaskPollVisibility)
+  }
+
+  function startPolling() {
+    if (pollTimer != null || !pollTaskId) return
+    const taskId = pollTaskId
+    document.addEventListener('visibilitychange', onTaskPollVisibility)
+    pollTimer = window.setInterval(async () => {
+      try {
+        const st = await getPageTextTask(bookId.value, taskId)
+        if (st.status === 'success' || st.status === 'failed') {
+          stopPolling()
+          pollTaskId = null
+          pageCacheBusy.value = false
+          if (st.status === 'failed') ElMessage.error(`重建失败：${st.error || '未知错误'}`)
+          await refreshPageCacheStatus()
+        }
+      } catch {
+        stopPolling()
+        pollTaskId = null
+        pageCacheBusy.value = false
+      }
+    }, 2000)
+  }
+
+  function onTaskPollVisibility() {
+    if (document.visibilityState === 'visible') startPolling()
+    else stopPolling()
   }
 
   return {

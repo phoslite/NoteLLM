@@ -33,20 +33,24 @@ export function useReaderArchive(opts: {
       const { task_id } = await archiveBook(bookId.value)
       ElMessage.info('归档任务已提交，正在总结…')
       let ok = false
+      let finished = false
       for (let i = 0; i < 120; i++) {
         await new Promise((r) => setTimeout(r, 1500))
         const st = await getTask(task_id)
         if (st.status === 'success') {
           ElMessage.success('归档完成：RAG/Skill 资产已生成')
           ok = true
+          finished = true
           break
         }
         if (st.status === 'failed') {
           ElMessage.error(`归档失败：${st.error || '未知错误'}`)
+          finished = true
           break
         }
       }
-      if (!ok) ElMessage.warning('归档任务超时，请稍后在资料页查看资产状态')
+      // 仅「既未成功也未失败」（轮询耗尽）时才提示超时，避免与失败原因重复提示
+      if (!ok && !finished) ElMessage.warning('归档任务超时，请稍后在资料页查看资产状态')
       await onDone()
     } catch (err) {
       ElMessage.error((err as Error).message)
