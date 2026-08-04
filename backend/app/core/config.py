@@ -47,5 +47,13 @@ class Settings(BaseSettings):
     vision_enable_thinking: bool | None = None  # SiliconFlow 推理模型（DeepSeek/Zhipu 系）开关；非推理模型勿开
     vision_thinking_budget: int | None = None  # SiliconFlow 思维链 token 上限（仅推理模型）
 
+    # 任务系统与并发（决策 35；任一 =0 表示不限制）
+    task_workers: int = 8  # 任务系统全局线程池大小；0=每任务独立线程（旧行为）
+    ai_concurrency: int = 4  # 文本 LLM 并发数（信号量，demo 实测 4 为甜点）
+    vision_concurrency: int = 4  # 视觉 LLM 并发数（信号量，demo 实测 4~8）
+    page_render_concurrency: int = 4  # PDF 页图渲染并发（线程池）
+    task_quota_text: int = 4  # 文本类任务全局配额（信号量分池）；0=不限制
+    task_quota_vision: int = 4  # 视觉类任务全局配额；0=不限制
+
 
 settings = Settings()

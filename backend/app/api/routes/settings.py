@@ -148,7 +148,7 @@ def test_vision_settings(body: AiSettingsIn | None = None, db: Session = Depends
     if not kwargs.get("api_key") or not kwargs.get("base_url") or not kwargs.get("model"):
         raise HTTPException(status_code=400, detail="请先配置多模态 Base URL、API Key 与模型")
     try:
-        client = LLMClient(**kwargs)
+        client = LLMClient(**kwargs, kind="vision")
         reply = client.chat([{"role": "user", "content": "ping"}])
     except LLMError as exc:
         return ok({"ok": False, "message": str(exc)}, "连接失败")

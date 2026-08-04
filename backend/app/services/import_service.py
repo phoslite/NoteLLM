@@ -80,5 +80,5 @@ def import_book(
     # 受「发送书籍内容至模型」隐私开关与多模态配置约束。
     if suffix == ".pdf" and settings.ai_enable_body_send and vision_configured(db):
 
-        submit("vision-pre-extract", lambda: extract_book_pages_task(book.id))
+        submit("vision", "vision-pre-extract", lambda: extract_book_pages_task(book.id), related_id=book.id)
     return book

@@ -38,7 +38,7 @@ def rebuild_page_text(book_id: int, body: RebuildIn | None = None, db: Session =
     if not vision_configured(db):
         raise HTTPException(status_code=400, detail="未配置多模态视觉 API，请先在设置页填写")
     force = bool(body.force) if body else False
-    task_id = submit("vision-rebuild", lambda: extract_book_pages_task(book_id, force=force))
+    task_id = submit("vision", "vision-rebuild", lambda: extract_book_pages_task(book_id, force=force), related_id=book_id)
     return ok({"task_id": task_id}, "已提交重建任务")
 
 @router.get("/{book_id}/page-text/{page_index}")

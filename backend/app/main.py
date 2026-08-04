@@ -17,6 +17,7 @@ from app.api.routes import (
     notes,
     profile,
     reading,
+    tasks,
     vision,
 )
 from app.api.routes import settings as settings_routes
@@ -49,6 +50,7 @@ app.include_router(books.router)
 app.include_router(folders.router)
 app.include_router(assets.router)
 app.include_router(reading.router)
+app.include_router(tasks.router)
 app.include_router(bookmarks.router)
 app.include_router(annotations.router)
 app.include_router(notes.router)

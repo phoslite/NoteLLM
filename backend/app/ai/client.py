@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 
+from app.ai.limiter import get_limiter
 from app.core.config import settings
 
 
@@ -82,6 +83,7 @@ class LLMClient:
         reasoning_effort: str | None = None,
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
+        kind: str = "text",  # 限流池：text / vision（决策 35，=0 不限制）
     ):
         self.base_url = (base_url or settings.ai_base_url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.ai_api_key
@@ -106,6 +108,7 @@ class LLMClient:
         )
         self.enable_thinking = enable_thinking
         self.thinking_budget = thinking_budget
+        self.kind = kind
 
     def _headers(self) -> dict:
         """请求头：anthropic 用 x-api-key + 版本头，其余用 Bearer。"""
@@ -266,32 +269,52 @@ class LLMClient:
         return ""
 
     def chat(self, messages: list[dict]) -> str:
-        """发送一轮对话，返回回复文本。messages 为 [{role, content}, ...]。"""
-        body = self._build_body(messages)
-        resp = self._request(body)
-        with resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        reply = self._extract_reply(data)
-        if not reply:
-            raise LLMError("响应中未找到文本内容")
-        return reply
+        """发送一轮对话，返回回复文本。messages 为 [{role, content}, ...]。
+
+        经 get_limiter(kind) 限流（决策 35）：并发受限时排队等待。
+        """
+        limiter = get_limiter(self.kind)
+        if limiter:
+            limiter.acquire()
+        try:
+            body = self._build_body(messages)
+            resp = self._request(body)
+            with resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            reply = self._extract_reply(data)
+            if not reply:
+                raise LLMError("响应中未找到文本内容")
+            return reply
+        finally:
+            if limiter:
+                limiter.release()
 
     def stream(self, messages: list[dict]) -> Iterable[str]:
-        """流式对话：逐块产出回复文本（SSE）。失败抛 LLMError。"""
-        body = self._build_body(messages)
-        resp = self._request(body, stream=True)
-        with resp:
-            for raw in resp:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if not data or data == "[DONE]":
-                    continue
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                delta = self._extract_delta(obj, self.mode)
-                if delta:
-                    yield delta
+        """流式对话：逐块产出回复文本（SSE）。失败抛 LLMError。
+
+        生成器首次迭代时获取限流信号量，耗尽 / 关闭（客户端断开）时释放。
+        """
+        limiter = get_limiter(self.kind)
+        if limiter:
+            limiter.acquire()
+        try:
+            body = self._build_body(messages)
+            resp = self._request(body, stream=True)
+            with resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = self._extract_delta(obj, self.mode)
+                    if delta:
+                        yield delta
+        finally:
+            if limiter:
+                limiter.release()

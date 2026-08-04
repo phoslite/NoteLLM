@@ -9,7 +9,9 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(settings.db_url, connect_args={"check_same_thread": False})
+engine = create_engine(
+    settings.db_url, connect_args={"check_same_thread": False, "timeout": 30}  # 决策 4：busy timeout 缓解并发写锁
+)
 
 
 @event.listens_for(engine, "connect")

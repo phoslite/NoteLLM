@@ -78,7 +78,7 @@ def ensure_page_cache(db: Session, book, page_index: int, force: bool = False) -
     cached = read_page_cache(book, page_index)
     if cached and not force:
         return cached
-    client = LLMClient(**vision_client_kwargs(db))
+    client = LLMClient(**vision_client_kwargs(db), kind="vision")
     text = _extract_page_text(client, book, page_index)
     path = page_text_path(book, page_index)
     path.parent.mkdir(parents=True, exist_ok=True)

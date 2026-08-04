@@ -13,7 +13,7 @@ from app.repositories.assets import (
 from app.schemas.common import ok
 from app.schemas.serializers import asset_to_dict
 from app.services.rag_service import archive_book_task, generate_rag_skill
-from app.tasks import get_status, submit
+from app.tasks import submit
 
 router = APIRouter(prefix="/api", tags=["assets"])
 
@@ -23,7 +23,7 @@ def summarize_book(book_id: int, db: Session = Depends(get_db)):
     """把书籍总结为 RAG + Skill 资产；后台任务执行，返回 task_id 供轮询。"""
     require_book(db, book_id)
     task_id = submit(
-        "rag-skill-summarize", lambda: generate_rag_skill(SessionLocal(), book_id=book_id)
+        "text", "rag-skill-summarize", lambda: generate_rag_skill(SessionLocal(), book_id=book_id)
     )
     return ok({"task_id": task_id}, "已提交总结任务")
 
@@ -36,14 +36,8 @@ def archive_book(book_id: int, db: Session = Depends(get_db)):
     {book_id, version, rag, skill} 及 PDF 场景的 page_cache 提取统计。
     """
     require_book(db, book_id)
-    task_id = submit("book-archive", lambda: archive_book_task(book_id))
+    task_id = submit("text", "book-archive", lambda: archive_book_task(book_id), related_id=book_id)
     return ok({"task_id": task_id}, "已提交归档任务")
-
-
-@router.get("/tasks/{task_id}")
-def task_status(task_id: str):
-    """查询后台任务状态：{status, result, error}。"""
-    return ok(get_status(task_id))
 
 
 @router.get("/books/{book_id}/asset")
