@@ -67,6 +67,11 @@ function onPick(e: Event) {
   pickedFile.value = input.files?.[0] ?? null
 }
 
+function onDrop(e: DragEvent) {
+  const file = e.dataTransfer?.files?.[0]
+  if (file) pickedFile.value = file
+}
+
 async function pollTask(taskId: string) {
   for (let i = 0; i < 180; i++) {
     await sleep(1000)
@@ -117,9 +122,9 @@ async function startIngest() {
   busy.value = true
   taskMsg.value = '导入中…'
   try {
-    const { book } = await uploadBook(pickedFile.value, title.value || undefined)
+    const res = await uploadBook(pickedFile.value, title.value || undefined)
     ElMessage.success('导入成功，开始 AI 总结')
-    await runSummarize(book.id)
+    await runSummarize(res.id)
     pickedFile.value = null
     title.value = ''
   } catch (err) {
@@ -146,18 +151,26 @@ onMounted(refresh)
           </p>
         </div>
       </div>
-      <div class="upload-row">
-        <label class="file-pick">
-          <input type="file" accept=".md,.markdown,.pdf,.txt,.epub" @change="onPick" />
-          <span class="file-btn">选择文件</span>
-          <span class="file-name" :class="{ muted: !pickedFile }">
-            {{ pickedFile ? pickedFile.name : '未选择文件（支持 .md / .pdf / .txt / .epub）' }}
+      <label
+        class="upload-zone"
+        :class="{ active: pickedFile }"
+        @dragover.prevent
+        @drop.prevent="onDrop"
+      >
+        <input type="file" accept=".md,.markdown,.pdf,.txt,.epub" @change="onPick" />
+        <span class="zone-icon">{{ pickedFile ? '📎' : '📂' }}</span>
+        <span class="zone-main">
+          <span class="zone-hint">{{ pickedFile ? '已选择文件' : '点击选择文件，或将文件拖入此处' }}</span>
+          <span class="zone-file" :class="{ muted: !pickedFile }">
+            {{ pickedFile ? pickedFile.name : '支持 .md / .pdf / .txt / .epub' }}
           </span>
-        </label>
-        <el-input v-model="title" placeholder="标题（可选）" style="width: 240px" />
+        </span>
+      </label>
+      <div class="upload-row">
+        <el-input v-model="title" placeholder="标题（可选）" style="width: 260px" />
         <el-button type="primary" round :loading="busy" @click="startIngest">上传并总结</el-button>
       </div>
-      <div v-if="busy" class="busy-tip">{{ taskMsg }}</div>
+      <div v-if="busy" class="busy-tip">⏳ {{ taskMsg }}</div>
     </el-card>
 
     <el-card v-if="submittedBook && submittedAsset" class="submitted-card" shadow="never">
@@ -253,14 +266,13 @@ onMounted(refresh)
 
 <style scoped>
 .rag-page {
-  padding: 24px 28px;
+  padding: 24px 28px 40px;
   max-width: 1400px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  overflow-y: auto;
-  height: 100%;
+  min-height: 100%;
   background: var(--bg-color);
 }
 .upload-card { border-radius: var(--radius-lg); }
@@ -273,16 +285,30 @@ onMounted(refresh)
 .upload-info { flex: 1; min-width: 0; }
 .card-title { margin: 0 0 6px; font-size: 17px; }
 .card-desc { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
-.upload-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding-left: 66px; }
-.file-pick { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
-.file-pick input { display: none; }
-.file-btn {
-  font-size: 13px; padding: 7px 16px; border-radius: 8px; border: 1px solid var(--primary-color);
-  color: var(--primary-color); background: transparent; transition: all .15s;
+.upload-zone {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+  border: 1.5px dashed var(--border-color);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
 }
-.file-pick:hover .file-btn { background: var(--primary-color); color: #fff; }
-.file-name { font-size: 12px; color: var(--text-secondary); }
-.file-name.muted { color: var(--text-secondary); opacity: .75; }
+.upload-zone:hover {
+  border-color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-soft) 45%, var(--panel-bg));
+}
+.upload-zone.active { border-color: var(--success); }
+.upload-zone input { display: none; }
+.zone-icon { font-size: 22px; flex-shrink: 0; }
+.zone-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.zone-hint { font-size: 12.5px; font-weight: 600; }
+.zone-file {
+  font-size: 12px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zone-file.muted { opacity: .75; }
+.upload-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .busy-tip { margin-top: 10px; color: var(--primary-color); font-size: 13px; }
 
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }

@@ -62,8 +62,8 @@ async function onFilePicked(e: Event) {
   const file = input.files?.[0]
   if (!file) return
   try {
-    const { book, task_id } = await uploadBook(file)
-    ElMessage.success(`已导入《${book.title}》，后台处理中…`)
+    const res = await uploadBook(file)
+    ElMessage.success(`已导入《${res.title}》，后台处理中…`)
     notifyTaskSubmitted()
     await store.fetchBooks()
   } catch (err) {

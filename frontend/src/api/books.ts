@@ -13,11 +13,8 @@ export function getBook(bookId: number) {
   return get<BookDetail>(`/books/${bookId}`)
 }
 
-/** 上传结果（决策 35 两段式）：book 已入架，task_id 为后台处理任务（任务中心展示）。 */
-export interface UploadResult {
-  book: BookItem
-  task_id: string
-}
+/** 上传结果（决策 35 两段式）：书籍字段平铺返回（已入架），task_id 为后台处理任务（任务中心展示）。 */
+export type UploadResult = BookItem & { task_id: string }
 
 export function uploadBook(file: File, title?: string, author?: string) {
   const form = new FormData()
