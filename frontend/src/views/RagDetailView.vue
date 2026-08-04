@@ -141,6 +141,7 @@ onMounted(refresh)
       <el-collapse v-else-if="asset" v-model="active" class="collapse">
         <el-collapse-item name="rag-summary">
           <template #title>
+            <span class="item-icon">📝</span>
             <span class="item-title">RAG 摘要</span>
             <el-tag v-if="mergedCount(asset.rag)" size="small" type="warning">共享 {{ mergedCount(asset.rag) }} 本书</el-tag>
           </template>
@@ -151,6 +152,7 @@ onMounted(refresh)
 
         <el-collapse-item name="rag-keypoints">
           <template #title>
+            <span class="item-icon">📌</span>
             <span class="item-title">关键知识点（含章节/段落出处）</span>
             <el-tag size="small" type="info">{{ asset.rag?.content.key_points?.length || 0 }}</el-tag>
           </template>
@@ -166,6 +168,7 @@ onMounted(refresh)
 
         <el-collapse-item v-if="asset.rag?.content.chunks?.length" name="rag-chunks">
           <template #title>
+            <span class="item-icon">🧩</span>
             <span class="item-title">知识分块（段落级原文）</span>
             <el-tag size="small" type="info">{{ asset.rag?.content.chunks?.length || 0 }}</el-tag>
             <span class="chunk-hint">点击「展开」阅读全文</span>
@@ -191,6 +194,7 @@ onMounted(refresh)
 
         <el-collapse-item name="skill-list">
           <template #title>
+            <span class="item-icon">🛠️</span>
             <span class="item-title">Skill 技能</span>
             <el-tag v-if="mergedCount(asset.skill)" size="small" type="warning">共享 {{ mergedCount(asset.skill) }} 本书</el-tag>
             <el-tag size="small" type="info">{{ asset.skill?.content.skills?.length || 0 }}</el-tag>
@@ -224,11 +228,13 @@ onMounted(refresh)
 
 <style scoped>
 .rag-detail { padding: 24px 28px; overflow-y: auto; height: 100%; }
-.detail-card { max-width: 1200px; margin: 0 auto; }
+.detail-card { max-width: 1200px; margin: 0 auto; border-radius: var(--radius-lg); }
+.rag-detail { padding: 24px 28px; overflow-y: auto; height: 100%; background: var(--bg-color); }
 .detail-head {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px;
   position: sticky; top: -24px; z-index: 5;
-  background: var(--el-bg-color, #fff); padding: 10px 4px; border-radius: 8px;
+  background: var(--card-bg, #fff); padding: 12px 6px; border-radius: 10px;
+  box-shadow: var(--shadow-sm);
 }
 .detail-title { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 200px; }
 .detail-title .name { font-size: 16px; font-weight: 700; }
@@ -237,6 +243,7 @@ onMounted(refresh)
 .busy-tip { margin: 4px 0 10px; color: var(--primary-color); font-size: 13px; }
 .collapse { border-top: none; }
 .item-title { margin-right: 10px; font-weight: 600; font-size: 14px; }
+.item-icon { margin-right: 6px; font-size: 13px; }
 .chunk-hint { font-size: 11px; color: var(--text-secondary); font-weight: 400; }
 
 /* 阅读排版：统一字号与行高 */
@@ -264,9 +271,11 @@ onMounted(refresh)
 .kp-body { flex: 1; min-width: 0; font-size: 14px; line-height: 1.9; }
 
 .chunk-item {
-  background: var(--panel-bg); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;
-  position: relative;
+  background: var(--panel-bg); border-radius: 10px; padding: 12px 16px; margin-bottom: 12px;
+  position: relative; border: 1px solid transparent;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
+.chunk-item:hover { border-color: color-mix(in srgb, var(--primary-color) 35%, var(--border-color)); box-shadow: var(--shadow-sm); }
 .chunk-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .chunk-pos { font-size: 12px; color: var(--text-secondary); }
 .chunk-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
@@ -281,7 +290,11 @@ onMounted(refresh)
   pointer-events: none;
 }
 
-.skill-item { background: var(--panel-bg); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+.skill-item {
+  background: var(--panel-bg); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;
+  border: 1px solid transparent; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.skill-item:hover { border-color: color-mix(in srgb, var(--primary-color) 35%, var(--border-color)); box-shadow: var(--shadow-sm); }
 .skill-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .skill-name { font-weight: 700; font-size: 15px; }
 .skill-block { margin-top: 10px; }

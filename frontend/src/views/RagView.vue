@@ -127,11 +127,16 @@ onMounted(refresh)
 <template>
   <div class="rag-page">
     <el-card class="upload-card" shadow="never">
-      <h3 class="card-title">外部资料 → RAG / Skill</h3>
-      <p class="card-desc">
-        上传 Markdown / PDF / TXT / EPUB 文件，AI 将自动把内容总结为可检索的 RAG 摘要与可复用的技能（Skill），
-        并在原资产上增量更新（version + 1）。
-      </p>
+      <div class="upload-head">
+        <div class="upload-icon">📄</div>
+        <div class="upload-info">
+          <h3 class="card-title">外部资料 → RAG / Skill</h3>
+          <p class="card-desc">
+            上传 Markdown / PDF / TXT / EPUB 文件，AI 将自动把内容总结为可检索的 RAG 摘要与可复用的技能（Skill），
+            并在原资产上增量更新（version + 1）。
+          </p>
+        </div>
+      </div>
       <div class="upload-row">
         <label class="file-pick">
           <input type="file" accept=".md,.markdown,.pdf,.txt,.epub" @change="onPick" />
@@ -141,19 +146,19 @@ onMounted(refresh)
           </span>
         </label>
         <el-input v-model="title" placeholder="标题（可选）" style="width: 240px" />
-        <el-button type="primary" :loading="busy" @click="startIngest">上传并总结</el-button>
+        <el-button type="primary" round :loading="busy" @click="startIngest">上传并总结</el-button>
       </div>
       <div v-if="busy" class="busy-tip">{{ taskMsg }}</div>
     </el-card>
 
     <el-card v-if="submittedBook && submittedAsset" class="submitted-card" shadow="never">
       <div class="submitted-head">
-        <span class="submitted-title">最近提交总结 · {{ submittedBook.title }}</span>
-        <div class="head-actions">
-          <el-tag size="small" type="success">v{{ submittedAsset.version }}</el-tag>
-          <el-tag v-if="mergedCount(submittedAsset.rag)" size="small" type="warning">
-            共享 {{ mergedCount(submittedAsset.rag) }} 本
-          </el-tag>
+        <div class="submitted-title-wrap">
+          <span class="submitted-icon">✅</span>
+          <span class="submitted-title">最近提交总结 · {{ submittedBook.title }}</span>
+        </div>
+        <div class="submitted-actions">
+          <el-tag size="small" type="success">RAG/Skill v{{ submittedAsset.version }}</el-tag>
           <el-button size="small" type="primary" link @click="openDetail(submittedBook.id)">查看完整 RAG/Skill →</el-button>
         </div>
       </div>
@@ -166,7 +171,8 @@ onMounted(refresh)
     <el-card class="asset-card" shadow="never">
       <template #header>
         <div class="card-head">
-          <span class="card-head-title">资料资产列表</span>
+          <span class="card-head-title">📚 资料资产列表</span>
+          <span class="head-sub" v-if="books.length">共 {{ books.length }} 本书 · {{ books.filter((b) => assetOf(b.id)?.version).length }} 本已总结</span>
           <div class="head-actions">
             <el-button size="small" @click="runDedupe">合并重复资产</el-button>
             <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
@@ -174,25 +180,29 @@ onMounted(refresh)
         </div>
       </template>
       <el-empty v-if="!loading && !books.length" description="暂无资料，先上传一个文件" />
-      <div v-for="b in books" :key="b.id" class="asset-row">
-        <div class="asset-head">
-          <span class="fmt">{{ b.format.toUpperCase() }}</span>
-          <div class="main">
-            <div class="title-line">
-              <span class="name" :title="b.content_hash || ''">{{ b.title }}</span>
-              <el-tag size="small" :type="assetOf(b.id)?.version ? 'success' : 'info'">
-                {{ assetOf(b.id)?.version ? `RAG/Skill v${assetOf(b.id)!.version}` : '未总结' }}
-              </el-tag>
-              <el-tag v-if="mergedCount(assetOf(b.id)?.rag)" size="small" type="warning">
-                共享 {{ mergedCount(assetOf(b.id)?.rag) }} 本
-              </el-tag>
-            </div>
-            <div class="brief" :class="{ muted: !assetOf(b.id)?.rag }">
-              <MdRender v-if="assetOf(b.id)?.rag" :source="assetOf(b.id)?.rag?.content.summary || '（无摘要）'" />
-              <span v-else>（尚未总结）</span>
-            </div>
+      <div v-for="b in books" :key="b.id" class="asset-row" :class="{ summarized: !!assetOf(b.id)?.version }">
+        <div class="asset-rail" :class="assetOf(b.id)?.version ? 'has' : ''"></div>
+        <span class="fmt">{{ b.format.toUpperCase() }}</span>
+        <div class="main">
+          <div class="title-line">
+            <span class="name" :title="b.title">{{ b.title }}</span>
+            <el-tag size="small" :type="assetOf(b.id)?.version ? 'success' : 'info'">
+              {{ assetOf(b.id)?.version ? `RAG/Skill v${assetOf(b.id)!.version}` : '未总结' }}
+            </el-tag>
+            <el-tag v-if="mergedCount(assetOf(b.id)?.rag)" size="small" type="warning">
+              共享 {{ mergedCount(assetOf(b.id)?.rag) }} 本
+            </el-tag>
           </div>
-          <el-button size="small" :disabled="busyId === b.id" @click="openDetail(b.id)">查看完整 RAG/Skill</el-button>
+          <div class="brief" :class="{ muted: !assetOf(b.id)?.rag }">
+            <MdRender v-if="assetOf(b.id)?.rag" :source="assetOf(b.id)?.rag?.content.summary || '（无摘要）'" />
+            <span v-else>（尚未总结，点击右侧「AI 总结」生成 RAG 与 Skill）</span>
+          </div>
+        </div>
+        <div class="row-actions">
+          <el-button v-if="!assetOf(b.id)?.version" type="primary" size="small" plain :loading="busyId === b.id" @click="runSummarize(b.id)">
+            AI 总结
+          </el-button>
+          <el-button v-else size="small" type="primary" link @click="openDetail(b.id)">查看完整 RAG/Skill →</el-button>
         </div>
       </div>
     </el-card>
@@ -209,26 +219,41 @@ onMounted(refresh)
   gap: 18px;
   overflow-y: auto;
   height: 100%;
+  background: var(--bg-color);
 }
-.card-title { margin: 0 0 8px; font-size: 17px; }
-.card-desc { margin: 0 0 16px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
-.upload-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.upload-card { border-radius: var(--radius-lg); }
+.upload-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.upload-icon {
+  width: 52px; height: 52px; flex-shrink: 0; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center; font-size: 26px;
+  background: var(--primary-soft);
+}
+.upload-info { flex: 1; min-width: 0; }
+.card-title { margin: 0 0 6px; font-size: 17px; }
+.card-desc { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+.upload-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding-left: 66px; }
 .file-pick { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
 .file-pick input { display: none; }
 .file-btn {
-  font-size: 13px; padding: 7px 16px; border-radius: 6px; border: 1px solid var(--primary-color);
+  font-size: 13px; padding: 7px 16px; border-radius: 8px; border: 1px solid var(--primary-color);
   color: var(--primary-color); background: transparent; transition: all .15s;
 }
 .file-pick:hover .file-btn { background: var(--primary-color); color: #fff; }
 .file-name { font-size: 12px; color: var(--text-secondary); }
 .file-name.muted { color: var(--text-secondary); opacity: .75; }
 .busy-tip { margin-top: 10px; color: var(--primary-color); font-size: 13px; }
-.card-head { display: flex; align-items: center; justify-content: space-between; }
+
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .card-head-title { font-size: 15px; font-weight: 700; }
+.head-sub { font-size: 12px; color: var(--text-secondary); }
 .head-actions { display: flex; gap: 8px; align-items: center; }
-.submitted-card { border-color: var(--primary-color); }
+
+.submitted-card { border-color: color-mix(in srgb, var(--success) 45%, var(--border-color)); border-radius: var(--radius-lg); }
 .submitted-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.submitted-title-wrap { display: flex; align-items: center; gap: 8px; }
+.submitted-icon { font-size: 15px; }
 .submitted-title { font-weight: 700; font-size: 15px; }
+.submitted-actions { display: flex; align-items: center; gap: 10px; }
 .submitted-fixed {
   height: 168px; overflow: hidden; position: relative;
   background: var(--panel-bg); border-radius: 8px; padding: 12px 18px;
@@ -240,13 +265,29 @@ onMounted(refresh)
   pointer-events: none;
 }
 .submitted-meta { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
-.asset-row { border-bottom: 1px solid var(--border-color); }
-.asset-row:last-child { border-bottom: none; }
-.asset-head { display: flex; align-items: center; gap: 14px; padding: 12px 10px; border-radius: 8px; }
-.asset-head:hover { background: var(--panel-bg); }
+
+.asset-card { border-radius: var(--radius-lg); }
+.asset-row {
+  display: flex; align-items: center; gap: 14px; padding: 14px 12px;
+  border-radius: var(--radius-md); border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+.asset-row + .asset-row { margin-top: 8px; }
+.asset-row:hover {
+  background: var(--panel-bg);
+  border-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+}
+.asset-rail {
+  position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px;
+  border-radius: 2px; background: var(--border-color);
+}
+.asset-rail.has { background: var(--success); }
 .fmt {
   font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 4px;
   background: var(--panel-bg); border: 1px solid var(--border-color); flex-shrink: 0;
+  letter-spacing: 0.5px;
 }
 .main { flex: 1; min-width: 0; }
 .title-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -257,4 +298,5 @@ onMounted(refresh)
 }
 .brief :deep(p) { margin: 0; }
 .brief.muted { font-style: italic; }
+.row-actions { flex-shrink: 0; }
 </style>

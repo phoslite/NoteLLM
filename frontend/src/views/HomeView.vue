@@ -17,6 +17,22 @@ const activeTag = ref('')
 const dragBook = ref<BookItem | null>(null)
 const dragOverId = ref<number | null>(null)
 
+/** 书架统计（总数 / 读完 / 在读），用于工具条展示 */
+const shelfStats = computed(() => {
+  const all = store.books
+  return {
+    total: all.length,
+    done: all.filter((b) => b.status === '读完').length,
+    reading: all.filter((b) => b.status === '在读').length,
+  }
+})
+
+const statusMeta: Record<string, { label: string; cls: string }> = {
+  读完: { label: '读完', cls: 'done' },
+  在读: { label: '在读', cls: 'reading' },
+  未读: { label: '未读', cls: 'todo' },
+}
+
 // 标签编辑：按书籍 id 独立控制弹层可见性（共享布尔值会导致一次点击弹出全部弹层）
 const tagEditId = ref<number | null>(null)
 const tagEditBook = ref<BookItem | null>(null)
@@ -157,19 +173,39 @@ function toggleTagFilter(tag: string) {
 <template>
   <div class="home">
     <aside class="recent-panel">
-      <h2>近期阅读</h2>
-      <div v-if="store.recentBooks().length === 0" class="empty">暂无记录</div>
+      <div class="panel-head">
+        <h2>近期阅读</h2>
+        <span class="panel-count" v-if="store.recentBooks().length">{{ store.recentBooks().length }} 本</span>
+      </div>
+      <div v-if="store.recentBooks().length === 0" class="empty-block">
+        <div class="empty-icon">📖</div>
+        <div>暂无阅读记录</div>
+        <div class="empty-sub">打开一本书开始阅读吧</div>
+      </div>
       <div v-for="b in store.recentBooks()" :key="b.id" class="recent-item" @click="openBook(b)">
-        <div class="recent-title">{{ b.title }}</div>
-        <div class="recent-line">已阅读 {{ b.read_chapters ?? 0 }}/{{ b.chapter_count }} 章</div>
-        <el-progress :percentage="chapterPercent(b.read_chapters, b.chapter_count)" :stroke-width="6" />
+        <div class="recent-cover">
+          <img v-if="b.cover_url" :src="b.cover_url" :alt="b.title" loading="lazy" decoding="async" />
+          <span v-else>{{ b.title.charAt(0).toUpperCase() }}</span>
+        </div>
+        <div class="recent-body">
+          <div class="recent-title" :title="b.title">{{ b.title }}</div>
+          <div class="recent-line">已阅读 {{ b.read_chapters ?? 0 }}/{{ b.chapter_count }} 章</div>
+          <el-progress :percentage="chapterPercent(b.read_chapters, b.chapter_count)" :stroke-width="5" :show-text="false" class="recent-progress" />
+        </div>
       </div>
     </aside>
 
     <section class="shelf-panel">
       <div class="shelf-toolbar">
         <div class="toolbar-left">
-          <h2>书架</h2>
+          <div class="shelf-title">
+            <h2>书架</h2>
+            <span class="stats-chip" v-if="store.books.length">
+              共 {{ shelfStats.total }} 本
+              <i class="dot done"></i>{{ shelfStats.done }} 读完
+              <i class="dot reading"></i>{{ shelfStats.reading }} 在读
+            </span>
+          </div>
           <el-input
             v-model="searchQuery"
             placeholder="搜索书名 / 作者 / 标签"
@@ -190,14 +226,25 @@ function toggleTagFilter(tag: string) {
         </div>
         <div class="toolbar-right">
           <span v-if="store.books.length" class="drag-hint">💡 拖动封面可交换位置</span>
-          <el-button type="primary" @click="uploadRef?.click()">＋ 导入书籍</el-button>
+          <el-button type="primary" round @click="uploadRef?.click()">＋ 导入书籍</el-button>
           <input ref="uploadRef" type="file" accept=".pdf,.md,.markdown,.txt,.epub" hidden @change="onFilePicked" />
         </div>
       </div>
 
-      <div v-if="store.loading" class="empty">加载中…</div>
-      <div v-else-if="store.books.length === 0" class="empty">书架还是空的，点击「导入书籍」开始</div>
-      <div v-else-if="displayedBooks.length === 0" class="empty">没有匹配的书籍，试试其他关键词或清除标签筛选</div>
+      <div v-if="store.loading" class="empty-block">
+        <div class="empty-icon">⏳</div>
+        <div>加载中…</div>
+      </div>
+      <div v-else-if="store.books.length === 0" class="empty-block">
+        <div class="empty-icon">📚</div>
+        <div>书架还是空的</div>
+        <div class="empty-sub">点击右上角「导入书籍」开始</div>
+      </div>
+      <div v-else-if="displayedBooks.length === 0" class="empty-block">
+        <div class="empty-icon">🔍</div>
+        <div>没有匹配的书籍</div>
+        <div class="empty-sub">试试其他关键词或清除标签筛选</div>
+      </div>
       <div v-else class="shelf-grid">
         <div
           v-for="b in displayedBooks"
@@ -211,6 +258,9 @@ function toggleTagFilter(tag: string) {
           @dragleave="onDragLeave($event, b.id)"
           @drop.prevent="onDrop(b)"
         >
+          <span class="status-badge" :class="statusMeta[b.status]?.cls || 'todo'">
+            {{ statusMeta[b.status]?.label || b.status || '未读' }}
+          </span>
           <div class="book-actions">
             <el-popover
               :visible="tagEditId === b.id"
@@ -247,7 +297,10 @@ function toggleTagFilter(tag: string) {
 
           <div class="book-cover" @click="openBook(b)">
             <img v-if="b.cover_url" :src="b.cover_url" :alt="b.title" class="cover-img" loading="lazy" decoding="async" />
-            <span v-else>{{ b.format.toUpperCase() }}</span>
+            <div v-else class="cover-placeholder">
+              <span class="cover-letter">{{ b.title.charAt(0).toUpperCase() }}</span>
+              <span class="cover-fmt">{{ b.format.toUpperCase() }}</span>
+            </div>
           </div>
           <div class="book-title" :title="b.title" @click="openBook(b)">{{ b.title }}</div>
 
@@ -267,7 +320,7 @@ function toggleTagFilter(tag: string) {
             <div class="read-chapters">已阅读 {{ b.read_chapters ?? 0 }}/{{ b.chapter_count }} 章</div>
             <div class="latest-chapter">{{ latestText(b) }}</div>
           </div>
-          <el-progress :percentage="chapterPercent(b.read_chapters, b.chapter_count)" :stroke-width="5" class="book-progress" />
+          <el-progress :percentage="chapterPercent(b.read_chapters, b.chapter_count)" :stroke-width="5" :show-text="false" class="book-progress" />
         </div>
       </div>
     </section>
@@ -277,75 +330,128 @@ function toggleTagFilter(tag: string) {
 <style scoped>
 .home { display: flex; height: 100%; min-width: 0; }
 .recent-panel {
-  width: 280px; flex-shrink: 0; border-right: 1px solid var(--border-color);
-  padding: 16px; overflow-y: auto;
+  width: 300px; flex-shrink: 0; border-right: 1px solid var(--border-color);
+  padding: 18px 16px; overflow-y: auto; background: var(--bg-color);
 }
-.recent-item { margin-bottom: 14px; cursor: pointer; }
-.recent-title { margin-bottom: 4px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recent-line { margin-bottom: 4px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.panel-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+.panel-head h2 { margin: 0; font-size: 16px; }
+.panel-count { font-size: 12px; color: var(--text-secondary); }
+.recent-item {
+  display: flex; gap: 12px; padding: 10px; border-radius: var(--radius-md);
+  cursor: pointer; transition: background 0.15s, transform 0.1s; margin-bottom: 4px;
+}
+.recent-item:hover { background: var(--panel-bg); transform: translateX(2px); }
+.recent-cover {
+  width: 46px; height: 62px; flex-shrink: 0; border-radius: 6px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, rgba(47, 111, 237, 0.25), rgba(47, 111, 237, 0.08));
+  font-weight: 700; color: var(--primary-color); font-size: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.recent-cover img { width: 100%; height: 100%; object-fit: cover; }
+.recent-body { flex: 1; min-width: 0; }
+.recent-title {
+  margin-bottom: 4px; font-weight: 600; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recent-line { margin-bottom: 6px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.recent-progress { width: 100%; }
 
-.shelf-panel { flex: 1; min-width: 0; padding: 16px; overflow-y: auto; }
+.shelf-panel { flex: 1; min-width: 0; padding: 18px 20px; overflow-y: auto; background: var(--bg-color); }
 .shelf-toolbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; position: sticky; top: 0; z-index: 3;
-  padding-bottom: 10px; background: var(--bg-color);
+  padding-bottom: 14px; background: var(--bg-color);
 }
 .toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.toolbar-left h2 { margin: 0; }
+.shelf-title { display: flex; align-items: baseline; gap: 10px; }
+.shelf-title h2 { margin: 0; font-size: 18px; }
+.stats-chip { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+.stats-chip .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 2px; }
+.dot.done { background: var(--success); }
+.dot.reading { background: var(--primary-color); }
 .toolbar-right { display: flex; align-items: center; gap: 10px; }
-.search-input { width: 240px; }
+.search-input { width: 250px; }
 .tag-filter { width: 150px; }
 .search-icon { font-size: 13px; }
 .drag-hint { font-size: 12px; color: var(--text-secondary); }
 
-.shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(195px, 1fr)); gap: 18px; margin-top: 4px; }
+.shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 6px; }
 .book-card {
-  position: relative; border: 1px solid var(--border-color); border-radius: 10px;
+  position: relative; border: 1px solid var(--border-color); border-radius: var(--radius-md);
   padding: 12px; cursor: pointer; display: flex; flex-direction: column;
-  background: var(--panel-bg); transition: box-shadow 0.15s, border-color 0.15s, transform 0.1s;
+  background: var(--card-bg); transition: box-shadow 0.18s, border-color 0.18s, transform 0.12s;
+  box-shadow: var(--shadow-sm);
 }
-.book-card:hover { border-color: var(--primary-color); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); }
+.book-card:hover {
+  border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-color));
+  box-shadow: var(--shadow-md); transform: translateY(-3px);
+}
 .book-card.is-dragging { opacity: 0.45; }
-.book-card.is-drag-over { border-color: var(--primary-color); transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); }
+.book-card.is-drag-over { border-color: var(--primary-color); transform: translateY(-4px); box-shadow: 0 8px 24px rgba(47, 111, 237, 0.22); }
+
+.status-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 4;
+  font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+  color: #fff; letter-spacing: 0.5px;
+}
+.status-badge.done { background: rgba(103, 194, 58, 0.9); }
+.status-badge.reading { background: rgba(47, 111, 237, 0.9); }
+.status-badge.todo { background: rgba(138, 145, 159, 0.88); }
 
 .book-actions { position: absolute; top: 6px; right: 6px; z-index: 4; display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
 .book-card:hover .book-actions { opacity: 1; }
 .book-action-btn {
   width: 26px; height: 26px; line-height: 1; border: none; border-radius: 6px;
   cursor: pointer; background: rgba(0, 0, 0, 0.45); color: #fff; font-size: 13px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 .book-action-btn:hover { background: var(--primary-color); }
-.book-action-btn.danger:hover { background: #f56c6c; }
+.book-action-btn.danger:hover { background: var(--danger); }
 
 .book-cover {
-  height: 160px; display: flex; align-items: center; justify-content: center;
-  background: var(--bg-color); border-radius: 8px; font-weight: 700;
-  color: var(--text-secondary); overflow: hidden; user-select: none;
+  height: 168px; display: flex; align-items: center; justify-content: center;
+  background: var(--panel-bg); border-radius: 8px; overflow: hidden; user-select: none;
 }
-.cover-img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; pointer-events: none; }
+.cover-img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; pointer-events: none; transition: transform 0.25s ease; }
+.book-card:hover .cover-img { transform: scale(1.04); }
+.cover-placeholder {
+  width: 100%; height: 100%; display: flex; flex-direction: column; gap: 6px;
+  align-items: center; justify-content: center;
+  background: linear-gradient(150deg, rgba(47, 111, 237, 0.18), rgba(47, 111, 237, 0.05) 55%, rgba(103, 194, 58, 0.08));
+}
+.cover-letter { font-size: 42px; font-weight: 800; color: color-mix(in srgb, var(--primary-color) 80%, #fff); line-height: 1; }
+.cover-fmt { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--text-secondary); }
 .book-title {
-  margin-top: 8px; font-weight: 600; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; user-select: none;
+  margin-top: 10px; font-weight: 600; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none;
 }
 
 .book-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; min-height: 20px; }
 .tag-chip {
   display: inline-block; max-width: 100%; padding: 1px 8px; border-radius: 10px;
-  font-size: 11px; line-height: 16px; background: rgba(64, 158, 255, 0.12);
+  font-size: 11px; line-height: 16px; background: var(--primary-soft);
   color: var(--primary-color); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tag-chip:hover { background: rgba(64, 158, 255, 0.22); }
+.tag-chip:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
 .tag-chip.active { background: var(--primary-color); color: #fff; }
 .tag-empty { font-size: 12px; color: var(--text-secondary); }
 
-.book-read-info { margin-top: 6px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.book-read-info { margin-top: 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
 .read-chapters { font-weight: 600; color: var(--text-color); }
 .latest-chapter { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
-.book-progress { margin-top: 8px; }
+.book-progress { margin-top: 10px; }
+.book-progress :deep(.el-progress-bar__outer) { border-radius: 3px; }
+.book-progress :deep(.el-progress-bar__inner) { border-radius: 3px; }
 
 .tag-editor .el-select { margin-bottom: 8px; }
 .tag-select-spacer { height: 44px; }
 .tag-editor-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
-.empty { color: var(--text-secondary); padding: 24px 0; }
+.empty-block {
+  color: var(--text-secondary); padding: 48px 0; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.empty-icon { font-size: 40px; margin-bottom: 6px; opacity: 0.8; }
+.empty-sub { font-size: 12px; opacity: 0.75; }
 </style>
