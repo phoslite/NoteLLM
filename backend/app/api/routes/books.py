@@ -13,8 +13,7 @@ from app.schemas.serializers import book_to_dict, chapter_to_dict
 from app.services.book_pages import get_or_render_page
 from app.services.books_service import clean_tags
 from app.services.books_service import delete_book as delete_book_service
-from app.services.graph.cross_book import incremental_cross_book_graph
-from app.services.import_service import import_book
+from app.services.import_service import import_book  # noqa: F401  两段式导入（同步入架 + 后台处理）
 from app.services.media_service import book_cover_file
 
 router = APIRouter(prefix="/api/books", tags=["books"])
@@ -62,17 +61,17 @@ async def upload_book(
     author: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
+    """上传书籍：同步入架（秒回）+ 返回后台任务 task_id（决策 35 两段式）。
+
+    耗时处理（PDF 页渲染/全文索引/跨书图谱增量/视觉预提取）在 import-background
+    任务中执行，前端任务中心展示进度；任务失败不阻塞书籍上架。
+    """
     data = await file.read()
     try:
-        book = import_book(db, data, file.filename or "untitled", title=title, author=author)
+        book, task_id = import_book(db, data, file.filename or "untitled", title=title, author=author)
     except ValueError as exc:
         return fail(400, str(exc))
-    # 新书导入后增量更新跨书关联（需求 3.6.2：不动既有关联，只补新书与其他书的边；失败不阻塞导入）
-    try:
-        incremental_cross_book_graph(db, book.id)
-    except Exception:
-        db.rollback()
-    return ok(_book_out(db, book), "导入成功")
+    return ok({**_book_out(db, book), "task_id": task_id}, "已提交导入任务")
 
 
 @router.get("/{book_id}")

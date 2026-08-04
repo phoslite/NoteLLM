@@ -13,12 +13,18 @@ export function getBook(bookId: number) {
   return get<BookDetail>(`/books/${bookId}`)
 }
 
+/** 上传结果（决策 35 两段式）：book 已入架，task_id 为后台处理任务（任务中心展示）。 */
+export interface UploadResult {
+  book: BookItem
+  task_id: string
+}
+
 export function uploadBook(file: File, title?: string, author?: string) {
   const form = new FormData()
   form.append('file', file)
   if (title) form.append('title', title)
   if (author) form.append('author', author)
-  return post<BookItem>('/books', form)
+  return post<UploadResult>('/books', form)
 }
 
 export function updateBook(bookId: number, body: Partial<Pick<BookItem, 'title' | 'status' | 'progress' | 'folder_id'> & { tags: string[] }>) {

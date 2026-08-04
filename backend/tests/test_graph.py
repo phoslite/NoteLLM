@@ -7,6 +7,33 @@ def _import_md(client, name: str, text: str) -> int:
     return r.json()["data"]["id"]
 
 
+def _global_graph(client, wait_task) -> dict:
+    """拉取全局图谱；懒构建中时等待后台任务完成再拉取（决策 35 后台化适配）。"""
+    data = client.get("/api/graph/books").json()["data"]
+    if data.get("building"):
+        st = wait_task(client, data["task_id"])
+        assert st["status"] == "success", st.get("error")
+        data = client.get("/api/graph/books").json()["data"]
+    return data
+
+
+def _intra_graph(client, wait_task, book_id: int) -> dict:
+    """拉取书内图谱；构建中时等待后台任务完成再拉取。"""
+    data = client.get(f"/api/graph/books/{book_id}").json()["data"]
+    if data.get("building"):
+        st = wait_task(client, data["task_id"])
+        assert st["status"] == "success", st.get("error")
+        data = client.get(f"/api/graph/books/{book_id}").json()["data"]
+    return data
+
+
+def _task_result(client, wait_task, task_id: str) -> dict:
+    """等待任务完成并返回 result（rebuild/sync 等提交类接口）。"""
+    st = wait_task(client, task_id)
+    assert st["status"] == "success", st.get("error")
+    return st["result"] or {}
+
+
 def test_extract_keywords():
     from app.services.graph import extract_keywords
 
@@ -16,13 +43,13 @@ def test_extract_keywords():
     assert "的" not in kw  # 停用词过滤
 
 
-def test_global_graph_lazy_build_edges_and_clusters(client):
+def test_global_graph_lazy_build_edges_and_clusters(client, wait_task):
     a = _import_md(client, "书A.md", "# 第一章 变分法基础\n\n变分法研究泛函极值问题。\n\n# 第二章 泛函分析\n\n泛函空间与范数。\n")
     b = _import_md(client, "书B.md", "# 第一章 泛函分析入门\n\n泛函与极值问题在变分法中常见。\n\n# 第二章 变分方法\n\n变分法应用。\n")
     client.patch(f"/api/books/{a}", json={"tags": ["数学"]})
     client.patch(f"/api/books/{b}", json={"tags": ["数学"]})
 
-    data = client.get("/api/graph/books").json()["data"]
+    data = _global_graph(client, wait_task)
     assert len(data["nodes"]) == 2
     assert len(data["edges"]) >= 1
     edge = data["edges"][0]
@@ -32,7 +59,7 @@ def test_global_graph_lazy_build_edges_and_clusters(client):
     assert {n["cluster"] for n in data["nodes"]} == {"数学"}
 
 
-def test_global_graph_folder_cluster_fallback(client):
+def test_global_graph_folder_cluster_fallback(client, wait_task):
     """无 tag 的书按文件夹名聚类。"""
     a = _import_md(client, "书D.md", "# 第一章 拓扑\n\n拓扑空间与连续映射。\n")
     b = _import_md(client, "书E.md", "# 第一章 拓扑学\n\n拓扑与连续映射应用。\n")
@@ -40,11 +67,11 @@ def test_global_graph_folder_cluster_fallback(client):
     for bid in (a, b):
         client.patch(f"/api/books/{bid}", json={"folder_id": folder["id"]})
 
-    data = client.get("/api/graph/books").json()["data"]
+    data = _global_graph(client, wait_task)
     assert any(c["name"] == "数学分析" and c["book_count"] == 2 for c in data["clusters"])
 
 
-def test_intra_book_graph_levels_and_dedup(client):
+def test_intra_book_graph_levels_and_dedup(client, wait_task):
     text = (
         "# 第一章 定义与定理\n\n"
         "这里是一个定义：内积空间定义。\n\n"
@@ -66,7 +93,7 @@ def test_intra_book_graph_levels_and_dedup(client):
         },
     )
 
-    data = client.get(f"/api/graph/books/{book_id}").json()["data"]
+    data = _intra_graph(client, wait_task, book_id)
     levels = {n["level"] for n in data["nodes"]}
     assert "章节级" in levels
     assert "重要段落" in levels
@@ -76,27 +103,27 @@ def test_intra_book_graph_levels_and_dedup(client):
     assert "承接" in types  # 同章内重要段落
 
     # 重建幂等：节点与关系数量不变
-    rebuilt = client.post(f"/api/graph/books/{book_id}/rebuild").json()["data"]
-    after = client.get(f"/api/graph/books/{book_id}").json()["data"]
+    rebuilt = _task_result(client, wait_task, client.post(f"/api/graph/books/{book_id}/rebuild").json()["data"]["task_id"])
+    after = _intra_graph(client, wait_task, book_id)
     assert len(rebuilt["nodes"]) == len(after["nodes"])
     assert len(rebuilt["edges"]) == len(after["edges"])
 
 
-def test_rebuild_all_and_relation_feedback(client):
+def test_rebuild_all_and_relation_feedback(client, wait_task):
     _import_md(client, "书F.md", "# 第一章 概率\n\n概率空间与随机变量。\n")
     _import_md(client, "书G.md", "# 第一章 概率论\n\n概率与随机变量理论。\n")
-    stats = client.post("/api/graph/rebuild").json()["data"]
+    stats = _task_result(client, wait_task, client.post("/api/graph/rebuild").json()["data"]["task_id"])
     assert stats["books"] == 2
     assert stats["relations"] >= 1
     assert stats["knowledge_points"] >= 2
 
-    edge_id = client.get("/api/graph/books").json()["data"]["edges"][0]["id"]
+    edge_id = _global_graph(client, wait_task)["edges"][0]["id"]
     r = client.post(f"/api/graph/relations/{edge_id}/feedback", json={"action": "修改", "strength": 95})
     assert r.status_code == 200
     assert r.json()["data"]["user_feedback"] == "修改"
     assert r.json()["data"]["strength"] == 95
 
-    edges = client.get("/api/graph/books").json()["data"]["edges"]
+    edges = _global_graph(client, wait_task)["edges"]
     updated = next(e for e in edges if e["id"] == edge_id)
     assert updated["strength"] == 95 and updated["user_feedback"] == "修改"
 
@@ -104,11 +131,11 @@ def test_rebuild_all_and_relation_feedback(client):
     assert bad.status_code == 400
     missing = client.post("/api/graph/relations/999999/feedback", json={"action": "确认"})
     assert missing.status_code == 404
-def test_domain_auto_cluster_without_tags(client):
+def test_domain_auto_cluster_without_tags(client, wait_task):
     """无 tag/文件夹的书按内容自动聚类，不再全部落入「其他」。"""
     _import_md(client, "书H.md", "# 第一章 泛函\n\n泛函空间与泛函分析基础内容。\n")
     _import_md(client, "书I.md", "# 第一章 泛函分析\n\n泛函分析与变分法的关系。\n")
-    data = client.get("/api/graph/books").json()["data"]
+    data = _global_graph(client, wait_task)
     clusters = {c["name"] for c in data["clusters"]}
     assert "其他" not in clusters
     assert any(c["book_count"] == 2 for c in data["clusters"])

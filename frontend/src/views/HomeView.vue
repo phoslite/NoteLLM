@@ -6,6 +6,7 @@ import { deleteBook, reorderBooks, updateBook, uploadBook } from '@/api/books'
 import { useBookStore } from '@/stores/book'
 import type { BookItem } from '@/types'
 import { chapterPercent } from '@/utils/progress'
+import { notifyTaskSubmitted } from '@/utils/task'
 
 const store = useBookStore()
 const router = useRouter()
@@ -45,8 +46,9 @@ async function onFilePicked(e: Event) {
   const file = input.files?.[0]
   if (!file) return
   try {
-    const book = await uploadBook(file)
-    ElMessage.success(`已导入《${book.title}》`)
+    const { book, task_id } = await uploadBook(file)
+    ElMessage.success(`已导入《${book.title}》，后台处理中…`)
+    notifyTaskSubmitted()
     await store.fetchBooks()
   } catch (err) {
     ElMessage.error((err as Error).message)

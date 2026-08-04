@@ -79,10 +79,19 @@ export interface BookAssetView {
   version: number
 }
 
-export interface TaskStatus {
+/** 后台任务（决策 35）：任务中心/轮询共用结构。 */
+export interface TaskItem {
+  id: string
+  type: string
+  name: string
   status: 'queued' | 'running' | 'success' | 'failed' | 'not_found'
-  result: { book_id: number; version: number } | null
+  progress: number
+  stage: string
+  result: Record<string, unknown> | null
   error: string | null
+  related_id: number | null
+  created_at: string | null
+  finished_at: string | null
 }
 export interface ChapterContent {
   id: number
@@ -241,6 +250,9 @@ export interface GlobalGraph {
   clusters: GraphCluster[]
   nodes: GraphNode[]
   edges: GraphEdge[]
+  /** 懒构建中（后台化）：building=true 时 task_id 供轮询后重新拉取 */
+  building?: boolean
+  task_id?: string
 }
 export interface KpNode {
   id: number
@@ -262,6 +274,9 @@ export interface IntraGraph {
   nodes: KpNode[]
   edges: KpEdge[]
   chapters: { id: number; index: number; title: string }[]
+  /** 懒构建中（后台化）：building=true 时 task_id 供轮询后重新拉取 */
+  building?: boolean
+  task_id?: string
 }
 /** 跨书检索：该知识点还出现在哪些书（M8 待办）。 */
 export interface KnowledgeAppearsIn {

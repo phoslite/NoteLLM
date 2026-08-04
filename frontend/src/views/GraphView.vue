@@ -176,6 +176,7 @@ import type { GlobalGraph, GraphEdge, GraphNode, IntraGraph, KpNode, KnowledgeAp
 import { getGlobalGraph, getIntraGraph, getKnowledgeAppearsIn, rebuildGraph, rebuildBookGraph, relationFeedback, syncGraphAssets } from '@/api/graph'
 import { LABEL_FONT_SIZE, ensureGraphLabelReady, labelRichFormatter, renderTooltipHtml } from '@/utils/graphLabel'
 import { bestEdgeSet, edgeStrokeColor, kpEdgeColor, linkEndpoints } from '@/utils/graphEdges'
+import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
 import MdRender from '@/components/MdRender.vue'
 
 const router = useRouter()
@@ -254,7 +255,16 @@ async function loadGlobal() {
   loading.value = true
   try {
     await ensureGraphLabelReady()
-    graph.value = await getGlobalGraph()
+    const g = await getGlobalGraph()
+    if (g.building && g.task_id) {
+      // 懒构建后台化（决策 35）：任务完成后自动重拉
+      ElMessage.info('图谱构建中…')
+      notifyTaskSubmitted()
+      await waitForTask(g.task_id)
+      graph.value = await getGlobalGraph()
+    } else {
+      graph.value = g
+    }
     await nextTick()
     renderGlobal()
   } catch (err) {
@@ -267,12 +277,20 @@ async function loadGlobal() {
 async function onRebuildGlobal() {
   loading.value = true
   try {
-    const stats = await rebuildGraph()
+    const { task_id } = await rebuildGraph()
+    ElMessage.info('图谱重建任务已提交…')
+    notifyTaskSubmitted()
+    const t = await waitForTask(task_id)
+    if (t.status === 'failed') {
+      ElMessage.error(`重建失败：${t.error || '未知错误'}`)
+      return
+    }
+    const stats = (t.result ?? {}) as { books?: number; relations?: number; linked?: number }
     graph.value = await getGlobalGraph()
     await nextTick()
     renderGlobal()
     ElMessage.success(
-      `图谱已重建：${stats.books} 本 / ${stats.relations} 条关联，联动存根 ${stats.linked ?? 0} 条`,
+      `图谱已重建：${stats.books ?? 0} 本 / ${stats.relations ?? 0} 条关联，联动存根 ${stats.linked ?? 0} 条`,
     )
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -285,10 +303,18 @@ async function onRebuildGlobal() {
 async function onSyncAssets() {
   syncing.value = true
   try {
-    const result = await syncGraphAssets()
+    const { task_id } = await syncGraphAssets()
+    ElMessage.info('图谱资产联动任务已提交…')
+    notifyTaskSubmitted()
+    const t = await waitForTask(task_id)
+    if (t.status === 'failed') {
+      ElMessage.error(`联动失败：${t.error || '未知错误'}`)
+      return
+    }
+    const result = (t.result ?? {}) as { stubs?: number; llm_updated?: number; domain_terms?: number }
     await loadGlobal()
     ElMessage.success(
-      `联动完成：存根 ${result.stubs} 条 / LLM 更新 ${result.llm_updated} 本 / 术语补水 ${result.domain_terms} 条`,
+      `联动完成：存根 ${result.stubs ?? 0} 条 / LLM 更新 ${result.llm_updated ?? 0} 本 / 术语补水 ${result.domain_terms ?? 0} 条`,
     )
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -319,7 +345,16 @@ async function openIntraBook(node: GraphNode) {
   try {
     await ensureGraphLabelReady()
     currentBook.value = node
-    intra.value = await getIntraGraph(node.id)
+    const g = await getIntraGraph(node.id)
+    if (g.building && g.task_id) {
+      // 书内图谱懒构建后台化：任务完成后重拉
+      ElMessage.info('本书知识图谱构建中…')
+      notifyTaskSubmitted()
+      await waitForTask(g.task_id)
+      intra.value = await getIntraGraph(node.id)
+    } else {
+      intra.value = g
+    }
     view.value = 'intra'
     await nextTick()
     renderIntra()
@@ -334,7 +369,16 @@ async function rebuildCurrent() {
   if (!currentBook.value) return
   loading.value = true
   try {
-    intra.value = await rebuildBookGraph(currentBook.value.id)
+    const bookId = currentBook.value.id
+    const { task_id } = await rebuildBookGraph(bookId)
+    ElMessage.info('本书知识图谱重建任务已提交…')
+    notifyTaskSubmitted()
+    const t = await waitForTask(task_id)
+    if (t.status === 'failed') {
+      ElMessage.error(`重建失败：${t.error || '未知错误'}`)
+      return
+    }
+    intra.value = await getIntraGraph(bookId)
     await nextTick()
     renderIntra()
     ElMessage.success('本书知识图谱已重建')

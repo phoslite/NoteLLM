@@ -11,14 +11,14 @@ export function getIntraGraph(bookId: number) {
   return get<IntraGraph>(`/graph/books/${bookId}`)
 }
 
-/** 重建全部图谱。 */
+/** 重建全部图谱（后台任务，返回 task_id）。 */
 export function rebuildGraph() {
-  return post<{ books: number; relations: number; knowledge_points: number; linked: number }>('/graph/rebuild')
+  return post<{ task_id: string }>('/graph/rebuild')
 }
 
-/** 图谱联动沉淀：受影响书籍 RAG/Skill 增量增改（本地存根 + LLM 联动）。 */
+/** 图谱联动沉淀（后台任务，返回 task_id）：本地存根 + LLM 增量增改。 */
 export function syncGraphAssets() {
-  return post<{ stubs: number; llm_updated: number; domain_terms: number }>('/graph/sync')
+  return post<{ task_id: string }>('/graph/sync')
 }
 
 /** 跨书检索：该知识点还出现在哪些书。 */
@@ -26,9 +26,9 @@ export function getKnowledgeAppearsIn(kpId: number) {
   return get<KnowledgeAppearsIn>(`/graph/knowledge/${kpId}/appears-in`)
 }
 
-/** 重建单书内部知识图谱。 */
+/** 重建单书内部知识图谱（后台任务，返回 task_id）。 */
 export function rebuildBookGraph(bookId: number) {
-  return post<IntraGraph>(`/graph/books/${bookId}/rebuild`)
+  return post<{ task_id: string }>(`/graph/books/${bookId}/rebuild`)
 }
 
 /** 关联人工反馈：确认 / 忽略 / 修改强度。 */

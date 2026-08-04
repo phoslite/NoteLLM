@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.book import Book
 from app.models.graph import BookRelation
 from app.schemas.common import ok
@@ -21,6 +21,7 @@ from app.services.graph_sync import (
     link_relation_stubs,
     sync_assets_for_relations,
 )
+from app.tasks import find_active, submit
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -30,30 +31,60 @@ class FeedbackIn(BaseModel):
     strength: float | None = None  # 修改时传入 0~100
 
 
+def _lazy_global_build() -> dict:
+    """懒构建后台任务：跨书关联计算（含 LLM 打分）+ 本地联动存根，独立会话执行。"""
+    with SessionLocal() as session:
+        compute_cross_book_graph(session)
+        link_graph_assets(session)
+    return {"built": True}
+
+
+def _build_intra_task(book_id: int) -> dict:
+    """单书知识图谱构建后台任务：独立会话；书不存在返回错误而非 HTTP 异常。"""
+    with SessionLocal() as session:
+        book = session.get(Book, book_id)
+        if not book:
+            return {"error": "书籍不存在"}
+        return build_intra_book_graph(session, book)
+
+
+def _submit_graph_task(task_type: str, name: str, fn, related_id: int | None = None) -> str:
+    """提交图谱类后台任务；同类型同目标进行中时复用已有任务（幂等，避免重复计算）。"""
+    existing = find_active(task_type, related_id=related_id, name_prefix=name)
+    if existing:
+        return existing
+    return submit(task_type, name, fn, related_id=related_id)
+
+
 @router.get("/books")
 def get_global_graph(db: Session = Depends(get_db)):
-    """书籍级谱系图：聚类 + 节点 + 关联边（懒构建：尚无关联时自动计算并触发本地联动存根）。"""
+    """书籍级谱系图：聚类 + 节点 + 关联边。
+
+    懒构建（决策 35 后台化）：尚无关联且书架非空时提交构建任务，返回
+    {building: true, task_id}，前端轮询任务完成后重新拉取。
+    """
 
     if db.query(BookRelation).count() == 0 and db.query(Book).count() > 0:
-        compute_cross_book_graph(db)
-
-        link_graph_assets(db)
+        task_id = _submit_graph_task("text", "graph-global-build", _lazy_global_build)
+        return ok({"building": True, "task_id": task_id}, "图谱构建中，稍后自动刷新")
     return ok(global_graph_payload(db))
 
 
 @router.get("/books/{book_id}")
 def get_intra_book_graph(book_id: int, db: Session = Depends(get_db)):
-    """书内知识图谱：章节级/重要段落级/用户标记级知识点与关系（懒构建）。"""
+    """书内知识图谱：章节级/重要段落级/用户标记级知识点与关系（懒构建，后台化）。"""
     book = require_book(db, book_id)
     if not book.graph_built:
-        build_intra_book_graph(db, book)
+        task_id = _submit_graph_task("text", "graph-intra-build", lambda: _build_intra_task(book_id), related_id=book_id)
+        return ok({"building": True, "task_id": task_id}, "书内图谱构建中，稍后自动刷新")
     return ok(intra_graph_payload(db, book))
 
 
 @router.post("/rebuild")
 def rebuild_graph(db: Session = Depends(get_db)):
-    """重建全部图谱（跨书关联 + 全部书内知识图谱），并补本地联动存根。"""
-    return ok(rebuild_all_graph(db), "图谱已重建")
+    """重建全部图谱（跨书关联 + 全部书内知识图谱），并补本地联动存根（后台任务）。"""
+    task_id = _submit_graph_task("text", "graph-rebuild", lambda: rebuild_all_graph(SessionLocal()))
+    return ok({"task_id": task_id}, "已提交图谱重建任务")
 
 
 @router.get("/knowledge/{kp_id}/appears-in")
@@ -66,28 +97,37 @@ def knowledge_appears_in(kp_id: int, db: Session = Depends(get_db)):
     return ok(data)
 
 
+def _sync_assets_task() -> dict:
+    """图谱资产联动后台任务：本地存根 + LLM 增量增改，独立会话执行。"""
+    with SessionLocal() as session:
+        merged = sync_assets_for_relations(session)
+        terms = link_domain_terms(session)
+        return {**merged, "domain_terms": terms}
+
+
 @router.post("/sync")
 def sync_graph_assets(db: Session = Depends(get_db)):
-    """图谱联动沉淀（需求 3.4.7/3.4.9）：受影响书籍 RAG/Skill 增量增改。
+    """图谱联动沉淀（需求 3.4.7/3.4.9）：受影响书籍 RAG/Skill 增量增改（后台任务）。
 
     - 始终补本地 RAG 存根（linked_books / domain_terms，无 AI 也可执行）；
     - 已配置文本 AI 时，对强度 ≥ 50 且未忽略的关联执行 LLM 增量增改
       （RAG 补跨书条目、Skill 融合新方法，version+1，失败回滚不阻塞）。
     """
 
-    merged = sync_assets_for_relations(db)
-    terms = link_domain_terms(db)
-    return ok(
-        {**merged, "domain_terms": terms},
-        "图谱资产联动完成（本地存根 + LLM 增量增改）",
+    task_id = _submit_graph_task(
+        "text",
+        "graph-sync",
+        lambda: _sync_assets_task(),
     )
+    return ok({"task_id": task_id}, "已提交图谱资产联动任务")
 
 
 @router.post("/books/{book_id}/rebuild")
 def rebuild_book_graph(book_id: int, db: Session = Depends(get_db)):
-    """重建单书内部知识图谱。"""
-    book = require_book(db, book_id)
-    return ok(build_intra_book_graph(db, book), "本书知识图谱已重建")
+    """重建单书内部知识图谱（后台任务）。"""
+    require_book(db, book_id)
+    task_id = _submit_graph_task("text", "graph-book-rebuild", lambda: _build_intra_task(book_id), related_id=book_id)
+    return ok({"task_id": task_id}, "已提交本书知识图谱重建任务")
 
 
 @router.post("/relations/{relation_id}/feedback")

@@ -12,6 +12,13 @@ def _import_md(client, name: str, text: str) -> int:
     return r.json()["data"]["id"]
 
 
+def _task_result(client, wait_task, task_id: str) -> dict:
+    """等待后台任务完成并返回 result（决策 35 后台化适配）。"""
+    st = wait_task(client, task_id)
+    assert st["status"] == "success", st.get("error")
+    return st["result"] or {}
+
+
 def _get_book(book_id: int) -> Book:
     db = SessionLocal()
     try:
@@ -61,11 +68,11 @@ def test_link_graph_assets_attaches_stubs_and_idempotent(client):
         db.close()
 
 
-def test_rebuild_returns_linked_and_lazy_get_attaches(client):
+def test_rebuild_returns_linked_and_lazy_get_attaches(client, wait_task):
     """重建/懒构建触发本地联动：返回 linked 计数；弱关联不生成存根。"""
     a = _import_md(client, "联动C.md", "# 第一章 变分法\n\n变分法研究泛函极值问题。\n\n# 第二章 泛函分析\n\n泛函空间。\n")
     b = _import_md(client, "联动D.md", "# 第一章 泛函分析入门\n\n泛函与极值问题在变分法中常见。\n\n# 第二章 变分方法\n\n变分法应用。\n")
-    stats = client.post("/api/graph/rebuild").json()["data"]
+    stats = _task_result(client, wait_task, client.post("/api/graph/rebuild").json()["data"]["task_id"])
     assert stats["books"] == 2
     assert "linked" in stats
     db = SessionLocal()
@@ -114,7 +121,7 @@ def test_link_domain_terms_hydrates_and_idempotent(client):
         db.close()
 
 
-def test_sync_route_llm_linkage(client, monkeypatch):
+def test_sync_route_llm_linkage(client, monkeypatch, wait_task):
     """POST /api/graph/sync：LLM 联动对受影响书增量增改 RAG/Skill，version+1。"""
     from app.services import graph_sync
 
@@ -147,7 +154,7 @@ def test_sync_route_llm_linkage(client, monkeypatch):
 
     resp = client.post("/api/graph/sync")
     assert resp.status_code == 200
-    data = resp.json()["data"]
+    data = _task_result(client, wait_task, resp.json()["data"]["task_id"])
     assert data["llm_updated"] == 2
     assert data["domain_terms"] >= 0
 
@@ -165,7 +172,7 @@ def test_sync_route_llm_linkage(client, monkeypatch):
     assert calls, "应调用 LLM 联动"
 
 
-def test_sync_without_llm_keeps_local_stub(client, monkeypatch):
+def test_sync_without_llm_keeps_local_stub(client, monkeypatch, wait_task):
     """未配置 AI 时 /api/graph/sync 仅补本地存根，不报错。"""
     from app.services import graph_sync
 
@@ -177,7 +184,7 @@ def test_sync_without_llm_keeps_local_stub(client, monkeypatch):
         _add_relation(db, a, b, 75.0)
     finally:
         db.close()
-    data = client.post("/api/graph/sync").json()["data"]
+    data = _task_result(client, wait_task, client.post("/api/graph/sync").json()["data"]["task_id"])
     assert data["llm_updated"] == 0
     db = SessionLocal()
     try:

@@ -50,6 +50,8 @@ def _quota_for(task_type: str) -> threading.Semaphore | None:
                 count = settings.task_quota_text
             elif task_type == "vision":
                 count = settings.task_quota_vision
+            elif task_type == "render":
+                count = settings.page_render_concurrency
             _quotas[task_type] = threading.Semaphore(count) if count and count > 0 else None
         return _quotas[task_type]
 
@@ -105,27 +107,53 @@ def submit(
     _db_write(lambda db: db.add(Task(id=task_id, type=task_type, name=task_name, related_id=related_id)))
     _cleanup_old_tasks()  # 顺带清理过期任务（尽力而为，失败不影响提交）
 
-    def run() -> None:
-        if sem is not None:
-            sem.acquire()
-        _current.task_id = task_id
-        try:
-            _db_write(lambda db: _set_task_fields(db, task_id, status="running"))
-            result = fn()
-            _finish(task_id, "success", result=result)
-        except Exception as exc:  # noqa: BLE001 任务异常以 error 字段透出
-            _finish(task_id, "failed", error=str(exc))
-        finally:
-            _current.task_id = None
-            if sem is not None:
-                sem.release()
-
     executor = _get_executor()
     if executor is not None:
-        executor.submit(run)
+        executor.submit(lambda: _run_task(task_id, sem, fn))
     else:
-        threading.Thread(target=run, name=f"task-{task_name[:20]}-{task_id[:6]}", daemon=True).start()
+        threading.Thread(
+            target=lambda: _run_task(task_id, sem, fn),
+            name=f"task-{task_name[:20]}-{task_id[:6]}",
+            daemon=True,
+        ).start()
     return task_id
+
+
+def submit_sync(
+    task_type: str,
+    task_name: str,
+    fn: Callable[[], Any],
+    *,
+    quota: threading.Semaphore | None = None,
+    related_id: int | None = None,
+) -> str:
+    """同步执行版本（测试/调试用）：落库后立即执行 fn 并写结果，返回 task_id。
+
+    与 submit 共用同一套落库/进度/配额逻辑，仅不在后台线程运行，
+    保证单元测试内任务立即可见、无跨测试异步竞态。
+    """
+    task_id = uuid.uuid4().hex[:12]
+    sem = quota if quota is not None else _quota_for(task_type)
+    _db_write(lambda db: db.add(Task(id=task_id, type=task_type, name=task_name, related_id=related_id)))
+    _run_task(task_id, sem, fn)
+    return task_id
+
+
+def _run_task(task_id: str, sem: threading.Semaphore | None, fn: Callable[[], Any]) -> None:
+    """任务执行主体：配额获取、状态流转、进度路由、结果/异常落库（submit 与 submit_sync 共用）。"""
+    if sem is not None:
+        sem.acquire()
+    _current.task_id = task_id
+    try:
+        _db_write(lambda db: _set_task_fields(db, task_id, status="running"))
+        result = fn()
+        _finish(task_id, "success", result=result)
+    except Exception as exc:  # noqa: BLE001 任务异常以 error 字段透出
+        _finish(task_id, "failed", error=str(exc))
+    finally:
+        _current.task_id = None
+        if sem is not None:
+            sem.release()
 
 
 def _set_task_fields(db: Any, task_id: str, **fields: Any) -> None:
@@ -163,6 +191,24 @@ def update_progress(progress: int, stage: str = "") -> None:
     _db_write(lambda db: _set_task_fields(db, task_id, progress=max(0, min(100, progress)), stage=stage))
 
 
+def find_active(task_type: str, related_id: int | None = None, name_prefix: str | None = None) -> str | None:
+    """查找同类型进行中（queued/running）任务，避免重复提交（决策 35 幂等）。
+
+    - related_id 非 None：仅匹配同 related_id；None：仅匹配 related_id IS NULL 的全局任务；
+    - name_prefix：可选按任务名前缀精确匹配（如 graph-rebuild 与 graph-sync 区分）。
+    """
+    with SessionLocal() as db:
+        q = db.query(Task).filter(Task.type == task_type, Task.status.in_(["queued", "running"]))
+        if related_id is not None:
+            q = q.filter(Task.related_id == related_id)
+        else:
+            q = q.filter(Task.related_id.is_(None))
+        if name_prefix:
+            q = q.filter(Task.name.like(f"{name_prefix}%"))
+        task = q.order_by(Task.created_at.desc()).first()
+    return task.id if task else None
+
+
 def get_status(task_id: str) -> dict:
     """查询任务状态：{status, progress, stage, result, error}；不存在返回 not_found。"""
     with SessionLocal() as db:
@@ -182,6 +228,28 @@ def list_tasks(task_type: str | None = None, status: str | None = None, limit: i
             q = q.filter(Task.status == status)
         rows = q.limit(max(1, min(limit, 100))).all()
     return [_row_to_dict(t) for t in rows]
+
+
+def mark_interrupted() -> int:
+    """服务启动时调用：把遗留的 queued/running 任务标记为 failed（进程重启中断）。
+
+    防止重启后 find_active 复用永不完成的死任务（决策 35 幂等安全）；
+    前端任务中心会把中断任务显示为失败，提示用户重新提交。
+    """
+    now = datetime.now()
+
+    def _mark(db: Any) -> None:
+        rows = db.query(Task).filter(Task.status.in_(["queued", "running"])).all()
+        for t in rows:
+            t.status = "failed"
+            t.error = "服务重启，任务中断，请重新提交"
+            t.finished_at = now
+
+    try:
+        _db_write(_mark)
+    except Exception:  # noqa: BLE001 尽力而为，失败不影响启动
+        return 0
+    return 1
 
 
 def _cleanup_old_tasks() -> None:

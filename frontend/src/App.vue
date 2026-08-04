@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
+import TaskCenter from '@/components/TaskCenter.vue'
 const route = useRoute()
 </script>
 
@@ -18,6 +19,7 @@ const route = useRoute()
     <main class="app-main">
       <router-view :key="String(route.fullPath)" />
     </main>
+    <TaskCenter />
   </div>
 </template>
 

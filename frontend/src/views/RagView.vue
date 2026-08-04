@@ -108,7 +108,7 @@ async function startIngest() {
   busy.value = true
   taskMsg.value = '导入中…'
   try {
-    const book = await uploadBook(pickedFile.value, title.value || undefined)
+    const { book } = await uploadBook(pickedFile.value, title.value || undefined)
     ElMessage.success('导入成功，开始 AI 总结')
     await runSummarize(book.id)
     pickedFile.value = null

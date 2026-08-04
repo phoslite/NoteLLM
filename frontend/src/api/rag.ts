@@ -1,4 +1,4 @@
-import type { BookAssetView, TaskStatus } from '@/types'
+import type { BookAssetView } from '@/types'
 import { del, get, post } from './client'
 
 /** 触发书籍总结为 RAG/Skill（后台任务），返回 task_id。 */
@@ -11,10 +11,8 @@ export function archiveBook(bookId: number) {
   return post<{ task_id: string }>(`/books/${bookId}/archive`)
 }
 
-/** 轮询任务状态：{status, result, error}。 */
-export function getTask(taskId: string) {
-  return get<TaskStatus>(`/tasks/${taskId}`)
-}
+/** 轮询任务状态（统一走 /api/tasks/{id}，TaskItem 含 progress/stage）。 */
+export { getTask } from './tasks'
 
 /** 删除资产内第 index 项（0 基）：rag.key_points / rag.chunks / skill.skills。 */
 export function deleteAssetItem(

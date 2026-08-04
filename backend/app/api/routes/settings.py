@@ -18,6 +18,7 @@ from app.repositories.settings import (
     vision_client_kwargs,
 )
 from app.schemas.common import ok
+from app.tasks import submit
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -104,9 +105,21 @@ def put_ai_settings(body: AiSettingsIn, db: Session = Depends(get_db)):
     return ok(view, "已保存")
 
 
+def _run_connect_test(kwargs: dict, *, kind: str = "text") -> dict:
+    """连接测试任务函数：发起一次最小对话，返回 {ok, message}；异常不外抛。"""
+    try:
+        client = LLMClient(**kwargs, kind=kind)
+        reply = client.chat([{"role": "user", "content": "ping"}])
+    except LLMError as exc:
+        return {"ok": False, "message": str(exc)}
+    except Exception as exc:  # noqa: BLE001 兜底：未知异常也按失败返回
+        return {"ok": False, "message": f"未知错误: {exc}"}
+    return {"ok": True, "message": "连接成功，回复：" + (reply or "")[:50]}
+
+
 @router.post("/ai/test")
 def test_ai_settings(body: AiSettingsIn | None = None, db: Session = Depends(get_db)):
-    """用当前配置（可带临时覆盖）发起一次最小对话，验证连通性与鉴权。"""
+    """用当前配置（可带临时覆盖）发起一次最小对话验证连通性（后台任务，返回 task_id）。"""
     kwargs = client_kwargs(db)
     if body:
         for key, value in _to_store(body).items():
@@ -114,14 +127,8 @@ def test_ai_settings(body: AiSettingsIn | None = None, db: Session = Depends(get
                 kwargs[CLIENT_KWARG_KEYS[key]] = value
     if not kwargs.get("api_key"):
         raise HTTPException(status_code=400, detail="请先配置 AI Base URL 与 API Key")
-    try:
-        client = LLMClient(**kwargs)
-        reply = client.chat([{"role": "user", "content": "ping"}])
-    except LLMError as exc:
-        return ok({"ok": False, "message": str(exc)}, "连接失败")
-    except Exception as exc:  # noqa: BLE001 兜底：未知异常也按失败返回
-        return ok({"ok": False, "message": f"未知错误: {exc}"}, "连接失败")
-    return ok({"ok": True, "message": "连接成功，回复：" + (reply or "")[:50]}, "连接成功")
+    task_id = submit("text", "test-text-connection", lambda: _run_connect_test(kwargs))
+    return ok({"task_id": task_id}, "已提交连接测试")
 
 
 @router.post("/ai/reload-env")
@@ -147,11 +154,5 @@ def test_vision_settings(body: AiSettingsIn | None = None, db: Session = Depends
                 kwargs[VISION_CLIENT_KWARG_KEYS[key]] = value
     if not kwargs.get("api_key") or not kwargs.get("base_url") or not kwargs.get("model"):
         raise HTTPException(status_code=400, detail="请先配置多模态 Base URL、API Key 与模型")
-    try:
-        client = LLMClient(**kwargs, kind="vision")
-        reply = client.chat([{"role": "user", "content": "ping"}])
-    except LLMError as exc:
-        return ok({"ok": False, "message": str(exc)}, "连接失败")
-    except Exception as exc:  # noqa: BLE001 兜底：未知异常也按失败返回
-        return ok({"ok": False, "message": f"未知错误: {exc}"}, "连接失败")
-    return ok({"ok": True, "message": "连接成功，回复：" + (reply or "")[:50]}, "连接成功")
+    task_id = submit("vision", "test-vision-connection", lambda: _run_connect_test(kwargs, kind="vision"))
+    return ok({"task_id": task_id}, "已提交视觉连接测试")

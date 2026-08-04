@@ -24,6 +24,7 @@ from app.api.routes import settings as settings_routes
 from app.core.config import settings
 from app.core.database import SessionLocal, init_db
 from app.services.media_service import migrate_all_books
+from app.tasks import mark_interrupted
 
 
 @asynccontextmanager
@@ -32,6 +33,7 @@ async def lifespan(_app: FastAPI):
     (settings.data_dir / "books").mkdir(parents=True, exist_ok=True)
     init_db()
     migrate_book_media()
+    mark_interrupted()  # 重启后清理遗留任务，防止死任务被幂等复用（决策 35）
     yield
 
 

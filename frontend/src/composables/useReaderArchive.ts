@@ -1,6 +1,7 @@
 import { ref, type ComputedRef, type Ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { archiveBook, getTask } from '@/api/rag'
+import { notifyTaskSubmitted } from '@/utils/task'
 import type { BookDetail } from '@/types'
 
 export interface ReaderArchive {
@@ -32,6 +33,7 @@ export function useReaderArchive(opts: {
     try {
       const { task_id } = await archiveBook(bookId.value)
       ElMessage.info('归档任务已提交，正在总结…')
+      notifyTaskSubmitted()
       let ok = false
       let finished = false
       for (let i = 0; i < 120; i++) {

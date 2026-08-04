@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAiSettings, reloadEnvSettings, saveAiSettings, testAiSettings, testVisionAiSettings } from '@/api/settings'
 import type { AiSettings } from '@/types'
+import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
 
 const loading = ref(false)
 const testing = ref(false)
@@ -222,9 +223,17 @@ async function reloadEnv() {
 async function test() {
   testing.value = true
   try {
-    const result = await testAiSettings(toPayload())
-    if (result.ok) ElMessage.success(result.message)
-    else ElMessage.warning(result.message)
+    // 测试连接后台化（决策 35）：提交任务后轮询结果
+    const { task_id } = await testAiSettings(toPayload())
+    notifyTaskSubmitted()
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000 })
+    if (t.status === 'failed') {
+      ElMessage.error(t.error || '连接测试失败')
+    } else {
+      const result = (t.result ?? {}) as { ok?: boolean; message?: string }
+      if (result.ok) ElMessage.success(result.message || '连接成功')
+      else ElMessage.warning(result.message || '连接失败')
+    }
   } catch (err) {
     ElMessage.error((err as Error).message)
   } finally {
@@ -235,9 +244,16 @@ async function test() {
 async function testVision() {
   visionTesting.value = true
   try {
-    const result = await testVisionAiSettings(toPayload())
-    if (result.ok) ElMessage.success(result.message)
-    else ElMessage.warning(result.message)
+    const { task_id } = await testVisionAiSettings(toPayload())
+    notifyTaskSubmitted()
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000 })
+    if (t.status === 'failed') {
+      ElMessage.error(t.error || '视觉连接测试失败')
+    } else {
+      const result = (t.result ?? {}) as { ok?: boolean; message?: string }
+      if (result.ok) ElMessage.success(result.message || '视觉连接成功')
+      else ElMessage.warning(result.message || '视觉连接失败')
+    }
   } catch (err) {
     ElMessage.error((err as Error).message)
   } finally {
