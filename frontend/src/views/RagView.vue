@@ -48,6 +48,15 @@ function mergedCount(entry: AssetEntry<unknown> | null | undefined) {
 
 const submittedBook = computed(() => books.value.find((b) => b.id === submittedId.value) ?? null)
 const submittedAsset = computed(() => (submittedId.value ? assetOf(submittedId.value) : null))
+const ragKeys = computed(() => submittedAsset.value?.rag?.content.key_points ?? [])
+const ragChunks = computed(() => submittedAsset.value?.rag?.content.chunks ?? [])
+const skillItems = computed(() => submittedAsset.value?.skill?.content.skills ?? [])
+const skillDomains = computed(() => submittedAsset.value?.skill?.content.domains ?? [])
+const skillUsage = computed(() => submittedAsset.value?.skill?.content.usage ?? '')
+
+function dismissSubmitted() {
+  submittedId.value = null
+}
 
 function openDetail(bookId: number) {
   router.push(`/rag/${bookId}`)
@@ -156,16 +165,49 @@ onMounted(refresh)
         <div class="submitted-title-wrap">
           <span class="submitted-icon">✅</span>
           <span class="submitted-title">最近提交总结 · {{ submittedBook.title }}</span>
+          <el-tag size="small" type="success">RAG/Skill v{{ submittedAsset.version }}</el-tag>
         </div>
         <div class="submitted-actions">
-          <el-tag size="small" type="success">RAG/Skill v{{ submittedAsset.version }}</el-tag>
           <el-button size="small" type="primary" link @click="openDetail(submittedBook.id)">查看完整 RAG/Skill →</el-button>
+          <el-button size="small" link @click="dismissSubmitted">✕ 关闭</el-button>
         </div>
       </div>
-      <div class="submitted-fixed">
-        <MdRender :source="submittedAsset.rag?.content.summary || '（无摘要）'" />
+      <div class="submitted-window">
+        <section class="detail-sec">
+          <h4 class="sec-title">📝 RAG 摘要</h4>
+          <div class="sec-body">
+            <MdRender :source="submittedAsset.rag?.content.summary || '（无摘要）'" />
+          </div>
+        </section>
+        <div v-if="ragKeys.length || skillItems.length || skillDomains.length || skillUsage" class="detail-grid">
+          <section v-if="ragKeys.length" class="detail-sec">
+            <h4 class="sec-title">📌 关键知识点（{{ ragKeys.length }}）</h4>
+            <ol class="kp-list">
+              <li v-for="(kp, i) in ragKeys" :key="i"><MdRender :source="kp" /></li>
+            </ol>
+          </section>
+          <section v-if="skillItems.length || skillDomains.length || skillUsage" class="detail-sec">
+            <h4 class="sec-title">🛠️ Skill 技能（{{ skillItems.length }}）</h4>
+            <div v-if="skillDomains.length" class="skill-meta">
+              <span v-for="d in skillDomains" :key="d" class="chip">{{ d }}</span>
+            </div>
+            <div v-for="(sk, i) in skillItems" :key="i" class="skill-item">
+              <div class="skill-name">{{ sk.name }}</div>
+              <div v-if="sk.applicable" class="skill-sub"><MdRender :source="sk.applicable" /></div>
+              <div v-if="sk.usage" class="skill-sub"><MdRender :source="sk.usage" /></div>
+            </div>
+            <div v-if="skillUsage" class="skill-usage"><MdRender :source="skillUsage" /></div>
+          </section>
+        </div>
+        <section v-if="ragChunks.length" class="detail-sec">
+          <h4 class="sec-title">🧩 知识分块（{{ ragChunks.length }} 段）</h4>
+          <div v-for="(c, i) in ragChunks" :key="i" class="chunk-item">
+            <div class="chunk-meta">第{{ c.chapter_index }}章 · {{ c.chapter_title }} · {{ c.para_pos }}</div>
+            <div class="chunk-text"><MdRender :source="c.text" /></div>
+          </div>
+        </section>
       </div>
-      <div class="submitted-meta">Skill 技能 {{ submittedAsset.skill?.content.skills?.length || 0 }} 条 · 点击「查看完整 RAG/Skill」阅读全部内容</div>
+      <div class="submitted-meta">{{ ragKeys.length }} 条关键知识点 · {{ ragChunks.length }} 段知识分块 · {{ skillItems.length }} 个 Skill 技能</div>
     </el-card>
 
     <el-card class="asset-card" shadow="never">
@@ -254,17 +296,31 @@ onMounted(refresh)
 .submitted-icon { font-size: 15px; }
 .submitted-title { font-weight: 700; font-size: 15px; }
 .submitted-actions { display: flex; align-items: center; gap: 10px; }
-.submitted-fixed {
-  height: 168px; overflow: hidden; position: relative;
-  background: var(--panel-bg); border-radius: 8px; padding: 12px 18px;
-  font-size: 14px; line-height: 1.9;
+.submitted-window {
+  background: var(--panel-bg); border-radius: 8px; padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 16px;
 }
-.submitted-fixed::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 42px;
-  background: linear-gradient(transparent, var(--panel-bg));
-  pointer-events: none;
+.detail-sec { min-width: 0; }
+.sec-title { margin: 0 0 8px; font-size: 13px; font-weight: 700; }
+.sec-body { font-size: 13.5px; line-height: 1.9; }
+.sec-body :deep(p), .kp-list :deep(p), .skill-sub :deep(p), .skill-usage :deep(p), .chunk-text :deep(p) { margin: 0; }
+.detail-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px; align-items: start;
 }
-.submitted-meta { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.kp-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; line-height: 1.8; }
+.skill-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { font-size: 11px; padding: 2px 9px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-color); }
+.skill-item { padding: 9px 11px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; }
+.skill-item + .skill-item { margin-top: 8px; }
+.skill-name { font-weight: 700; font-size: 13px; }
+.skill-sub { font-size: 12.5px; color: var(--text-secondary); margin-top: 4px; line-height: 1.7; }
+.skill-usage { font-size: 12.5px; color: var(--text-secondary); margin-top: 8px; line-height: 1.7; }
+.chunk-item { padding: 10px 12px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; }
+.chunk-item + .chunk-item { margin-top: 8px; }
+.chunk-meta { font-size: 11.5px; color: var(--text-secondary); margin-bottom: 4px; }
+.chunk-text { font-size: 13px; line-height: 1.8; }
+.submitted-meta { margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
 
 .asset-card { border-radius: var(--radius-lg); }
 .asset-row {
