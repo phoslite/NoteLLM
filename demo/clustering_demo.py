@@ -1,22 +1,25 @@
 """聚类改进方案验证 demo（独立于主应用，纯标准库，零外部依赖）。
 
-对照验证 docs/知识图谱聚类算法-改进方案.md 中的三处核心改动：
-  A. 现行算法：min 型伪余弦 + 贪心吸收成簇（clustering.py 现状）
-  B. 改进方案：IDF 加权余弦 + tau_cluster 建边 + 连通分量成簇（§2.2/§2.3 O1 基线）
-  C. 加权标签传播 LPA（§2.3 O1 增强项，顺序无关增强）
-  D. O3 LLM 允许降分融合：strength = 0.4*kw + 0.6*llm（§2.2，用户确认边豁免）
+对照验证 docs/知识图谱聚类算法-改进方案.md（已定稿主路线 A+C 组合）：
+  A. 术语层：同义词归一化（别名整词折叠，聚类输入）——解决输入质量
+  C. 结构层：IDF 加权余弦 → tau 建边 → 自研并查集连通分量 → 虚胖分裂守卫——解决成簇结构
+  B. 降级为可选向量辅助信号（feature flag 默认关，demo 仅保留对比）
+  D. LLM 降分为离线修正层（别名生成/簇命名/方向证据/打分增强），不进入聚类主循环
+  命名层：inject_lexicon 词库术语注入（仅命名用，不污染聚类输入）
 
 内置示例语料复现真实库 D1 问题（「函数/分析/空间」等高 df 泛化词导致
 多数书被误吸进一个大簇），便于直观对比三路聚类结果。
 
 用法：
-  python demo/clustering_demo.py            # 全部三路聚类 + LLM 降分演示
-  python demo/clustering_demo.py --algo cc  # 只跑连通分量
-  python demo/clustering_demo.py --no-fuse  # 跳过 LLM 降分演示
+  python demo/clustering_demo.py            # 全部算法 + LLM 降分演示
+  python demo/clustering_demo.py --algo ac  # 只跑 A+C 组合
+  python demo/clustering_demo.py --input demo/real_corpus.json --eval demo/gold_clusters.json --no-fuse  # 真实库金标评估
+  python demo/clustering_demo.py --no-synonyms  # 关闭同义词归一化（对照）
 """
 import argparse
 import json
 import math
+import re
 from collections import Counter, defaultdict
 
 # ---------------------------------------------------------------- 示例语料
@@ -38,6 +41,9 @@ IDS = [b[0] for b in BOOKS]
 N = len(BOOKS)
 TITLES = [t for _, t, _, _ in BOOKS]
 SAMPLES = [s for _, _, _, s in BOOKS]
+KEYWORDS = [k for _, _, k, _ in BOOKS]
+NAMING_KEYWORDS = [dict(k) for _, _, k, _ in BOOKS]
+INJECTED = [set() for _ in BOOKS]
 
 
 # ---------------------------------------------------------------- 工具函数
@@ -126,7 +132,13 @@ SYNONYM_GROUPS: list[tuple[str, list[str]]] = [
     ("宏观经济学", ["总体经济学"]),
     ("密码学", ["密码编码学"]),
     ("因果推断", ["因果分析"]),
-    ("固定收益", ["固定收益证券", "固收", "fixed income"]),
+    ("金融", ["固定收益", "固定收益证券", "固收", "fixed income"]),
+    ("自然种类", ["natural kinds", "natural kind", "自然类"]),
+    ("形而上学", ["本体论", "metaphysics"]),
+    ("实在论", ["唯实论", "realism"]),
+    ("唯名论", ["nominalism"]),
+    ("认识论", ["知识论", "epistemology"]),
+    ("科学哲学", ["科学方法论", "philosophy of science"]),
     ("资产定价", ["定价理论"]),
 ]
 _ALIAS_TO_CANONICAL = {a: c for c, aliases in SYNONYM_GROUPS for a in aliases}
@@ -162,19 +174,11 @@ def _hit_words(sample: str | None, term_freq: dict) -> list[tuple[str, str]]:
     return sorted(hits, key=lambda h: len(h[1]), reverse=True)
 
 
-def canonical_terms(term_freq: dict, sample: str | None = None) -> dict:
-    """同义词归一化（§2.1 归一注入点，demo 模拟版）：
-    1. 词库术语命中注入——规范词/别名在样本文本中命中（正式版 _lexicon_hits 子串匹配），
-       规范词以 100 权重进入候选（别名命中折叠到规范词），同时其内部 token 权重 ×0.3
-       （长词优先：如「傅里叶变换」命中时「傅里」「里叶」不再独立计分）；
-    2. 无样本文本时退化为关键词整词折叠（内置示例库）。"""
+def canonical_terms(term_freq: dict) -> dict:
+    """同义词归一化（§2.1 术语层，纯折叠）：
+    聚类输入仅做别名整词折叠（别名 → 规范词、权重求和），不做词库注入——
+    注入只属于命名层（inject_lexicon），避免高权重术语把聚类成图吸入一簇（真实库 D1 实测）。"""
     out = dict(term_freq)
-    for c, _w in _hit_words(sample, term_freq):
-        for t in list(out):
-            if c in t or _w in t:
-                out[t] = out.get(t, 0.0) * 0.3  # 长词内部子串抑制
-        out[c] = max(out.get(c, 0.0), 100.0)  # 术语注入
-    # 别名整词折叠（未作为术语注入路径处理的）
     for t, v in list(out.items()):
         low = t.lower()
         if low in _ALIAS_TO_CANONICAL:
@@ -182,6 +186,31 @@ def canonical_terms(term_freq: dict, sample: str | None = None) -> dict:
             out[c] = out.get(c, 0.0) + v
             del out[t]
     return out
+
+
+def inject_lexicon(sample: str | None, term_freq: dict) -> tuple[dict, set]:
+    """词库术语注入（§2.1/§2.4 命名层，demo 模拟版）：
+    规范词/别名在样本文本中命中（正式版 _lexicon_hits 子串匹配）→ 规范词以 100 权重
+    进入命名候选，同时其内部 token 权重 ×0.3（长词优先：如「傅里叶变换」命中时
+    「傅里」「里叶」不再独立计分）；无样本文本时退化为关键词整词命中（内置示例库）。
+    返回 (命名关键词表, 注入的规范词集合)。"""
+    out = dict(term_freq)
+    injected: set[str] = set()
+    for c, w in _hit_words(sample, term_freq):
+        for t in list(out):
+            if t != w and t in w:  # 仅抑制命中词内部 token（如「傅里叶变换」→傅里/里叶）；
+                                   # 不含「命中词⊂token」方向，避免误压其他规范词（金融 ⊂ 金融数学）
+                out[t] = out.get(t, 0.0) * 0.3
+        out[c] = max(out.get(c, 0.0), 100.0)  # 术语注入
+        injected.add(c)
+    # 别名整词折叠（与 canonical_terms 保持一致）
+    for t, v in list(out.items()):
+        low = t.lower()
+        if low in _ALIAS_TO_CANONICAL:
+            c = _ALIAS_TO_CANONICAL[low]
+            out[c] = out.get(c, 0.0) + v
+            del out[t]
+    return out, injected
 
 
 # B. 改进：IDF 加权余弦 + tau_cluster 建边 + 连通分量
@@ -221,6 +250,89 @@ def connected_components(sim: list[list[float]], tau: float = 0.10) -> list[list
     return [sorted(m) for m in groups.values()]
 
 
+# AC. A+C 组合（改进方案 §2）：术语归一化 + IDF + 成图 + 自研连通分量 + 虚胖分裂守卫
+def build_adj(sim: list[list[float]], tau: float) -> dict[int, dict[int, float]]:
+    """相似度成图（蓝本 §1.1）：Sim ≥ τ 建无向加权边，双向邻接表。"""
+    adj: dict[int, dict[int, float]] = {i: {} for i in range(N)}
+    for i in range(N):
+        for j in range(i + 1, N):
+            if sim[i][j] >= tau:
+                adj[i][j] = adj[j][i] = sim[i][j]
+    return adj
+
+
+class UnionFind:
+    """自研并查集：路径压缩 + 按秩合并（蓝本 §3.2；确定性：固定 union 顺序）。"""
+
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+        self.rank = [0] * n
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]  # 路径压缩
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> bool:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return False
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+        return True
+
+
+def cc_components(adj: dict[int, dict[int, float]], nodes: list[int]) -> list[list[int]]:
+    """自研连通分量：nodes 升序，并查集 union 全部边，输出分量（成员升序）。"""
+    uf = UnionFind(N)
+    for u in nodes:
+        for v in adj.get(u, {}):
+            uf.union(u, v)
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in nodes:
+        groups[uf.find(i)].append(i)
+    return [sorted(m) for m in groups.values()]
+
+
+def _intra_avg_sim(members: list[int], sim: list[list[float]]) -> float:
+    """簇内平均两两 Sim（含无边对计 0；蓝本 §2.3 虚胖判定）。"""
+    n = len(members)
+    if n < 2:
+        return 1.0
+    return sum(sim[a][b] for a in members for b in members if a < b) / (n * (n - 1) / 2)
+
+
+def split_bloated(groups: list[list[int]], sim: list[list[float]], tau: float,
+                  bloat: float = 0.8, depth: int = 0) -> list[list[int]]:
+    """虚胖簇分裂守卫（蓝本 §2.3/§5.4）：成员 ≥4 且簇内平均两两 Sim < τ×bloat
+    → 以更高阈值（×1.5）在子图重连通（桥节点断开）；递归深度 ≤2，切不开保留。
+    bloat 为分裂强度（demo 敏感性实验参数，正式版阈值见 thresholds.BLOAT_FACTOR=0.8）。"""
+    if depth >= 2:
+        return groups
+    out: list[list[int]] = []
+    for g in groups:
+        if len(g) < 4 or _intra_avg_sim(g, sim) >= tau * bloat:
+            out.append(g)
+            continue
+        sub = build_adj(sim, tau * 1.5)
+        sub_groups = [m for m in cc_components(sub, g) if m]
+        if len(sub_groups) <= 1:  # 子图仍连通（切不开）→ 维持原样
+            out.append(g)
+            continue
+        out.extend(split_bloated(sub_groups, sim, tau, bloat, depth + 1))
+    return out
+
+
+def ac_clusters(sim: list[list[float]], tau: float, bloat: float = 0.8) -> list[list[int]]:
+    """A+C 主流程：成图(τ) → 自研连通分量 → 虚胖分裂守卫（LPA 默认关，蓝本 P2 基线）。"""
+    adj = build_adj(sim, tau)
+    return split_bloated(cc_components(adj, list(range(N))), sim, tau, bloat)
+
+
 # C. 加权标签传播（LPA）：固定 seed 顺序，防吞并守卫 1.05
 def label_propagation(sim: list[list[float]], tau: float = 0.10,
                       max_rounds: int = 10, guard: float = 1.05) -> list[list[int]]:
@@ -257,18 +369,28 @@ _GENERIC = {
     "问题", "结果", "意义", "作用", "方式", "过程", "方面", "部分", "情况",
     "笔记", "习题", "答案", "详解", "教程", "讲义", "目录", "前言", "附录",
     "动机", "演化", "核心", "工具", "本质", "体系",
+    # LaTeX/SVG/图片噪声记号（真实库关键词含 mathbf/frac/fill/stroke 等）
+    "mathbf", "text", "frac", "infty", "hat", "lambda", "sum", "int",
+    "fill", "stroke", "class", "style", "png", "figures", "stroke-width",
+    "line", "delta", "alpha", "beta", "gamma", "script", "width", "height",
 }  # 命名时剔除
 
 
 def cluster_name(members: list[int]) -> str:
+    """簇命名（命名层，§2.4）：领域名一律中文——
+    1. 剔除 _GENERIC 与纯 ASCII/记号 token（如 rate/bond/mathbf）；
+    2. 词库注入术语优先（inject_lexicon 命中，如「金融」覆盖 fixed income），
+       其次词频累计，平局长词优先（让「自然种类」胜过「种类」）。"""
     cand: Counter = Counter()
+    injected: set[str] = set()
     for i in members:
-        for t, v in KEYWORDS[i].items():
-            if t not in _GENERIC and len(t) >= 2:
+        for t, v in NAMING_KEYWORDS[i].items():
+            if t not in _GENERIC and len(t) >= 2 and re.search(r"[\u4e00-\u9fff]", t):
                 cand[t] += v
+        injected.update(INJECTED[i])
     if not cand:
         return "其他"
-    return cand.most_common(1)[0][0]
+    return max(cand, key=lambda t: (t in injected, cand[t], len(t)))
 
 
 def show(groups: list[list[int]], label: str) -> None:
@@ -349,7 +471,7 @@ def llm_fuse_demo() -> None:
 # ---------------------------------------------------------------- main
 def _load_input(path: str | None) -> tuple[int, str]:
     """加载语料：默认内置示例库；--input 为 JSON [{title, keywords}]（真实库导出见 export_real_corpus.py）。"""
-    global BOOKS, TITLES, KEYWORDS, IDS, N
+    global BOOKS, TITLES, KEYWORDS, SAMPLES, IDS, N
     if not path:
         return N, "内置示例库（复现 D1：函数/分析/空间高 df 泛化词误吸）"
     with open(path, encoding="utf-8") as f:
@@ -365,8 +487,9 @@ def _load_input(path: str | None) -> tuple[int, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="聚类改进方案验证 demo")
-    parser.add_argument("--algo", choices=["all", "greedy", "cc", "lpa"], default="all")
+    parser.add_argument("--algo", choices=["all", "greedy", "cc", "lpa", "ac"], default="all")
     parser.add_argument("--tau", type=float, default=0.10, help="聚类图边门槛（默认 0.10）")
+    parser.add_argument("--bloat", type=float, default=0.8, help="分裂守卫强度系数（默认 0.8，敏感性实验用）")
     parser.add_argument("--input", default=None, help="实际语料 JSON [{title, keywords}]")
     parser.add_argument("--no-synonyms", action="store_true", help="关闭同义词归一化（对照）")
     parser.add_argument("--no-fuse", action="store_true", help="跳过 LLM 降分演示")
@@ -374,9 +497,14 @@ def main() -> None:
     args = parser.parse_args()
 
     count, desc = _load_input(args.input)
-    global KEYWORDS
-    if not args.no_synonyms:
-        KEYWORDS = [canonical_terms(kw, s) for kw, s in zip(KEYWORDS, SAMPLES, strict=True)]
+    global KEYWORDS, NAMING_KEYWORDS, INJECTED
+    if args.no_synonyms:
+        NAMING_KEYWORDS = [dict(kw) for kw in KEYWORDS]
+        INJECTED = [set() for _ in KEYWORDS]
+    else:
+        NAMING_KEYWORDS, INJECTED = zip(*[inject_lexicon(s, kw) for kw, s in zip(KEYWORDS, SAMPLES, strict=True)])
+        NAMING_KEYWORDS, INJECTED = list(NAMING_KEYWORDS), list(INJECTED)
+        KEYWORDS = [canonical_terms(kw) for kw in KEYWORDS]
     sim = idf_cosine()
     print(f"语料 {count} 本（{desc}）；同义词归一化={'开' if not args.no_synonyms else '关'}")
     if args.eval:
@@ -388,6 +516,8 @@ def main() -> None:
             eval_row(f"B 连通分量 tau={args.tau}", connected_components(sim, args.tau), gold)
         if args.algo in ("all", "lpa"):
             eval_row(f"C 加权LPA tau={args.tau}", label_propagation(sim, args.tau), gold)
+        if args.algo in ("all", "ac"):
+            eval_row(f"AC A+C自研连通 tau={args.tau} bloat={args.bloat}", ac_clusters(sim, args.tau, args.bloat), gold)
         return
     if args.algo in ("all", "greedy"):
         show(greedy_clusters(), "A 现行：min 伪余弦 + 贪心吸收")
@@ -395,6 +525,8 @@ def main() -> None:
         show(connected_components(sim, args.tau), f"B 改进：IDF 余弦 + 连通分量 (tau={args.tau})")
     if args.algo in ("all", "lpa"):
         show(label_propagation(sim, args.tau), f"C 改进：加权标签传播 (tau={args.tau})")
+    if args.algo in ("all", "ac"):
+        show(ac_clusters(sim, args.tau, args.bloat), f"AC A+C组合：自研连通分量+分裂守卫 (tau={args.tau}, bloat={args.bloat})")
     if not args.no_fuse:
         llm_fuse_demo()
 
