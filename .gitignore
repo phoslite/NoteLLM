@@ -46,6 +46,8 @@ Thumbs.db
 # ---- 过程性文档（本地保留，不入库） ----
 docs/审查报告/
 docs/多语言重构评估.md
+docs/异步并行改造计划.md
+docs/性能优化路径.md
 
 # ---- AI 编辑器 / 浏览器测试残留 ----
 .codex-edge-test/
