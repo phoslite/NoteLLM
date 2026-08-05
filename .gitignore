@@ -32,7 +32,6 @@ data/
 *.db-wal
 *.db-shm
 *.log
-demo/logs/
 
 # ---- 编辑器 / 系统 ----
 .idea/
@@ -56,3 +55,6 @@ docs/性能优化路径.md
 .codex-edge-test/
 .codex-edge-test2/
 .qoder/
+
+# ---- 本地实验目录（仅本地保留，不推 GitHub） ----
+demo/
