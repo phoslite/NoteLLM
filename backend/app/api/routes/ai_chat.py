@@ -17,6 +17,7 @@ from app.services.chat_service import (
     prepare_global_job,
     stream_chat,
 )
+from app.services.rag_router import clear_global_selection_cache
 
 router = APIRouter(prefix="/api/ai", tags=["ai-chat"])
 
@@ -56,3 +57,11 @@ def clear_global_messages(session_id: str, db: Session = Depends(get_db)):
     """清空全局对话历史。"""
     clear_global_history(db, session_id)
     return ok(None, "已清空")
+
+
+@router.delete("/chat/session")
+def delete_global_session(session_id: str, db: Session = Depends(get_db)):
+    """删除主页全局会话：清空对话历史 + 清除该会话的挑选缓存（需求 v1.73）。"""
+    clear_global_history(db, session_id)
+    clear_global_selection_cache(session_id)
+    return ok(None, "已删除会话")

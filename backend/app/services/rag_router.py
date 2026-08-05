@@ -345,6 +345,16 @@ def clear_session_cache(session_id: str | None = None) -> int:
     return removed
 
 
+def clear_global_selection_cache(client_session_id: str) -> int:
+    """删除主页全局会话的挑选缓存（决策 37，键 `global:{client_session_id}`）。"""
+    key = f"global:{client_session_id}"
+    with _SESSION_LOCK:
+        if key in _SESSION_CACHE:
+            del _SESSION_CACHE[key]
+            return 1
+    return 0
+
+
 # ---------------------------------------------------------------- 全局对话挑选（决策 37）
 
 def _profile_lines(profiles: dict) -> list[str]:

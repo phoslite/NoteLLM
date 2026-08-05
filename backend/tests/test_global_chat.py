@@ -82,6 +82,40 @@ def test_global_chat_stream_and_history(client, monkeypatch):
     assert client.get(f"/api/ai/chat/messages?session_id={sid}").json()["data"] == []
 
 
+def test_global_delete_session_clears_history_and_cache(client, monkeypatch):
+    """需求 v1.73：删除会话 = 清空历史 + 清除该会话挑选缓存（重开面板为全新对话）。"""
+    _configure(client)
+    book_id = _upload(client)
+    _seed_assets(book_id)
+
+    # 先产生一条历史与挑选缓存
+    def fake_stream_events(self, messages):
+        yield {"kind": "delta", "text": "删除会话测试回复"}
+
+    monkeypatch.setattr(LLMClient, "stream_events", fake_stream_events)
+    sid = "panel-del-001"
+    with client.stream("POST", "/api/ai/chat", json={"question": "讲讲矩阵", "session_id": sid}) as resp:
+        assert resp.status_code == 200
+        list(resp.iter_text())
+
+    db = SessionLocal()
+    try:
+        assert select_global_knowledge(db, "矩阵乘法", sid)["source"] == "cache"
+    finally:
+        db.close()
+
+    r = client.delete(f"/api/ai/chat/session?session_id={sid}")
+    assert r.status_code == 200
+    assert client.get(f"/api/ai/chat/messages?session_id={sid}").json()["data"] == []
+
+    # 挑选缓存已清除：同问题再次挑选不再命中 cache
+    db = SessionLocal()
+    try:
+        assert select_global_knowledge(db, "矩阵乘法", sid)["source"] != "cache"
+    finally:
+        db.close()
+
+
 def test_global_prepare_job_injects_assets(client, monkeypatch):
     _configure(client)
     book_id = _upload(client)

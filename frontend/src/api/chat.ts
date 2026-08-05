@@ -86,6 +86,11 @@ export function clearGlobalChatMessages(sessionId: string) {
   return del<null>(`/ai/chat/messages?session_id=${encodeURIComponent(sessionId)}`)
 }
 
+/** 删除主页全局会话：清空历史 + 清除该会话的挑选缓存（需求 v1.73）。 */
+export function deleteGlobalChatSession(sessionId: string) {
+  return del<null>(`/ai/chat/session?session_id=${encodeURIComponent(sessionId)}`)
+}
+
 /** 全局对话流式（SSE）：事件回调同 streamChat；返回 { promise, abort }。 */
 export function streamGlobalChat(
   body: {

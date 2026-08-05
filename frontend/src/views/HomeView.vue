@@ -49,8 +49,26 @@ const aiUnread = ref(0)
 const aiInput = globalAi.input
 function toggleAiPanel() {
   aiPanelCollapsed.value = !aiPanelCollapsed.value
-  if (!aiPanelCollapsed.value) aiUnread.value = 0
+  if (!aiPanelCollapsed.value) {
+    aiUnread.value = 0
+    void globalAi.refreshHistory() // 展开时载入该会话全部历史（需求 v1.73）
+  }
 }
+/** 删除当前全局 AI 会话（二次确认；删除后换新会话键，重开为全新对话）。 */
+async function onDeleteAiSession() {
+  try {
+    await ElMessageBox.confirm('确定删除当前会话？其全部对话历史与知识挑选缓存将一并移除，重开后为全新会话。', '删除会话', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  await globalAi.deleteSession()
+  ElMessage.success('已删除会话')
+}
+
 /** 折叠期间统计新增 AI 回复数（assistant 非流式消息）。 */
 watch(globalAi.messages, (msgs) => {
   if (aiPanelCollapsed.value) {
@@ -410,6 +428,7 @@ function toggleTagFilter(tag: string) {
       @send="globalAi.send()"
       @abort="globalAi.abort()"
       @clear="globalAi.clear()"
+      @delete-session="onDeleteAiSession"
       @copy="globalAi.copy"
       @toggle-collapse="toggleAiPanel"
     />

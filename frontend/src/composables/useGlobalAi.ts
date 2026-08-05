@@ -1,6 +1,6 @@
 import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { clearGlobalChatMessages, listGlobalChatMessages, streamGlobalChat } from '@/api/chat'
+import { clearGlobalChatMessages, deleteGlobalChatSession, listGlobalChatMessages, streamGlobalChat } from '@/api/chat'
 import type { ChatMessageItem } from '@/types'
 
 export type UiGlobalMsg = ChatMessageItem & {
@@ -19,7 +19,11 @@ export interface GlobalAi {
   send: () => Promise<void>
   abort: () => void
   clear: () => Promise<void>
+  /** 删除当前会话（历史 + 挑选缓存）并换新会话键，重开面板为全新对话。 */
+  deleteSession: () => Promise<void>
   copy: (text: string) => void
+  /** 重新拉取该会话全部历史（展开面板时调用；与本地未落库消息按角色+内容去重合并）。 */
+  refreshHistory: () => Promise<void>
   dispose: () => void
 }
 
@@ -48,12 +52,25 @@ export function useGlobalAi(): GlobalAi {
   const streamError = ref('')
   let chatAbort: (() => void) | null = null
   let activePollTimer: number | null = null
-  // 会话标识：每次打开面板生成；历史与挑选缓存共用（global:{session_id}）
-  let sessionId = ''
-  function newSession() {
-    sessionId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  // 会话标识（需求 v1.73）：localStorage 持久化——重开面板/刷新页面仍载入原对话历史
+  // （global:{session_id}）；历史与挑选缓存共用该键。
+  const SESSION_STORAGE_KEY = 'global_ai_session_id'
+  function loadOrCreateSession(): string {
+    try {
+      const saved = localStorage.getItem(SESSION_STORAGE_KEY)
+      if (saved) return saved
+    } catch {
+      /* 隐私模式等场景忽略，每次生成新会话 */
+    }
+    const fresh = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, fresh)
+    } catch {
+      /* 忽略写入失败 */
+    }
+    return fresh
   }
-  newSession()
+  let sessionId = loadOrCreateSession()
 
   let pendingText = ''
   let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -97,7 +114,15 @@ export function useGlobalAi(): GlobalAi {
 
   async function loadHistory() {
     try {
-      messages.value = await listGlobalChatMessages(sessionId)
+      const rows = await listGlobalChatMessages(sessionId)
+      if (!messages.value.length) {
+        messages.value = rows
+        return
+      }
+      // 合并而非整体替换：本地流式消息（local）保留；已落库消息按「角色+内容」与历史行去重
+      const seen = new Set(rows.map((r) => `${r.role}:${r.content}`))
+      const extras = messages.value.filter((m) => m.local || !seen.has(`${m.role}:${m.content}`))
+      messages.value = extras.length ? [...rows, ...extras] : rows
     } catch {
       /* 历史加载失败不影响使用 */
     }
@@ -194,9 +219,28 @@ export function useGlobalAi(): GlobalAi {
       await clearGlobalChatMessages(sessionId)
       messages.value = []
       streamError.value = ''
-      newSession() // 清空后重新生成会话，挑选缓存随之隔离
+      // 保持同一会话键（localStorage 持久化）：清空后新对话仍写入原会话，
+      // 重开面板可载入新积累的历史；挑选缓存随会话键延续（TTL 自然过期）
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '清空失败')
+    }
+  }
+
+  async function deleteSession() {
+    if (streaming.value) chatAbort?.()
+    try {
+      await deleteGlobalChatSession(sessionId)
+      messages.value = []
+      streamError.value = ''
+      // 旧会话（历史 + 挑选缓存）已删除：重置会话键，重开面板即全新对话
+      try {
+        localStorage.removeItem(SESSION_STORAGE_KEY)
+      } catch {
+        /* 忽略写入失败 */
+      }
+      sessionId = loadOrCreateSession()
+    } catch (err) {
+      ElMessage.error(err instanceof Error ? err.message : '删除会话失败')
     }
   }
 
@@ -218,5 +262,10 @@ export function useGlobalAi(): GlobalAi {
 
   void loadHistory()
 
-  return { messages, input, streaming, streamError, send, abort: abortChat, clear, copy, dispose }
+  return {
+    messages, input, streaming, streamError,
+    send, abort: abortChat, clear, deleteSession, copy,
+    refreshHistory: () => loadHistory(),
+    dispose,
+  }
 }

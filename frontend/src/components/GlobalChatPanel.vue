@@ -18,6 +18,7 @@ const emit = defineEmits<{
   (e: 'send'): void
   (e: 'abort'): void
   (e: 'clear'): void
+  (e: 'delete-session'): void
   (e: 'copy', text: string): void
   (e: 'toggle-collapse'): void
 }>()
@@ -77,8 +78,11 @@ watch(
       <div v-if="streamError" class="chat-error">{{ streamError }}</div>
     </div>
     <div class="chat-toolbar">
-      <span class="chat-context" title="会话说明">会话与知识挑选缓存绑定当前面板，清空后重新开始</span>
-      <el-button size="small" text :disabled="streaming" @click="emit('clear')">清空</el-button>
+      <span class="chat-context" title="会话说明">会话按 session_id 持久化，重开面板载入原历史；清空保留会话，删除会话换新会话</span>
+      <span class="chat-toolbar-actions">
+        <el-button size="small" text :disabled="streaming" @click="emit('clear')">清空</el-button>
+        <el-button size="small" text type="danger" :disabled="streaming || !messages.length" @click="emit('delete-session')">删除会话</el-button>
+      </span>
     </div>
     <div class="ai-input-row">
       <textarea
@@ -155,6 +159,7 @@ watch(
 .chat-copy { border: none; background: transparent; color: #909399; font-size: 12px; cursor: pointer; padding: 0 2px; }
 .chat-copy:hover { color: var(--primary-color); }
 .chat-toolbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chat-toolbar-actions { flex: none; display: flex; align-items: center; gap: 2px; }
 .chat-context { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-secondary); }
 .ai-input-row { flex: none; display: flex; gap: 6px; align-items: flex-end; }
 .ai-input {
