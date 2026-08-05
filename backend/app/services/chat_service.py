@@ -21,7 +21,6 @@ from app.repositories.chat import clear_messages, list_messages, persist_chat, r
 from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.ai_context import (
     build_page_context_block,
-    page_image_data_uri,
     paragraph_numbered,
 )
 from app.services.citations import extract_citations
@@ -30,7 +29,7 @@ from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache
 from app.services.media_service import markdown_image_data_uris
 from app.services.profile_service import get_all_profiles
 from app.services.rag_router import select_knowledge
-from app.services.vision_extract import ensure_window_caches
+from app.services.vision_extract import ensure_window_caches, extract_image_attachment
 
 
 def build_messages(
@@ -41,24 +40,23 @@ def build_messages(
     rag_block: str,
     skills: list[dict],
     enable_body_send: bool,
-    page_image: str | None = None,
-    crop_image: str | None = None,
+    crop_text: str | None = None,
     crop_label: str = "",
     page_context: str | None = None,
     page_mode: bool = False,
     mode: str | None = None,
     history: list[dict] | None = None,
     profiles: dict | None = None,
-    media_images: list[str] | None = None,
+    media_texts: list[str] | None = None,
 ) -> list[dict]:
     """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段（Skill 仍注入）。
 
     - rag_block：跨书检索片段块（决策 34，出处【《书名》第X章 第Y段】），由调用方组装；
       PDF 页模式下与页缓存文本一同注入（页模式 RAG 注入已定稿）。
     - page_context：PDF 按页阅读时注入 `[P-1,P,P+1]` 窗口的页缓存文本（出处「第 X 页」）。
-    - page_image：页缓存不可用时的回退——附加当前页原图（chat 模式，需模型支持视觉输入）。
-    - crop_image：涂鸦划线区域裁剪图（data URI，chat 模式）；划线提问时用 crop_label 说明范围。
-    - responses 模式由客户端降级为纯文本。
+    - crop_text：划线裁剪图经视觉模型提取的文本（决策 36）；划线提问时用 crop_label 说明范围。
+    - media_texts：Markdown 内嵌插图经视觉模型提取的文本列表（决策 36）。
+    - 决策 36：主模型只收文本——所有图片附件由视觉模型提取为文本（带缓存），不再直发 image_url。
     """
     context_text = paragraph_numbered(chapter_plain_text(getattr(book, "format", None), chapter.content_text or "")) if enable_body_send else ""
     user = build_user_prompt(
@@ -81,17 +79,16 @@ def build_messages(
     ]
     if history:
         messages.extend(history)
-    images = [img for img in (page_image, crop_image, *(media_images or [])) if img]
-    if images and enable_body_send:
-        content: list[dict] = [{"type": "text", "text": user}]
-        if crop_label:
-            content.append({"type": "text", "text": f"（用户划线的区域说明：{crop_label}）"})
-        for img in images:
-            # SiliconFlow 多模态文档：image_url 参数 url（支持 base64 data URI）+ detail（auto/low/high）
-            content.append({"type": "image_url", "image_url": {"url": img, "detail": "high"}})
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user})
+    if enable_body_send:
+        extra_blocks: list[str] = []
+        if crop_text:
+            label = f"（用户划线的区域说明：{crop_label}）" if crop_label else ""
+            extra_blocks.append(f"【用户划线区域图片内容（视觉提取）】\n{crop_text}{label}")
+        for i, t in enumerate(media_texts or [], 1):
+            extra_blocks.append(f"【正文插图 {i} 内容（视觉提取）】\n{t}")
+        if extra_blocks:
+            user += "\n\n" + "\n\n".join(extra_blocks)
+    messages.append({"role": "user", "content": user})
     return messages
 
 
@@ -130,26 +127,23 @@ def prepare_chat_job(
 
     - 跨书注入（决策 34）：LLM 自主挑选相关书与 Skill（会话内缓存按 session_id），
       降级回退规则方案；隐私关闭时只注入 Skill、不注入 chunks。
-    - PDF 按页阅读且隐私开启：优先注入 [P-1,P,P+1] 窗口页缓存；未配置多模态/提取失败回退页图附件。
-    - crop_image：涂鸦划线区域裁剪图（chat 模式，需模型支持视觉输入）。
+    - PDF 按页阅读且隐私开启：优先注入 [P-1,P,P+1] 窗口页缓存（决策 36：未配置视觉/提取失败
+      不再回退直发页图，主模型只收文本）。
+    - crop_image：划线裁剪图经视觉模型提取文本后注入（send_page 开启时）。
     """
     overrides = load_ai_overrides(db)
     enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
     send_page = overrides.get("ai_send_page_image", settings.ai_send_page_image)
     page_mode = chapter.page_index is not None
     page_context = None
-    page_image = None
-    if page_mode and enable_body:
-        if vision_configured(db):
-            try:
-                window = ensure_window_caches(db, book, chapter.page_index)
-                page_context = build_page_context_block(window, enable_body)
-            except Exception:  # noqa: BLE001 提取失败回退页图附件
-                page_context = None
-        if page_context is None:
-            page_image = page_image_data_uri(book, chapter, enable_body and send_page)
-    else:
-        page_image = page_image_data_uri(book, chapter, enable_body and send_page)
+    # 决策 36：主模型只收文本——PDF 页模式优先注入 [P-1,P,P+1] 窗口页缓存文本
+    # （视觉模型已提取并缓存，命中不重复调用）；未配置视觉/提取失败时不再回退直发页图。
+    if page_mode and enable_body and vision_configured(db):
+        try:
+            window = ensure_window_caches(db, book, chapter.page_index)
+            page_context = build_page_context_block(window, enable_body)
+        except Exception:  # noqa: BLE001 提取失败仅降级为文本
+            page_context = None
     knowledge = select_knowledge(
         db, book, chapter, question, selection, mode, session_id
     )
@@ -160,10 +154,28 @@ def prepare_chat_job(
     history = None
     if enable_body:
         history = recent_history_texts(db, book.id, mode)
-    # 决策 31：Markdown 内嵌图片作为附件（受隐私开关约束）
-    media_images = None
-    if enable_body and not page_mode and book.format in ("md", "txt", "epub"):
-        media_images = markdown_image_data_uris(book, chapter.content_text or "")
+    # 决策 36：附件统一走视觉模型提取文本——划线裁剪图 / Markdown 插图（send_page 开启时）
+    crop_text = None
+    if enable_body and send_page and crop_image:
+        try:
+            crop_text = extract_image_attachment(
+                db, crop_image, hint="用户划线的区域截图，请完整转录其中的文字与公式"
+            )
+        except Exception:  # noqa: BLE001 提取失败降级纯文本
+            crop_text = None
+    media_texts = None
+    if enable_body and send_page and not page_mode and book.format in ("md", "txt", "epub"):
+        try:
+            uris = markdown_image_data_uris(book, chapter.content_text or "")
+            media_texts = [
+                t
+                for t in (
+                    extract_image_attachment(db, u, hint="正文插图，请完整描述其中的内容") for u in uris
+                )
+                if t
+            ] or None
+        except Exception:  # noqa: BLE001 单图失败不中断
+            media_texts = None
 
     messages = build_messages(
         book,
@@ -173,15 +185,14 @@ def prepare_chat_job(
         rag_block,
         skills,
         enable_body,
-        page_image,
-        crop_image if (enable_body and crop_image) else None,
+        crop_text,
         crop_label,
         page_context,
         page_mode,
         mode,
         history,
         profiles,
-        media_images=media_images,
+        media_texts=media_texts,
     )
     # 发送前断言（审查 2-3）：隐私开启时正文不得携带「未发送」占位文案，占位符泄漏直接拦截
     if enable_body:

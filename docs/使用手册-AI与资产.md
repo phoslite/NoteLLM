@@ -212,7 +212,7 @@ python demo/chat_demo.py                                          # 交互式多
 | `extract_citations(text)` | 从回答中解析引用出处 → `[{chapter, para}]` |
 | `retrieve_rag_chunks(db, book_id, question, top_k=4)` | 按关键词重叠从书籍 RAG 资产检索相关片段（含出处），无命中返回空 |
 | `load_skills(db, book_id)` | 读取书籍 Skill 资产技能列表 |
-| `build_messages(book, chapter, question, selection, rag_chunks, skills, enable_body_send)` | 组装 system/user messages；隐私开关关闭时不发正文 |
+| `build_messages(book, chapter, question, selection, rag_chunks, skills, enable_body_send, crop_text=None, media_texts=None)` | 组装 system/user messages；隐私开关关闭时不发正文；划线裁剪图/正文插图以视觉提取文本（`crop_text`/`media_texts`）注入，不再直发图片（决策 36） |
 | `persist_chat(db, book_id, chapter_id, selection, question, answer)` | 写入一条 user + 一条 assistant 历史 |
 | `stream_chat(job)` | SSE 事件生成器（start/delta/end/error + 落库兜底） |
 | `replay_cached_chat(db, book, chapter, question, selection, mode, cache_key_val)` | LLM 结果缓存命中回放（`cached=true`，审查 P0-4 下沉；chat 路由只做流式包装） |
@@ -307,11 +307,11 @@ python demo/chat_demo.py                                          # 交互式多
 | 函数 | 说明 |
 | --- | --- |
 | `resolve_chat_chapter(db, book_id, chapter_id)` | 解析目标章节，返回 `(chapters, chapter)`；空书返回 `([], None)` |
-| `prepare_chat_job(db, book, chapter, question, selection, crop_image, crop_label)` | 组装对话任务：隐私/视觉覆盖、`[P-1,P,P+1]` 页缓存窗口或页图附件回退、RAG/Skill 检索、messages、client |
+| `prepare_chat_job(db, book, chapter, question, selection, crop_image, crop_label)` | 组装对话任务：隐私/视觉覆盖、`[P-1,P,P+1]` 页缓存窗口（不再回退直发页图）、附件经 `extract_image_attachment` 视觉提取为文本（命中缓存不重复调用，决策 36）、RAG/Skill 检索、messages、client |
 | `list_history(db, book_id)` / `clear_history(db, book_id)` | 对话历史读取 / 清空（薄封装） |
 
 - 使用：`api/routes/chat.py` 只做参数校验与流式返回，不再直连仓储。
-- 修改：页缓存/页图回退顺序、RAG/Skill 注入策略改这里。
+- 修改：页缓存窗口大小、附件提取开关（`ai_send_page_image`）、RAG/Skill 注入策略改这里。
 
 
 ## 15. AI 多接口格式支持（第 15 轮任务产出）

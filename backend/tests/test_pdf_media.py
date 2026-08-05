@@ -117,21 +117,32 @@ def test_import_text_pdf_unified_page_mode_with_cover(client, tmp_path):
     assert txt.exists() and "Introduction" in txt.read_text(encoding="utf-8")
 
 
-def test_build_messages_attaches_page_image():
+def test_build_messages_injects_attachment_texts():
+    """决策 36：主模型只收文本——划线裁剪图 / 插图由视觉模型提取为文本后注入，不再直发 image_url。"""
     book = SimpleNamespace(title="扫描书")
     chapter = SimpleNamespace(index=1, title="第 1 页", content_text="")
-    uri = "data:image/jpeg;base64,AAAA"
 
-    msgs = build_messages(book, chapter, "这页讲了什么", "", [], [], True, uri)
+    msgs = build_messages(
+        book, chapter, "这页讲了什么", "", [], [], True,
+        crop_text="划线区域含公式 $\\Lambda^n V$",
+        crop_label="第 2 段",
+        media_texts=["插图：Cauchy–Binet 公式推导"],
+    )
     user = msgs[1]["content"]
-    assert isinstance(user, list)
-    assert user[0]["type"] == "text"
-    assert user[1] == {"type": "image_url", "image_url": {"url": uri, "detail": "high"}}
+    assert isinstance(user, str)
+    assert "image_url" not in user
+    assert "划线区域" in user and "$\\Lambda^n V$" in user
+    assert "第 2 段" in user
+    assert "正文插图 1" in user and "Cauchy" in user
 
-    # 隐私开关关闭时不附带图片（内容退化为纯文本）
-    msgs2 = build_messages(book, chapter, "这页讲了什么", "", [], [], False, uri)
+    # 隐私开关关闭时不注入附件文本
+    msgs2 = build_messages(
+        book, chapter, "这页讲了什么", "", [], [], False,
+        crop_text="划线内容", media_texts=["插图内容"],
+    )
     assert isinstance(msgs2[1]["content"], str)
-    assert "data:image" not in msgs2[1]["content"]
+    assert "划线内容" not in msgs2[1]["content"]
+    assert "插图内容" not in msgs2[1]["content"]
 
 
 def testpage_image_data_uri(client, tmp_path):

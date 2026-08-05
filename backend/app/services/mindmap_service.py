@@ -14,7 +14,6 @@ from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.ai_context import (
     build_context_block,
     build_page_context_block,
-    page_image_data_uri,
 )
 from app.services.citations import extract_citations
 from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
@@ -125,10 +124,12 @@ def build_mindmap_messages(
     rag_chunks: list[dict],
     skills: list[dict],
     enable_body_send: bool,
-    page_image: str | None,
     page_context: str | None = None,
 ) -> list[dict]:
-    """构建脑图生成 messages；隐私开关关闭时不发送正文与 RAG 片段；PDF 按页阅读优先注入页缓存。"""
+    """构建脑图生成 messages；隐私开关关闭时不发送正文与 RAG 片段；PDF 按页阅读优先注入页缓存。
+
+    决策 36：主模型只收文本——页图由视觉模型提取为页缓存文本，不再直发 image_url。
+    """
     context_text, rag_block = build_context_block(chapter, rag_chunks, enable_body_send, getattr(book, "format", None))
     page_mode = getattr(chapter, "page_index", None) is not None
     if page_context:
@@ -151,18 +152,7 @@ def build_mindmap_messages(
             s.get("name") or s.get("description") or "" for s in skills
         )
     messages: list[dict] = [{"role": "system", "content": system}]
-    if page_image and enable_body_send:
-        messages.append(
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user},
-                    {"type": "image_url", "image_url": {"url": page_image}},
-                ],
-            }
-        )
-    else:
-        messages.append({"role": "user", "content": user})
+    messages.append({"role": "user", "content": user})
     return messages
 
 
@@ -179,17 +169,13 @@ def generate_mindmap(
     send_page = overrides.get("ai_send_page_image", settings.ai_send_page_image)
     page_mode = chapter.page_index is not None
     page_context = None
+    # 决策 36：脑图链路同样只发文本——页模式优先注入页缓存文本，不再直发页图
     if page_mode and enable_body and vision_configured(db):
         try:
             window = ensure_window_caches(db, book, chapter.page_index)
             page_context = build_page_context_block(window, enable_body)
-        except Exception:  # noqa: BLE001 提取失败回退页图附件
+        except Exception:  # noqa: BLE001 提取失败仅降级为文本
             page_context = None
-    page_image = (
-        None
-        if page_context
-        else page_image_data_uri(book, chapter, enable_body and send_page)
-    )
     rag_chunks = retrieve_rag_chunks(db, book.id, "思维导图 " + (focus or selection or ""))
     # 缓存命中检查（性能优化 §7 决策 5）：同书同章同选区/焦点直接回放，不重复调用 LLM
     cache_key_input = cache_key({
@@ -206,7 +192,7 @@ def generate_mindmap(
         return {**hit, "cached": True}
     skills = load_skills(db, book.id, task_text=f"思维导图 {focus or selection or ''}")
     messages = build_mindmap_messages(
-        book, chapter, selection, focus, rag_chunks, skills, enable_body, page_image, page_context
+        book, chapter, selection, focus, rag_chunks, skills, enable_body, page_context
     )
     client = build_client(db)
     reply = client.chat(messages)
