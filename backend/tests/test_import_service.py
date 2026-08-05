@@ -95,3 +95,66 @@ def test_import_unsupported_format_rejects_without_orphan(client):
     if books_dir.exists():
         orphan = [p for p in books_dir.iterdir() if p.is_dir() and (p / "测试.xyz").exists()]
         assert orphan == [], "不支持格式导入不应残留书籍目录"
+
+def test_corrupt_epub_rejected_without_orphan(client):
+    """审查 C-问题14/2：损坏 EPUB 包装为 ValueError → 业务码 400，且不残留孤儿目录。"""
+    from app.core.config import settings
+
+    r = client.post("/api/books", files={"file": ("损坏.epub", b"not a real epub zip", "application/epub+zip")})
+    body = r.json()
+    assert body["code"] == 400, body
+    assert "EPUB" in body["message"]
+    books_dir = settings.data_dir / "books"
+    if books_dir.exists():
+        orphan = [p for p in books_dir.iterdir() if p.is_dir() and (p / "损坏.epub").exists()]
+        assert orphan == [], "损坏 EPUB 不应残留孤儿目录"
+
+
+def test_oversize_upload_rejected(client, monkeypatch):
+    """审查 C-问题13：超过大小上限的文件被 413 拦截，不残留书籍目录。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 1024)
+    r = client.post("/api/books", files={"file": ("超大.md", ("x" * 2048).encode(), "text/markdown")})
+    assert r.status_code == 413, r.text
+    books_dir = settings.data_dir / "books"
+    if books_dir.exists():
+        orphan = [p for p in books_dir.iterdir() if p.is_dir() and (p / "超大.md").exists()]
+        assert orphan == [], "超大文件不应残留书籍目录"
+
+def test_markdown_inline_images_copy_and_media_endpoint(client):
+    """决策 31：Markdown 内嵌图片→ images/ 复制、引用改写、媒体端点白名单与占位。"""
+    import base64
+
+    from app.services import import_service
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+    upload_dir = import_service._upload_dir()
+    (upload_dir / "logo.png").write_bytes(png)
+    md = "# 图文书\n\n![示意图](logo.png)\n\n![远程](https://example.com/a.png)\n\n![缺失](../nope.png)\n"
+    try:
+        book_id = _import_md(client, "图文.md", md)
+        detail = client.get(f"/api/books/{book_id}").json()["data"]
+        ch = client.get(f"/api/books/{book_id}/chapters/{detail['chapters'][0]['id']}").json()["data"]
+        # DB 层保留相对引用 images/logo.png，API 层重写为 URL
+        from app.core.database import SessionLocal
+        from app.models.book import Chapter
+        dbs = SessionLocal()
+        try:
+            db_content = dbs.query(Chapter).filter_by(book_id=book_id).first().content_text
+            assert "images/logo.png" in db_content
+        finally:
+            dbs.close()
+        assert f"/api/books/{book_id}/media/logo.png" in ch["content_text"]  # 读取时重写为 URL
+        assert "https://example.com/a.png" in ch["content_text"]  # 远程不改写
+        r_img = client.get(f"/api/books/{book_id}/media/logo.png")
+        assert r_img.status_code == 200 and r_img.content == png
+        # 缺失图片→ 占位 SVG；非白名单扩展名→ 占位
+        missing = client.get(f"/api/books/{book_id}/media/nope.png")
+        assert missing.status_code == 200 and missing.content.startswith(b"<svg")
+        bad = client.get(f"/api/books/{book_id}/media/evil.py")
+        assert bad.status_code == 200 and bad.content.startswith(b"<svg")
+    finally:
+        (upload_dir / "logo.png").unlink(missing_ok=True)

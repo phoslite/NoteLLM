@@ -7,6 +7,7 @@ import type { BookDetail } from '@/types'
 export interface ReaderArchive {
   archiving: Ref<boolean>
   archiveAndSummarize: () => Promise<void>
+  dispose: () => void
 }
 
 /** 读完归档（M9）：确认后提交归档任务并轮询，结束后刷新书籍与书架。 */
@@ -17,6 +18,7 @@ export function useReaderArchive(opts: {
 }): ReaderArchive {
   const { bookId, book, onDone } = opts
   const archiving = ref(false)
+  const pollAbort = new AbortController()
 
   async function archiveAndSummarize() {
     if (!book.value) return
@@ -35,7 +37,7 @@ export function useReaderArchive(opts: {
       ElMessage.info('归档任务已提交，正在总结…')
       notifyTaskSubmitted()
       // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 120 次 × 1.5s = 180s 超时保持一致）
-      const st = await waitForTask(task_id, { intervalMs: 1500, timeoutMs: 180000 })
+      const st = await waitForTask(task_id, { intervalMs: 1500, timeoutMs: 180000, signal: pollAbort.signal })
       if (st.status === 'failed') {
         ElMessage.error(`归档失败：${st.error || '未知错误'}`)
       } else {
@@ -43,6 +45,7 @@ export function useReaderArchive(opts: {
       }
       await onDone()
     } catch (err) {
+      if ((err as Error).name === 'AbortError') return
       const msg = (err as Error).message
       if (msg.includes('超时')) ElMessage.warning('归档任务超时，请稍后在资料页查看资产状态')
       else ElMessage.error(msg)
@@ -51,5 +54,10 @@ export function useReaderArchive(opts: {
     }
   }
 
-  return { archiving, archiveAndSummarize }
+  /** 卸载清理（审查 N-10）：中止归档任务轮询。 */
+  function dispose() {
+    pollAbort.abort()
+  }
+
+  return { archiving, archiveAndSummarize, dispose }
 }

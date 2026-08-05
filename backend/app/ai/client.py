@@ -45,6 +45,19 @@ _AUTO_PATHS: dict[str, tuple[str, str]] = {
 }
 
 
+def _stream_error(exc: Exception, url: str) -> LLMError:
+    """流式迭代中的网络异常 → LLMError（审查 C-问题9：原来异常直接穿透，SSE 静默断流）。
+
+    与 _request 同口径：Windows 下 errno 映射为 POSIX 值（10013→13），真实错误码在 winerror。
+    """
+    reason = getattr(exc, "reason", exc)
+    errno_val = getattr(reason, "errno", None)
+    winerror_val = getattr(reason, "winerror", None)
+    if winerror_val == 10013 or errno_val == 10013:
+        return LLMError(f"网络连接被拦截（WinError 10013），流式输出中断，无法继续访问 {url}。")
+    return LLMError(f"网络错误（流式中断）: {exc}（errno={errno_val}, winerror={winerror_val}）")
+
+
 def resolve_endpoint(base_url: str, mode: str) -> str:
     """解析最终请求端点，支持两种 base_url 写法：
 
@@ -304,22 +317,26 @@ class LLMClient:
             limiter.acquire()
         try:
             body = self._build_body(messages)
+            url = resolve_endpoint(self.base_url, self.mode)
             resp = self._request(body, stream=True)
             with resp:
-                for raw in resp:
-                    line = raw.decode("utf-8", "replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    delta = self._extract_delta(obj, self.mode)
-                    if delta:
-                        yield delta
+                try:
+                    for raw in resp:
+                        line = raw.decode("utf-8", "replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = self._extract_delta(obj, self.mode)
+                        if delta:
+                            yield delta
+                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    raise _stream_error(exc, url) from exc
         finally:
             if limiter:
                 limiter.release()
@@ -336,40 +353,44 @@ class LLMClient:
             limiter.acquire()
         try:
             body = self._build_body(messages)
+            url = resolve_endpoint(self.base_url, self.mode)
             resp = self._request(body, stream=True)
             with resp:
-                for raw in resp:
-                    line = raw.decode("utf-8", "replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    if self.mode == "anthropic":
-                        if obj.get("type") == "content_block_delta":
-                            d = obj.get("delta") or {}
-                            if d.get("type") == "thinking_delta" and d.get("thinking"):
-                                yield {"kind": "thinking", "text": d["thinking"]}
-                            elif d.get("type") == "text_delta" and d.get("text"):
-                                yield {"kind": "delta", "text": d["text"]}
-                        continue
-                    if self.mode == "responses":
-                        if obj.get("type") == "response.output_text.delta" and obj.get("delta"):
-                            yield {"kind": "delta", "text": obj["delta"]}
-                        elif obj.get("type") == "response.reasoning_summary_text.delta" and obj.get("delta"):
-                            yield {"kind": "thinking", "text": obj["delta"]}
-                        continue
-                    choices = obj.get("choices") or []
-                    if choices:
-                        delta = choices[0].get("delta") or {}
-                        if delta.get("reasoning_content"):
-                            yield {"kind": "thinking", "text": delta["reasoning_content"]}
-                        elif delta.get("content"):
-                            yield {"kind": "delta", "text": delta["content"]}
+                try:
+                    for raw in resp:
+                        line = raw.decode("utf-8", "replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if self.mode == "anthropic":
+                            if obj.get("type") == "content_block_delta":
+                                d = obj.get("delta") or {}
+                                if d.get("type") == "thinking_delta" and d.get("thinking"):
+                                    yield {"kind": "thinking", "text": d["thinking"]}
+                                elif d.get("type") == "text_delta" and d.get("text"):
+                                    yield {"kind": "delta", "text": d["text"]}
+                            continue
+                        if self.mode == "responses":
+                            if obj.get("type") == "response.output_text.delta" and obj.get("delta"):
+                                yield {"kind": "delta", "text": obj["delta"]}
+                            elif obj.get("type") == "response.reasoning_summary_text.delta" and obj.get("delta"):
+                                yield {"kind": "thinking", "text": obj["delta"]}
+                            continue
+                        choices = obj.get("choices") or []
+                        if choices:
+                            delta = choices[0].get("delta") or {}
+                            if delta.get("reasoning_content"):
+                                yield {"kind": "thinking", "text": delta["reasoning_content"]}
+                            elif delta.get("content"):
+                                yield {"kind": "delta", "text": delta["content"]}
+                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                    raise _stream_error(exc, url) from exc
         finally:
             if limiter:
                 limiter.release()

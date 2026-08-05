@@ -8,9 +8,20 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories.search import fts_search, like_search
+from app.services.html_util import html_to_text
 
 # trigram 分词器查询保留字/特殊字符：分词时剔除，避免查询语法错误
 _FTS_SPECIALS = re.compile(r'["*():^~+-<>{}[\]]')
+
+# EPUB 章节正文为消毒后 HTML（方案 A）：摘要展示前检测标签并转纯文本
+_HTML_TAG_RE = re.compile(r"<[a-zA-Z][^>]*>")
+
+
+def _clean_snippet(snippet: str) -> str:
+    """FTS/LIKE 摘要展示前清洗：EPUB HTML 正文转纯文本，其余原样。"""
+    if _HTML_TAG_RE.search(snippet or ""):
+        return html_to_text(snippet)
+    return snippet
 
 
 def _fts_query(keyword: str) -> str | None:
@@ -27,6 +38,7 @@ def _fts_query(keyword: str) -> str | None:
 
 def _like_snippet(content: str, keyword: str, radius: int = 30) -> str:
     """LIKE 命中的简单摘要：取首次命中位置前后各 radius 字符。"""
+    content = _clean_snippet(content)
     pos = content.find(keyword)
     if pos < 0:
         return (content or "")[: radius * 2]
@@ -68,4 +80,7 @@ def search_books(db: Session, keyword: str, limit: int = 30) -> list[dict]:
     query = _fts_query(keyword)
     if not query:
         return _like_search(db, keyword, limit)
-    return fts_search(db, query, limit)
+    rows = fts_search(db, query, limit)
+    for r in rows:
+        r["snippet"] = _clean_snippet(r.get("snippet") or "")
+    return rows

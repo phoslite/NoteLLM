@@ -88,7 +88,6 @@ export function useReaderProgress(opts: {
     lastPos = { chapterId: currentChapterId.value, position }
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => void saveNow(), 600)
-    void checkAutoRead()
   }
 
   async function saveNow() {
@@ -135,6 +134,8 @@ export function useReaderProgress(opts: {
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = null
     autoMarkedChapter = new Set()
+    visibleAccumMs = 0
+    visibleSinceAt = null
   }
 
   function dispose() {

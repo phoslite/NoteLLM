@@ -100,10 +100,17 @@ def list_chapters(db: Session, book_id: int) -> list[Chapter]:
 
 
 def add_chapters(
-    db: Session, book_id: int, chapters: list[tuple[int, str, str, int | None]]
+    db: Session,
+    book_id: int,
+    chapters: list[tuple[int, str, str, int | None]],
+    word_counts: list[int] | None = None,
 ) -> None:
-    """批量写入章节：(index, title, content, page_index)；page_index 供扫描版 PDF 按页阅读。"""
-    for index, title, content, page_index in chapters:
+    """批量写入章节：(index, title, content, page_index)；page_index 供扫描版 PDF 按页阅读。
+
+    word_counts：可选显式字数——EPUB 方案 A 正文为消毒后 HTML，导入侧先 html_to_text 再计数，
+    避免标签计入字数（word_count 用于书架/章节信息展示）。
+    """
+    for i, (index, title, content, page_index) in enumerate(chapters):
         db.add(
             Chapter(
                 book_id=book_id,
@@ -111,7 +118,7 @@ def add_chapters(
                 title=title,
                 content_text=content,
                 page_index=page_index,
-                word_count=len(content),
+                word_count=word_counts[i] if word_counts is not None else len(content),
             )
         )
     db.commit()

@@ -38,3 +38,19 @@ def test_split_by_headings_skips_empty_chapters():
     raw = "第1章\n\n正文\n\n第2章\n\n\n第3章\n\n结束\n"
     book = split_by_headings(raw, "t", lambda ln: ln.strip() if ln.startswith("第") else None)
     assert [c.title for c in book.chapters] == ["第1章", "第3章"]
+
+def test_parse_txt_gbk_encoding(tmp_path: Path):
+    """审查 C-问题12：GBK 编码 txt 不再乱码入库。"""
+    f = tmp_path / "gbk.txt"
+    f.write_bytes("第1章 引言\n\n变分法研究泛函极值问题。\n".encode("gbk"))
+    book = parse_txt(f)
+    assert "变分法" in book.chapters[0].content
+    assert "�" not in book.chapters[0].content
+
+
+def test_parse_markdown_gbk_encoding(tmp_path: Path):
+    """审查 C-问题12：GBK 编码 markdown 章节标题与正文正常。"""
+    f = tmp_path / "gbk.md"
+    f.write_bytes("# 第一章 开始\n\n正文：线性代数。\n".encode("gbk"))
+    book = parse_markdown(f)
+    assert "线性代数" in book.chapters[0].content

@@ -69,7 +69,7 @@ def get_chapter_content(book_id: int, chapter_id: int, db: Session = Depends(get
     chapter = next((c for c in book_repo.list_chapters(db, book_id) if c.id == chapter_id), None)
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
-    return ok(chapter_content_to_dict(chapter))
+    return ok(chapter_content_to_dict(chapter, book_id))
 
 
 @router.get("/{book_id}/progress")

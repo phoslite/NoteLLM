@@ -3,7 +3,7 @@
 import hashlib
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from app.services.book_pages import get_or_render_page
 from app.services.books_service import clean_tags
 from app.services.books_service import delete_book as delete_book_service
 from app.services.import_service import import_book_file  # 两段式导入（分块流式写盘 + 后台处理）
-from app.services.media_service import book_cover_file
+from app.services.media_service import PLACEHOLDER_SVG, book_cover_file, resolve_book_media
 from app.services.search_service import search_books as search_books_service
 
 router = APIRouter(prefix="/api/books", tags=["books"])
@@ -77,7 +77,11 @@ async def upload_book(
     hasher = hashlib.sha256()
     try:
         with open(tmp, "wb") as out:
+            total = 0
             while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > settings.max_upload_bytes:  # 审查 C-问题13：分块写入时即拦截超大文件
+                    raise HTTPException(status_code=413, detail=f"文件超过大小上限 {settings.max_upload_bytes // (1024 * 1024)}MB")
                 hasher.update(chunk)
                 out.write(chunk)
         book, task_id = import_book_file(
@@ -173,3 +177,16 @@ def get_book_page(book_id: int, page_index: int, db: Session = Depends(get_db)):
     if not path:
         raise HTTPException(status_code=404, detail="页面图片不存在")
     return FileResponse(path, headers={"Cache-Control": "private, max-age=600"})
+
+
+@router.get("/{book_id}/media/{filename}")
+def get_book_media(book_id: int, filename: str, db: Session = Depends(get_db)):
+    """Markdown 内嵌本地图片（决策 31）：白名单扩展名 + 防越越；缺失返回占位 SVG。"""
+    book = repo.get_book(db, book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+    path = resolve_book_media(book, filename)
+    if not path:
+        return Response(content=PLACEHOLDER_SVG, media_type="image/svg+xml")
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+

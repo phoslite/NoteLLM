@@ -9,14 +9,14 @@
 
 | 文档 | 版本 | 内容 |
 | --- | --- | --- |
-| [需求文档.md](需求文档.md) | v1.66 | 需求总纲：概述 / 分册索引 / 变更记录 |
+| [需求文档.md](需求文档.md) | v1.67 | 需求总纲：概述 / 分册索引 / 变更记录 |
 | [需求-功能需求.md](需求-功能需求.md) | v1.58 | 分册：书架 / 导入 / 阅读 / AI 助手 / 图谱需求 |
 | [需求-非功能与数据.md](需求-非功能与数据.md) | v1.58 | 分册：非功能 / 数据模型 / 页面交互 |
 | [需求-里程碑与验收.md](需求-里程碑与验收.md) | v1.58 | 分册：里程碑 / 验收标准 |
 | [需求-决策.md](需求-决策.md) | v1.58 | 分册：决策 1~33 / 开放项 |
 | [技术栈规范.md](技术栈规范.md) | v1.71 | 技术选型、工程规范、解耦/重构规则 |
 | [重构规范.md](重构规范.md) | v1.38 | 重构记录表与变更记录 |
-| [docs/使用手册.md](docs/使用手册.md) | v1.106 | 手册总纲：模块地图 / 快速定位 / 跨模块流程 / 变更记录 |
+| [docs/使用手册.md](docs/使用手册.md) | v1.107 | 手册总纲：模块地图 / 快速定位 / 跨模块流程 / 变更记录 |
 | [docs/使用手册-后端核心.md](docs/使用手册-后端核心.md) | v1.90 | 分册：配置/数据库/解析/导入/任务/API 基础 |
 | [docs/使用手册-阅读与PDF.md](docs/使用手册-阅读与PDF.md) | v1.90 | 分册：阅读闭环/书签/涂鸦/页图/视觉提取 |
 | [docs/使用手册-AI与资产.md](docs/使用手册-AI与资产.md) | v1.90 | 分册：LLM/对话/脑图/RAG/Skill/Prompt |
@@ -32,6 +32,7 @@
 
 | 日期 | 内容 |
 | --- | --- |
+| 2026-08-05 | 审查 C 组实施：EPUB 方案 A（保留图文混排——spine 解析 + 图片提取到 images/ 复用媒体端点 + 服务端消毒 + 前端 DOMPurify 渲染分支；AI/RAG/图谱/搜索文本消费点统一 html_to_text）；画像编辑方案 A（仅冷画像可编辑）；决策 31 Markdown 内嵌图片落地；rag_router 会话缓存上限 / 聚类 GET 只读 / 占位符泄漏断言等。后端 223 pytest + ruff 全绿，vue-tsc + vite build 通过；文档同步使用手册 v1.107 / 需求 v1.67 |
 | 2026-08-05 | 修复 WinError 10013：后端进程须在非受限网络环境启动（沙盒/受限终端拉起的后端会拦截出站 TCP，导致 LLM API 全部报 10013）；client.py 错误处理同时判断 winerror/errno（原仅判 errno==10013 永不命中，友好提示失效）。沙盒外重启后端后真实 chat SSE 全通；34 项相关 pytest + ruff 全绿；文档同步使用手册 v1.106 |
 | 2026-08-05 | 审查 B 组实施（4 项）：图谱全量重建长写事务（本地边先提交再 LLM 打分，SQLite 写锁不横跨 LLM 调用）；导入双倍页图渲染消除（同步段只写全文索引、后台渲染恰一次）；阅读页章节加载竞态守卫（loadChapter 请求序号）；资产页/归档任务轮询收敛（统一 waitForTask）。新增 B 组回归测试 4 项（导入链路 3 + 图谱提交行为 1）。后端 202 pytest + ruff 全绿，vue-tsc 通过；文档同步使用手册 v1.105 |
 | 2026-08-05 | 审查 A 组实施（9 项）：summarize 会话泄漏 finally close；FTS/LIKE SQL 下沉 repositories/search.py；RAG 目录批量加载（list_assets_by_books，5N-6N→常数次查询）；跨书笔记预加载（O(N²)→O(N)）；reading_logs/user_profiles 复合索引；GET /books/assets 批量资产摘要（资产页 1 次请求）；MdRender markdown-it 单例；useReaderPageCache 轮询恢复修复；HomeView FTS5 全文搜索下拉入口。后端 198 pytest + ruff 全绿，vue-tsc + vite build 通过；文档同步使用手册 v1.104 || 2026-08-05 | 审查报告复测与修复：POST progress 接口复测正常；扫描件 AI 上下文占位文案修复（ody_fallback_text 三分支，chat/脑图共用）；v1.102 流式接口（stream_events）测试基线同步；后端 198 pytest + ruff 全绿；文档同步使用手册 v1.103 |

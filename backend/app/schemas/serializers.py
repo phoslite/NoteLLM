@@ -4,6 +4,7 @@ import json
 from app.models.activity import Bookmark, ChatMessage, Note, ReadingLog
 from app.models.asset import BookAsset
 from app.models.book import Book, Chapter, Folder
+from app.services.media_service import rewrite_chapter_media_urls
 
 
 def book_to_dict(book: Book, read_chapters: int | None = None, latest_chapter: Chapter | None = None) -> dict:
@@ -57,12 +58,13 @@ def asset_to_dict(asset: BookAsset) -> dict:
     }
 
 
-def chapter_content_to_dict(chapter: Chapter) -> dict:
+def chapter_content_to_dict(chapter: Chapter, book_id: int) -> dict:
+    """章节正文；Markdown 内嵌图片引用重写为可访问 URL（决策 31）。"""
     return {
         "id": chapter.id,
         "index": chapter.index,
         "title": chapter.title,
-        "content_text": chapter.content_text,
+        "content_text": rewrite_chapter_media_urls(chapter.content_text or "", book_id),
         "page_index": chapter.page_index,
         "word_count": chapter.word_count,
         "read_flag": chapter.read_flag,

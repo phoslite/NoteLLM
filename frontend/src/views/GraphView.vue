@@ -251,6 +251,18 @@ function ensureChart(): echarts.ECharts | null {
   return chart
 }
 
+/** 任务轮询取消（审查 N-19）：离开页面时中止等待，避免卸载后继续轮询。 */
+const taskAbort = new AbortController()
+
+function waitTask(taskId: string, opts: { intervalMs?: number; timeoutMs?: number } = {}) {
+  return waitForTask(taskId, { ...opts, signal: taskAbort.signal })
+}
+
+/** 中止轮询产生的错误在 catch 中静默忽略。 */
+function isTaskAbort(err: unknown): boolean {
+  return (err as Error)?.name === 'AbortError'
+}
+
 async function loadGlobal() {
   loading.value = true
   try {
@@ -260,7 +272,7 @@ async function loadGlobal() {
       // 懒构建后台化（决策 35）：任务完成后自动重拉
       ElMessage.info('图谱构建中…')
       notifyTaskSubmitted()
-      await waitForTask(g.task_id)
+      await waitTask(g.task_id)
       graph.value = await getGlobalGraph()
     } else {
       graph.value = g
@@ -268,6 +280,7 @@ async function loadGlobal() {
     await nextTick()
     renderGlobal()
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -280,7 +293,7 @@ async function onRebuildGlobal() {
     const { task_id } = await rebuildGraph()
     ElMessage.info('图谱重建任务已提交…')
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id)
+    const t = await waitTask(task_id)
     if (t.status === 'failed') {
       ElMessage.error(`重建失败：${t.error || '未知错误'}`)
       return
@@ -293,6 +306,7 @@ async function onRebuildGlobal() {
       `图谱已重建：${stats.books ?? 0} 本 / ${stats.relations ?? 0} 条关联，联动存根 ${stats.linked ?? 0} 条`,
     )
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -306,7 +320,7 @@ async function onSyncAssets() {
     const { task_id } = await syncGraphAssets()
     ElMessage.info('图谱资产联动任务已提交…')
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id)
+    const t = await waitTask(task_id)
     if (t.status === 'failed') {
       ElMessage.error(`联动失败：${t.error || '未知错误'}`)
       return
@@ -317,6 +331,7 @@ async function onSyncAssets() {
       `联动完成：存根 ${result.stubs ?? 0} 条 / LLM 更新 ${result.llm_updated ?? 0} 本 / 术语补水 ${result.domain_terms ?? 0} 条`,
     )
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     syncing.value = false
@@ -350,7 +365,7 @@ async function openIntraBook(node: GraphNode) {
       // 书内图谱懒构建后台化：任务完成后重拉
       ElMessage.info('本书知识图谱构建中…')
       notifyTaskSubmitted()
-      await waitForTask(g.task_id)
+      await waitTask(g.task_id)
       intra.value = await getIntraGraph(node.id)
     } else {
       intra.value = g
@@ -359,6 +374,7 @@ async function openIntraBook(node: GraphNode) {
     await nextTick()
     renderIntra()
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -373,7 +389,7 @@ async function rebuildCurrent() {
     const { task_id } = await rebuildBookGraph(bookId)
     ElMessage.info('本书知识图谱重建任务已提交…')
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id)
+    const t = await waitTask(task_id)
     if (t.status === 'failed') {
       ElMessage.error(`重建失败：${t.error || '未知错误'}`)
       return
@@ -383,6 +399,7 @@ async function rebuildCurrent() {
     renderIntra()
     ElMessage.success('本书知识图谱已重建')
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -397,6 +414,7 @@ async function openKpDetail(kp: KpNode) {
   try {
     kpDetail.value = await getKnowledgeAppearsIn(kp.id)
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     kpLoading.value = false
@@ -640,6 +658,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  taskAbort.abort()
   window.removeEventListener('resize', resize)
   chart?.dispose()
   chart = null

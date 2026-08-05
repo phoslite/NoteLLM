@@ -10,6 +10,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.pytest_tmp*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -40,8 +41,10 @@ demo/logs/
 Thumbs.db
 
 # ---- 临时/杂项文件 ----
-5\}
 01-home-shelf.png
+_fep*
+_fix_*.py
+*.tmp
 
 # ---- 过程性文档（本地保留，不入库） ----
 docs/审查报告/

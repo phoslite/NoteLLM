@@ -23,6 +23,7 @@ export interface ReaderAi {
   switchMode: (mode: string) => void
   sendChat: (opts?: { crop_image?: string; crop_label?: string }) => Promise<void>
   abortChat: () => void
+  dispose: () => void
   clearChat: () => Promise<void>
   resetChat: () => void
   copyChat: (text: string) => void
@@ -65,6 +66,7 @@ export function useReaderAi(opts: {
   const streaming = ref(false)
   const streamError = ref('')
   let chatAbort: (() => void) | null = null
+  let activePollTimer: number | null = null
   let pendingSelection = ''
   let historySeq = 0
   // 会话标识（决策 34）：同会话内后端复用 LLM 挑选结果；换书/换模式/清空后重新生成
@@ -217,7 +219,7 @@ export function useReaderAi(opts: {
       pendingThinking = ''
       thinkingFlushAt = Date.now()
     }
-    const pollTimer = setInterval(() => {
+    activePollTimer = setInterval(() => {
       void pollStreamHistory(assistant, streamKey)
     }, POLL_INTERVAL_MS)
     const { promise, abort } = streamChat(
@@ -256,12 +258,28 @@ export function useReaderAi(opts: {
       streaming.value = false
       streamError.value = (err as Error).message
     } finally {
-      clearInterval(pollTimer)
+      if (activePollTimer != null) {
+        clearInterval(activePollTimer)
+        activePollTimer = null
+      }
       chatAbort = null
       if (!assistant.content && streamError.value) {
         chatMessages.value = chatMessages.value.filter((m) => m !== assistant)
       }
       scrollChat()
+    }
+  }
+
+  /** 卸载清理（审查 N-3/N-13）：中止进行中的流与历史轮询定时器。 */
+  function dispose() {
+    abortChat()
+    if (activePollTimer != null) {
+      clearInterval(activePollTimer)
+      activePollTimer = null
+    }
+    if (flushTimer != null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
     }
   }
 
@@ -299,6 +317,6 @@ export function useReaderAi(opts: {
 
   return {
     chatMessages, chatMode, aiInput, streaming, streamError, currentChapterTitle,
-    presetPrompt, switchMode, sendChat, abortChat, clearChat, resetChat, copyChat, askSelection,
+    presetPrompt, switchMode, sendChat, abortChat, dispose, clearChat, resetChat, copyChat, askSelection,
   }
 }

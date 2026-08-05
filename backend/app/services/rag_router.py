@@ -52,6 +52,7 @@ class SelectionResult:
 
 # 会话挑选缓存：{cache_key: (expire_ts, payload)}；进程内（重启后重新挑选，可接受）
 _SESSION_CACHE: dict[str, tuple[float, dict]] = {}
+_SESSION_CACHE_MAX = 200  # 容量上限（审查问题 10）：写时清扫过期 + 淘汰最旧
 _SESSION_LOCK = threading.Lock()
 
 
@@ -84,7 +85,7 @@ def build_catalog(db: Session, current_book_id: int) -> tuple[str, dict[int, dic
 
     书项 = {book_id, title, domain, summary, skill_names}；仅包含有 RAG/Skill 资产的书。
     """
-    books = db.query(Book).all()
+    books = db.query(Book).order_by(Book.id).all()
     # 审查 A-7：资产与文件夹名一次性批量加载，目录构建从 5N-6N 次查询降为常数次
     assets_map = list_assets_by_books(db)
     folder_names = {f.id: f.name for f in db.query(Folder).all()}
@@ -308,6 +309,15 @@ def _cache_put(key: str, payload: dict) -> None:
         return
     with _SESSION_LOCK:
         _SESSION_CACHE[key] = (time.time() + ttl_min * 60, payload)
+        if len(_SESSION_CACHE) > _SESSION_CACHE_MAX:
+            # 写时清扫：先删过期，仍超限则淘汰最旧条目（字典保持插入序）
+            now = time.time()
+            for k in [k for k, (exp, _) in _SESSION_CACHE.items() if exp <= now]:
+                del _SESSION_CACHE[k]
+            overflow = len(_SESSION_CACHE) - _SESSION_CACHE_MAX
+            if overflow > 0:
+                for k in list(_SESSION_CACHE)[:overflow]:
+                    del _SESSION_CACHE[k]
 
 
 def clear_session_cache(session_id: str | None = None) -> int:

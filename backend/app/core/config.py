@@ -1,4 +1,4 @@
-﻿"""应用配置：读取 .env / 环境变量，禁止硬编码密钥。"""
+"""应用配置：读取 .env / 环境变量，禁止硬编码密钥。"""
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     domain_terms_file: Path = Path("domain_terms.txt")  # 专业术语词库（与 .env 同级，用户可编辑）
     db_url: str = "sqlite:///./data/llmnotebook.db"
 
+    # 上传文件大小上限（审查 C-问题13：超大文件整读内存保护，默认 200MB）
+    max_upload_bytes: int = 200 * 1024 * 1024
     ai_base_url: str = "https://api.deepseek.com"
     ai_api_key: str = ""
     ai_model: str = "deepseek-v4-flash"

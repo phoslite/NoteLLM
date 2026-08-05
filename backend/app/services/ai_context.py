@@ -1,6 +1,7 @@
 """AI 阅读上下文组装：章节段落编号、PDF 页窗口文本与 RAG/Skill 上下文块。"""
 import base64
 
+from app.services.html_util import chapter_plain_text
 from app.services.media_service import page_image_path
 
 
@@ -34,11 +35,13 @@ def build_page_context_block(window_texts: dict[int, str], enable_body_send: boo
     return "\n\n".join(blocks)
 
 
-def build_context_block(chapter, rag_chunks: list[dict], enable_body_send: bool) -> tuple[str, str]:
+def build_context_block(
+    chapter, rag_chunks: list[dict], enable_body_send: bool, book_format: str | None = None
+) -> tuple[str, str]:
     """组装「带段落编号的正文 + RAG 片段块」；隐私开关关闭时两者均为空字符串。"""
     if not enable_body_send:
         return "", ""
-    context_text = paragraph_numbered(chapter.content_text or "")
+    context_text = paragraph_numbered(chapter_plain_text(book_format, chapter.content_text or ""))
     rag_block = "\n".join(
         f"【第{c['chapter_index']}章 第{c.get('para_pos', '-')}段】{c.get('text', '')}" for c in rag_chunks
     )

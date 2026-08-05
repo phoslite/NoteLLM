@@ -353,3 +353,36 @@ def test_summarize_route_returns_task(client):
     st = client.get(f"/api/tasks/{task_id}").json()["data"]
     assert st["status"] in {"queued", "running", "success", "failed"}
     assert "error" in st and "result" in st
+
+def test_summarize_idempotent_reuses_active_task(client, monkeypatch):
+    """审查 C-问题4：已有进行中总结任务时复用 task_id，不重复提交。"""
+    from app.api.routes import assets as assets_route
+
+    r0 = client.post("/api/books", files={"file": ("幂等.md", "# 第一章\n\n正文\n".encode(), "text/markdown")})
+    book_id = r0.json()["data"]["id"]
+
+    calls: list = []
+    monkeypatch.setattr(assets_route, "find_active", lambda *a, **k: "existing-task-1")
+    monkeypatch.setattr(assets_route, "submit", lambda *a, **k: calls.append(a) or "new-task")
+    r = client.post(f"/api/books/{book_id}/summarize")
+    body = r.json()
+    assert body["code"] == 0, body
+    assert body["data"]["task_id"] == "existing-task-1"
+    assert calls == [], "已有进行中任务时不应重复提交"
+
+
+def test_archive_idempotent_reuses_active_task(client, monkeypatch):
+    """审查 C-问题4：归档任务同样幂等复用。"""
+    from app.api.routes import assets as assets_route
+
+    r0 = client.post("/api/books", files={"file": ("幂等归档.md", "# 第一章\n\n正文\n".encode(), "text/markdown")})
+    book_id = r0.json()["data"]["id"]
+
+    calls: list = []
+    monkeypatch.setattr(assets_route, "find_active", lambda *a, **k: "existing-archive-1")
+    monkeypatch.setattr(assets_route, "submit", lambda *a, **k: calls.append(a) or "new-task")
+    r = client.post(f"/api/books/{book_id}/archive")
+    body = r.json()
+    assert body["code"] == 0, body
+    assert body["data"]["task_id"] == "existing-archive-1"
+    assert calls == [], "已有进行中归档任务时不应重复提交"

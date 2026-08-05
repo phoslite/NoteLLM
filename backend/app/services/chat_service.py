@@ -25,7 +25,9 @@ from app.services.ai_context import (
     paragraph_numbered,
 )
 from app.services.citations import extract_citations
+from app.services.html_util import chapter_plain_text
 from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
+from app.services.media_service import markdown_image_data_uris
 from app.services.profile_service import get_all_profiles
 from app.services.rag_router import select_knowledge
 from app.services.vision_extract import ensure_window_caches
@@ -47,6 +49,7 @@ def build_messages(
     mode: str | None = None,
     history: list[dict] | None = None,
     profiles: dict | None = None,
+    media_images: list[str] | None = None,
 ) -> list[dict]:
     """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段（Skill 仍注入）。
 
@@ -57,7 +60,7 @@ def build_messages(
     - crop_image：涂鸦划线区域裁剪图（data URI，chat 模式）；划线提问时用 crop_label 说明范围。
     - responses 模式由客户端降级为纯文本。
     """
-    context_text = paragraph_numbered(chapter.content_text or "") if enable_body_send else ""
+    context_text = paragraph_numbered(chapter_plain_text(getattr(book, "format", None), chapter.content_text or "")) if enable_body_send else ""
     user = build_user_prompt(
         book.title,
         chapter.index,
@@ -78,7 +81,7 @@ def build_messages(
     ]
     if history:
         messages.extend(history)
-    images = [img for img in (page_image, crop_image) if img]
+    images = [img for img in (page_image, crop_image, *(media_images or [])) if img]
     if images and enable_body_send:
         content: list[dict] = [{"type": "text", "text": user}]
         if crop_label:
@@ -157,6 +160,11 @@ def prepare_chat_job(
     history = None
     if enable_body:
         history = recent_history_texts(db, book.id, mode)
+    # 决策 31：Markdown 内嵌图片作为附件（受隐私开关约束）
+    media_images = None
+    if enable_body and not page_mode and book.format in ("md", "txt", "epub"):
+        media_images = markdown_image_data_uris(book, chapter.content_text or "")
+
     messages = build_messages(
         book,
         chapter,
@@ -173,7 +181,20 @@ def prepare_chat_job(
         mode,
         history,
         profiles,
+        media_images=media_images,
     )
+    # 发送前断言（审查 2-3）：隐私开启时正文不得携带「未发送」占位文案，占位符泄漏直接拦截
+    if enable_body:
+        user_content = messages[-1].get("content")
+        leaked = isinstance(user_content, str) and "（正文未发送" in user_content
+        if isinstance(user_content, list):
+            leaked = leaked or any(
+                isinstance(part, dict) and part.get("type") == "text"
+                and "（正文未发送" in str(part.get("text", ""))
+                for part in user_content
+            )
+        if leaked:
+            raise RuntimeError("内部错误：正文占位符泄漏到 AI 请求，已拦截发送")
     return {
         "client": build_client(db),
         "messages": messages,
@@ -295,6 +316,9 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                 last_persist_at = time.monotonic()
     except LLMError as exc:
         yield sse_event({"type": "error", "message": str(exc)})
+        return
+    except Exception as exc:  # noqa: BLE001 审查 C-问题9：流中途非 LLMError 异常也发 error 事件，不再静默断流
+        yield sse_event({"type": "error", "message": f"流式输出中断: {exc}"})
         return
     yield sse_event({"type": "end", "text": full, "citations": extract_citations(full), "cached": False})
     # 历史落库使用独立会话，避免请求级会话在流式期间被关闭

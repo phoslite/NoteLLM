@@ -14,6 +14,7 @@ export interface ReaderPageCache {
   refreshPageCacheStatus: () => Promise<void>
   reExtractCurrentPage: () => Promise<void>
   rebuildPageCache: () => Promise<void>
+  dispose: () => void
 }
 
 /** PDF 页缓存（M7 多模态视觉提取）：覆盖状态、重提本页、后台重建任务轮询。 */
@@ -75,6 +76,13 @@ export function useReaderPageCache(opts: {
     }
   }
 
+  /** 卸载清理（审查 N-2）：停止重建轮询并移除可见性监听。 */
+  function dispose() {
+    stopPolling()
+    pollTaskId = null
+    pageCacheBusy.value = false
+  }
+
   /* ---------- 重建任务轮询（页面可见性感知：隐藏/最小化时暂停 2s 轮询，恢复后继续） ---------- */
   let pollTimer: number | null = null
   let pollTaskId: string | null = null
@@ -126,5 +134,6 @@ export function useReaderPageCache(opts: {
     refreshPageCacheStatus,
     reExtractCurrentPage,
     rebuildPageCache,
+    dispose,
   }
 }

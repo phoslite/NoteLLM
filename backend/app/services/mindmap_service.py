@@ -129,7 +129,7 @@ def build_mindmap_messages(
     page_context: str | None = None,
 ) -> list[dict]:
     """构建脑图生成 messages；隐私开关关闭时不发送正文与 RAG 片段；PDF 按页阅读优先注入页缓存。"""
-    context_text, rag_block = build_context_block(chapter, rag_chunks, enable_body_send)
+    context_text, rag_block = build_context_block(chapter, rag_chunks, enable_body_send, getattr(book, "format", None))
     page_mode = getattr(chapter, "page_index", None) is not None
     if page_context:
         rag_block = ""

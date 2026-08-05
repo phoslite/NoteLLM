@@ -20,8 +20,19 @@ def _md_heading(line: str) -> str | None:
     return None
 
 
+def _read_text(path: str | Path) -> str:
+    """按编码尝试读取（审查 C-问题12）：utf-8 → gbk → latin-1 兜底，避免 GBK 中文 txt 乱码入库。"""
+    raw = Path(path).read_bytes()
+    for encoding in ("utf-8", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace")
+
+
 def parse_markdown(path: str | Path, title_hint: str | None = None) -> ParsedBook:
-    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    raw = _read_text(path)
     h1 = next(
         (m.group(1).strip() for m in (re.match(r"^#\s+(.+?)\s*$", ln) for ln in raw.splitlines()) if m),
         None,
@@ -38,5 +49,5 @@ def _txt_heading(line: str) -> str | None:
 
 
 def parse_txt(path: str | Path, title_hint: str | None = None) -> ParsedBook:
-    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    raw = _read_text(path)
     return split_by_headings(raw, title_hint or Path(path).stem, _txt_heading)

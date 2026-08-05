@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MdRender from '@/components/MdRender.vue'
 import { dedupeAssets, getBookAsset, listAssetBriefs, summarizeBook } from '@/api/rag'
-import { waitForTask } from '@/utils/task'
+import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
 import { listBooks, uploadBook } from '@/api/books'
 import type { BookAssetBrief, BookAssetView, BookItem } from '@/types'
 
@@ -28,6 +28,8 @@ async function refresh() {
     books.value = await listBooks()
     // 审查 A-6：批量资产摘要一次请求，替代逐书 GET /books/{id}/asset
     assets.value = await listAssetBriefs()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
   }
@@ -90,6 +92,7 @@ async function runSummarize(bookId: number) {
   taskMsg.value = 'AI 总结中…'
   try {
     const { task_id } = await summarizeBook(bookId)
+    notifyTaskSubmitted()
     // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 pollTask 180s 超时保持一致）
     await waitForTask(task_id, { timeoutMs: 180000 })
     await refresh()

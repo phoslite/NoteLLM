@@ -1,11 +1,14 @@
 """专业术语词库与领域命名：用户词库/系统缓存区、领域候选词与专业术语选择。"""
+import os
 import re
+import threading
 from collections import Counter
 from pathlib import Path
 
 from app.core.config import settings
 from app.models.book import Book
 from app.services.graph.keywords import _CJK_RE, extract_keywords, sanitize_cluster_name
+from app.services.html_util import html_to_text
 
 _GENERIC_DOMAIN_TERMS = {
     # 数学/学术通用词
@@ -31,6 +34,7 @@ def generic_domain_terms() -> frozenset[str]:
 _LEXICON_CACHE_MARKER = "# ================= 系统缓存区（自动追加，可编辑/删除） ================="
 
 _DOMAIN_LEXICON_CACHE: tuple[frozenset[str], frozenset[str], float] | None = None
+_LEXICON_LOCK = threading.Lock()  # 词库读-改-写互斥（审查 C-问题8）
 
 def _lexicon_path() -> Path:
     return Path(settings.domain_terms_file)
@@ -90,6 +94,12 @@ def cache_domain_term(term: str) -> bool:
     term = sanitize_cluster_name(term)
     if not term or term in _GENERIC_DOMAIN_TERMS:
         return False
+    with _LEXICON_LOCK:  # 审查 C-问题8：读-改-写加锁，防并发互相覆盖
+        return _cache_domain_term_locked(term)
+
+
+def _cache_domain_term_locked(term: str) -> bool:
+    """加锁后的词库写路径（审查 C-问题8）：临时文件 + os.replace 原子替换。"""
     user, cached = load_domain_lexicon()
     if term in user or term in cached:
         return False
@@ -102,7 +112,7 @@ def cache_domain_term(term: str) -> bool:
                 lines.append(term)
             else:
                 lines.extend(["", _LEXICON_CACHE_MARKER, term])
-            path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+            content = "\n".join(lines).rstrip() + "\n"
         else:
             header = (
                 "# 专业术语词库（领域命名优先匹配本文件中的术语）\n"
@@ -114,12 +124,15 @@ def cache_domain_term(term: str) -> bool:
                 + term
                 + "\n"
             )
-            path.write_text(header, encoding="utf-8")
-        global _DOMAIN_LEXICON_CACHE
-        _DOMAIN_LEXICON_CACHE = None
-        return True
+            content = header
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)  # 原子替换：并发写不互相覆盖（审查 C-问题8）
     except OSError:
         return False
+    global _DOMAIN_LEXICON_CACHE
+    _DOMAIN_LEXICON_CACHE = None
+    return True
 
 def _clean_title_segment(seg: str) -> str:
     """书名/标题清洗：去掉括号内（作者/版本/出版社等）与文件名下划线段。"""
@@ -138,7 +151,7 @@ def _domain_candidates(book: Book, posterior: dict | None = None) -> dict[str, f
         if title:
             parts.append((title + "\n") * 3)
         if ch.content_text:
-            parts.append(ch.content_text)
+            parts.append(html_to_text(ch.content_text) if getattr(book, "format", None) == "epub" else ch.content_text)
     clean_title = _clean_title_segment(book.title or "")
     if clean_title:
         parts.append((clean_title + "\n") * 2)

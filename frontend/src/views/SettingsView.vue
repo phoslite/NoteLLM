@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAiSettings, reloadEnvSettings, saveAiSettings, testAiSettings, testVisionAiSettings } from '@/api/settings'
 import type { AiSettings } from '@/types'
@@ -182,6 +182,7 @@ async function load() {
     const data = await getAiSettings()
     Object.assign(form, data, { api_key: '', vision_api_key: '' })
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -214,10 +215,19 @@ async function reloadEnv() {
     Object.assign(form, view, { api_key: '', vision_api_key: '' })
     ElMessage.success('已从 .env 强制载入')
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     reloadingEnv.value = false
   }
+}
+
+const taskAbort = new AbortController()
+onBeforeUnmount(() => taskAbort.abort())
+
+/** 中止轮询产生的错误在 catch 中静默忽略。 */
+function isTaskAbort(err: unknown): boolean {
+  return (err as Error)?.name === 'AbortError'
 }
 
 async function test() {
@@ -226,7 +236,7 @@ async function test() {
     // 测试连接后台化（决策 35）：提交任务后轮询结果
     const { task_id } = await testAiSettings(toPayload())
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000 })
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000, signal: taskAbort.signal })
     if (t.status === 'failed') {
       ElMessage.error(t.error || '连接测试失败')
     } else {
@@ -235,6 +245,7 @@ async function test() {
       else ElMessage.warning(result.message || '连接失败')
     }
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     testing.value = false
@@ -246,7 +257,7 @@ async function testVision() {
   try {
     const { task_id } = await testVisionAiSettings(toPayload())
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000 })
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000, signal: taskAbort.signal })
     if (t.status === 'failed') {
       ElMessage.error(t.error || '视觉连接测试失败')
     } else {
@@ -255,6 +266,7 @@ async function testVision() {
       else ElMessage.warning(result.message || '视觉连接失败')
     }
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     visionTesting.value = false

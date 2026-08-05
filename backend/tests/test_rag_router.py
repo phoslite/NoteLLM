@@ -13,7 +13,14 @@ from app.models.book import Book, Chapter
 from app.repositories.assets import save_asset_content
 from app.services.chat_service import build_messages, prepare_chat_job
 from app.services.citations import extract_citations
-from app.services.rag_router import build_catalog, clear_session_cache, select_knowledge
+from app.services.rag_router import (
+    _SESSION_CACHE,
+    _cache_get,
+    _cache_put,
+    build_catalog,
+    clear_session_cache,
+    select_knowledge,
+)
 
 
 def _upload(client, title, text=None):
@@ -163,6 +170,22 @@ def test_selector_failure_falls_back_to_rules(client, monkeypatch):
     finally:
         db.close()
         clear_session_cache()
+
+
+def test_session_cache_cap_sweeps_oldest(client, monkeypatch):
+    """审查问题 10：会话缓存超限时写时清扫最旧。"""
+    monkeypatch.setattr("app.services.rag_router._SESSION_CACHE_MAX", 2)
+    _SESSION_CACHE.clear()
+    try:
+        _cache_put("s:1", {"v": 1})
+        _cache_put("s:2", {"v": 2})
+        _cache_put("s:3", {"v": 3})
+        assert len(_SESSION_CACHE) == 2
+        assert _cache_get("s:1") is None  # 最旧被淘汰
+        assert _cache_get("s:3") == {"v": 3}
+    finally:
+        _SESSION_CACHE.clear()
+        monkeypatch.undo()
 
 
 def test_session_cache_reuses_within_chapter(client, monkeypatch):

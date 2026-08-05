@@ -7,6 +7,7 @@ import { exportNotesPdfUrl, exportNotesUrl, getChapterContent, getProgress, list
 import { useBookStore } from '@/stores/book'
 import type { BookDetail, BookmarkItem, BookItem, ChapterItem } from '@/types'
 import { cachedSplitBlocks } from '@/utils/content'
+import DOMPurify from 'dompurify'
 import MdRender from '@/components/MdRender.vue'
 import MindMapPanel from '@/components/MindMapPanel.vue'
 import ReaderLeftPanel from '@/components/ReaderLeftPanel.vue'
@@ -31,6 +32,9 @@ const store = useBookStore()
 const book = ref<BookDetail | null>(null)
 const currentChapterId = ref<number | null>(null)
 const blocks = ref<string[]>([])
+const epubContent = ref('') // EPUB A: raw sanitized-HTML chapter body (rendered via DOMPurify)
+const epubMode = computed(() => book.value?.format === 'epub')
+const epubHtml = computed(() => (epubContent.value ? DOMPurify.sanitize(epubContent.value) : ''))
 const pageMode = ref(false) // 扫描版 PDF：按原始页读图
 const pageIndex = ref<number | null>(null)
 const loadError = ref(false)
@@ -220,7 +224,8 @@ async function loadChapter(chapterId: number, restore: boolean) {
     pageMode.value = content.page_index != null
     pageIndex.value = content.page_index
     await switchDoodlePage(prevPageMode, prevPage, content.page_index)
-    blocks.value = pageMode.value ? [] : cachedSplitBlocks(content.content_text)
+    epubContent.value = pageMode.value || book.value?.format !== 'epub' ? '' : content.content_text
+    blocks.value = pageMode.value || epubMode.value ? [] : cachedSplitBlocks(content.content_text)
     await nextTick()
     if (!pageMode.value) applyHighlights()
     applyRestore(chapterId, restore)
@@ -306,7 +311,7 @@ async function toggleFinished() {
   }
 }
 
-const { archiving, archiveAndSummarize } = useReaderArchive({
+const { archiving, archiveAndSummarize, dispose: disposeArchive } = useReaderArchive({
   bookId,
   book,
   onDone: async () => {
@@ -359,6 +364,9 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocMouseDown)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   stopReadCheck()
+  pageCache.dispose()
+  ai.dispose()
+  disposeArchive()
   dispose()
   disposeDoodle()
 })
@@ -473,10 +481,12 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="pageMode" class="page-preload" aria-hidden="true">
-          <img v-if="pageIndex && pageIndex > 1" :src="`/api/books/${bookId}/pages/${pageIndex - 1}`" alt="" loading="eager" decoding="async" />
-          <img v-if="pageIndex && pageIndex < totalCount" :src="`/api/books/${bookId}/pages/${pageIndex + 1}`" alt="" loading="eager" decoding="async" />
+          <img v-if="pageIndex != null && pageIndex > 1" :src="`/api/books/${bookId}/pages/${pageIndex - 1}`" alt="" loading="eager" decoding="async" />
+          <img v-if="pageIndex != null && pageIndex < totalCount" :src="`/api/books/${bookId}/pages/${pageIndex + 1}`" alt="" loading="eager" decoding="async" />
         </div>
         <template v-else>
+          <div v-if="epubMode" class="epub-body" v-html="epubHtml"></div>
+          <template v-else>
           <div
             v-for="(block, i) in blocks"
             :key="i"
@@ -494,6 +504,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div v-if="!blocks.length && !chapterLoading" class="empty-tip">从左侧目录选择章节开始阅读</div>
+          </template>
         </template>
       </div>
 
@@ -687,6 +698,11 @@ onBeforeUnmount(() => {
 .loading-tip { color: var(--text-secondary); font-size: 13px; padding: 20px 0; }
 .page-preload img { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0.01; }
 .empty-tip { color: var(--text-secondary); font-size: 12px; padding: 6px 2px; }
+.epub-body { line-height: 1.9; word-break: break-word; }
+.epub-body :deep(img) { max-width: 100%; height: auto; }
+.epub-body :deep(table) { border-collapse: collapse; margin: 0.8em 0; }
+.epub-body :deep(blockquote) { margin: 0.8em 0; padding: 0.4em 1em; border-left: 3px solid var(--border-color); color: var(--text-secondary); }
+.epub-body :deep(li) { margin: 0.2em 0; }
 
 .drawer-actions { margin-bottom: 12px; display: flex; gap: 16px; }
 .export-link { font-size: 13px; color: var(--primary-color); text-decoration: none; }

@@ -13,7 +13,7 @@ from app.repositories.assets import (
 from app.schemas.common import ok
 from app.schemas.serializers import asset_to_dict
 from app.services.rag_service import archive_book_task, generate_rag_skill
-from app.tasks import submit
+from app.tasks import find_active, submit
 
 router = APIRouter(prefix="/api", tags=["assets"])
 
@@ -31,6 +31,9 @@ def _run_summarize_task(book_id: int) -> dict:
 def summarize_book(book_id: int, db: Session = Depends(get_db)):
     """把书籍总结为 RAG + Skill 资产；后台任务执行，返回 task_id 供轮询。"""
     require_book(db, book_id)
+    existing = find_active("text", related_id=book_id, name_prefix="rag-skill-summarize")
+    if existing:  # 审查 C-问题4：幂等防护，防双击重复提交互相覆盖资产
+        return ok({"task_id": existing}, "已有进行中的总结任务，直接复用")
     task_id = submit(
         "text", "rag-skill-summarize", lambda: _run_summarize_task(book_id=book_id)
     )
@@ -45,6 +48,9 @@ def archive_book(book_id: int, db: Session = Depends(get_db)):
     {book_id, version, rag, skill} 及 PDF 场景的 page_cache 提取统计。
     """
     require_book(db, book_id)
+    existing = find_active("text", related_id=book_id, name_prefix="book-archive")
+    if existing:  # 审查 C-问题4：幂等防护，防重复提交归档任务
+        return ok({"task_id": existing}, "已有进行中的归档任务，直接复用")
     task_id = submit("text", "book-archive", lambda: archive_book_task(book_id), related_id=book_id)
     return ok({"task_id": task_id}, "已提交归档任务")
 

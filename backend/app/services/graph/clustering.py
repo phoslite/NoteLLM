@@ -284,12 +284,13 @@ def merge_and_rename_clusters(db: Session) -> dict:
     db.commit()
     return {"merged": merged, "renamed": renamed}
 
-def assign_clusters(db: Session, books: list[Book] | None = None) -> dict[int, str]:
+def assign_clusters(db: Session, books: list[Book] | None = None, persist: bool = True) -> dict[int, str]:
     """聚类分层：post 落盘（未失效）→ tag → 文件夹名 → 领域自动聚类；仍无归属归「其他」。
 
     获得 RAG/Skill 资产后的书由 post_classify_book 落盘 cluster_name（§9 两阶段分类），
     只要资产版本未变这里直接采用；否则实时重算并回写 classify_source/classified_at/classify_version。
     结果带落盘缓存：聚类是**全局群体依赖**的，缓存以「全书库签名」为键——
+    persist=False 时（GET 只读链路）仅返回结果，不写库也不写缓存；落盘交给导入/后台任务。
     同一批书（内容/tag/文件夹/资产版本均未变）重复打开谱系图直接命中，不再全量重算；
     任一书变化（增删改/归档）→ 群体签名变化 → 自动失效重算。
     """
@@ -361,31 +362,32 @@ def assign_clusters(db: Session, books: list[Book] | None = None) -> dict[int, s
         for m in group:
             result[m.id] = name
 
-    # 回写 classify 字段（post 未失效的书不动）
-    now = utcnow()
-    for b in books:
-        if b.classify_source == "post" and b.classify_version == versions.get(b.id):
-            continue
-        name = result.get(b.id) or "其他"
-        tags = [t for t in (sanitize_cluster_name(t) for t in book_tags(b)) if t]
-        if tags:
-            src = "tag"
-        elif b.folder_id:
-            src = "folder" if folder_names[b.id] else "pre"
-        else:
-            src = "pre"
-        if b.cluster_name != name or b.classify_source != src or b.classify_version != versions.get(b.id, 0):
-            b.cluster_name = name
-            b.classify_source = src
-            b.classified_at = now
-            b.classify_version = versions.get(b.id, 0)
-    db.commit()
-    # 写回落盘缓存（下次打开谱系图直接命中；任一书内容/tag/文件夹/资产版本变化由群体签名失效）
-    if books:
-        _save_cluster_cache(
-            {
-                "population": _population_signature(sigs),
-                "books": {str(b.id): {"cluster": result.get(b.id) or "其他"} for b in books},
-            }
-        )
+    # 回写 classify 字段（post 未失效的书不动）；persist=False 仅读链路不落盘
+    if persist:
+        now = utcnow()
+        for b in books:
+            if b.classify_source == "post" and b.classify_version == versions.get(b.id):
+                continue
+            name = result.get(b.id) or "其他"
+            tags = [t for t in (sanitize_cluster_name(t) for t in book_tags(b)) if t]
+            if tags:
+                src = "tag"
+            elif b.folder_id:
+                src = "folder" if folder_names[b.id] else "pre"
+            else:
+                src = "pre"
+            if b.cluster_name != name or b.classify_source != src or b.classify_version != versions.get(b.id, 0):
+                b.cluster_name = name
+                b.classify_source = src
+                b.classified_at = now
+                b.classify_version = versions.get(b.id, 0)
+        db.commit()
+        # 写回落盘缓存（下次打开谱系图直接命中；任一书内容/tag/文件夹/资产版本变化由群体签名失效）
+        if books:
+            _save_cluster_cache(
+                {
+                    "population": _population_signature(sigs),
+                    "books": {str(b.id): {"cluster": result.get(b.id) or "其他"} for b in books},
+                }
+            )
     return result

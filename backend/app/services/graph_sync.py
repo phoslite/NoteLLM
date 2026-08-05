@@ -21,6 +21,7 @@ from app.repositories.assets import read_asset_content, save_asset_content, upse
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import extract_keywords
 from app.services.graph.lexicon import generic_domain_terms
+from app.services.html_util import html_to_text
 
 # 本地联动存根的关联强度下限（与相关度阈值初值对齐）
 LINK_MIN_STRENGTH = 50.0
@@ -52,6 +53,8 @@ def rag_book_input(db: Session, book: Book, budget: int = 3000) -> str:
     parts: list[str] = []
     for ch in book.chapters:
         body = (ch.content_text or "").strip()
+        if book.format == "epub" and body:
+            body = html_to_text(body).strip()
         head = f"第{ch.index}章 {ch.title}"
         if body:
             head += "：" + body

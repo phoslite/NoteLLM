@@ -11,6 +11,10 @@ import type { AssetEntry, BookAssetView, BookDetail } from '@/types'
 const route = useRoute()
 const router = useRouter()
 const bookId = Number(route.params.bookId)
+const bookIdValid = Number.isFinite(bookId) && bookId > 0
+if (!bookIdValid) {
+  void router.replace('/rag')
+}
 
 const book = ref<BookDetail | null>(null)
 const asset = ref<BookAssetView | null>(null)
@@ -23,6 +27,7 @@ const expandedChunks = ref<Set<number>>(new Set())
 
 async function refresh() {
   loading.value = true
+  if (!bookIdValid) return
   try {
     const [detail, assetResult] = await Promise.allSettled([getBook(bookId), getBookAsset(bookId)])
     book.value = detail.status === 'fulfilled' ? detail.value : null

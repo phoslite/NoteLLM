@@ -249,7 +249,7 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
 def global_graph_payload(db: Session, books: list[Book] | None = None) -> dict:
     """全局谱系数据：聚类 + 书籍节点 + 关联边。"""
     books = books or db.query(Book).order_by(Book.id).all()
-    clusters = assign_clusters(db, books)
+    clusters = assign_clusters(db, books, persist=False)
     cluster_map: dict[str, list[int]] = defaultdict(list)
     for b in books:
         cluster_map[clusters.get(b.id) or "其他"].append(b.id)
