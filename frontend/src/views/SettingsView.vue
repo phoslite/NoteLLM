@@ -155,10 +155,19 @@ function fieldPlaceholder(f: FieldDef): string {
   return f.placeholder ?? ''
 }
 
+/** API Key 是否已设置（用于「已设置（留空保持不变）」徽标）。 */
+function keySet(key: string): boolean {
+  if (key === 'api_key') return form.api_key_set
+  if (key === 'vision_api_key') return form.vision_api_key_set
+  if (key === 'rag_select_api_key') return form.rag_select_api_key_set
+  return false
+}
+
 const tabs = computed(() => [
   {
     name: 'text',
     label: '文本模型',
+    icon: '📝',
     desc: '阅读问答 · 解读 / 概论 / 脑图 · RAG / Skill 总结',
     fields: textFields,
     sections: sectionsOf(textFields),
@@ -169,6 +178,7 @@ const tabs = computed(() => [
   {
     name: 'vision',
     label: '多模态视觉模型',
+    icon: '🖼️',
     desc: 'PDF 页面信息提取 · 独立于文本 AI，无需额度管理',
     fields: visionFields,
     sections: sectionsOf(visionFields),
@@ -179,6 +189,7 @@ const tabs = computed(() => [
   {
     name: 'selector',
     label: '挑选模型',
+    icon: '🎯',
     desc: 'AI 自主挑选 RAG / Skill · 未填项自动跟随文本模型',
     fields: selectorFields,
     sections: sectionsOf(selectorFields),
@@ -240,7 +251,7 @@ async function load() {
   loading.value = true
   try {
     const data = await getAiSettings()
-    Object.assign(form, data, { api_key: '', vision_api_key: '' })
+    Object.assign(form, data, { api_key: '', vision_api_key: '', rag_select_api_key: '' })
   } catch (err) {
     if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
@@ -252,7 +263,7 @@ async function load() {
 async function save() {
   try {
     const view = await saveAiSettings(toPayload())
-    Object.assign(form, view, { api_key: '', vision_api_key: '' })
+    Object.assign(form, view, { api_key: '', vision_api_key: '', rag_select_api_key: '' })
     ElMessage.success('AI 配置已保存')
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -272,7 +283,7 @@ async function reloadEnv() {
   reloadingEnv.value = true
   try {
     const view = await reloadEnvSettings()
-    Object.assign(form, view, { api_key: '', vision_api_key: '' })
+    Object.assign(form, view, { api_key: '', vision_api_key: '', rag_select_api_key: '' })
     ElMessage.success('已从 .env 强制载入')
   } catch (err) {
     if (isTaskAbort(err)) return
@@ -374,7 +385,10 @@ onMounted(load)
     </header>
 
     <el-tabs v-model="activeTab" class="settings-tabs">
-      <el-tab-pane v-for="tab in tabs" :key="tab.name" :label="tab.label" :name="tab.name">
+      <el-tab-pane v-for="tab in tabs" :key="tab.name" :name="tab.name">
+      <template #label>
+        <span class="tab-label">{{ tab.icon }} {{ tab.label }}</span>
+      </template>
         <div v-loading="loading" class="tab-panel">
           <p class="panel-desc">{{ tab.desc }}</p>
           <section v-for="sec in tab.sections" :key="sec" class="panel">
@@ -386,9 +400,14 @@ onMounted(load)
                 <el-form-item
                   v-for="f in tab.fields.filter((x) => x.section === sec)"
                   :key="f.key"
-                  :label="f.label"
                   :class="{ 'form-item-wide': f.wide }"
                 >
+                  <template #label>
+                    <span class="field-label">
+                      {{ f.label }}
+                      <el-tag v-if="keySet(f.key)" size="small" type="success" effect="plain" class="key-tag">已设置</el-tag>
+                    </span>
+                  </template>
                   <el-input
                     v-if="f.type === 'text' || f.type === 'password'"
                     :model-value="getField(f.key)"
@@ -436,33 +455,46 @@ onMounted(load)
 </template>
 
 <style scoped>
-.settings-page { padding: 20px 24px; max-width: 880px; margin: 0 auto; }
+.settings-page { padding: 20px 24px 40px; max-width: 920px; margin: 0 auto; }
 
 /* 顶部工具栏 */
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
-.head-left { display: flex; flex-direction: column; gap: 4px; }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+.head-left { display: flex; flex-direction: column; gap: 6px; }
 .page-head h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
 .title-ico { font-size: 20px; }
-.head-sub { color: var(--text-secondary); font-size: 12px; line-height: 1.6; max-width: 680px; margin: 0; }
+.head-sub { color: var(--text-secondary); font-size: 12px; line-height: 1.7; max-width: 720px; margin: 0; }
 .head-actions { display: flex; gap: 8px; }
 
-.settings-tabs { margin-top: 8px; }
-.settings-tabs :deep(.el-tabs__header) { margin-bottom: 14px; }
-.settings-tabs :deep(.el-tabs__item) { font-size: 14px; }
-.tab-panel { display: flex; flex-direction: column; gap: 14px; }
+/* 页签 */
+.settings-tabs { margin-top: 6px; }
+.settings-tabs :deep(.el-tabs__header) { margin-bottom: 16px; }
+.settings-tabs :deep(.el-tabs__nav-wrap::after) { height: 1px; }
+.settings-tabs :deep(.el-tabs__item) { font-size: 14px; padding: 0 18px; height: 44px; }
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+
+.tab-panel { display: flex; flex-direction: column; gap: 16px; }
 .panel-desc { color: var(--text-secondary); font-size: 12px; margin: 0; padding: 0 2px; }
 
 /* 分区面板 */
-.panel { background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px 18px 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
-.panel-head { margin-bottom: 6px; }
-.panel-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px 20px 6px; box-shadow: var(--shadow-sm); }
+.panel:hover { border-color: var(--primary-soft); }
+.panel-head { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+.panel-head h3 { margin: 0; font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.panel-head::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border-color), transparent); }
 
 /* 表单双列网格 */
-.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 22px; }
 .form-item-wide { grid-column: 1 / -1; }
 .field-form :deep(.el-form-item) { margin-bottom: 14px; }
-.field-form :deep(.el-form-item__label) { font-size: 13px; color: var(--text-secondary); line-height: 1.4; padding-bottom: 4px; }
+.field-form :deep(.el-form-item__label) { font-size: 13px; color: var(--text-secondary); line-height: 1.4; padding-bottom: 6px; }
+.field-label { display: inline-flex; align-items: center; gap: 6px; }
+.key-tag { transform: scale(.86); transform-origin: left center; }
 .num-input, .sel-input { width: 100%; }
-.tip { color: var(--text-secondary); font-size: 12px; line-height: 1.6; display: block; margin-top: 4px; }
-.actions { display: flex; justify-content: flex-end; gap: 10px; padding-bottom: 10px; }
+.tip { color: var(--text-secondary); font-size: 12px; line-height: 1.6; display: block; margin-top: 5px; padding: 6px 10px; background: var(--panel-bg); border-radius: 8px; border-left: 3px solid var(--primary-soft); }
+.actions { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 0 16px; border-top: 1px dashed var(--border-color); margin-top: 2px; }
+
+@media (max-width: 720px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .settings-page { padding: 16px; }
+}
 </style>

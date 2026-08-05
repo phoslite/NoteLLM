@@ -232,7 +232,7 @@ python demo/chat_demo.py                                          # 交互式多
 ### 4.4 前端 AI 配置页（rontend/src/views/SettingsView.vue）
 
 - 页面布局（v1.7x 重构）：顶部页头（标题 + 保存配置按钮）＋ el-tabs **三 Tab**——「文本模型」「多模态视觉模型」「挑选模型」各自独立；Tab 内按「连接信息 / 采样参数 / 思考模式 / 隐私与附件」分组卡片（视觉模型无隐私组；挑选模型含「总开关 / 预算」组），字段由 `textFields` / `visionFields` / `selectorFields` 声明式驱动（FieldDef：text/password/number/switch/select + section 分组 + tip 提示），字段变化走 getField / setField 统一读写表单。挑选页签（v1.113）：总开关 → 连接信息（base_url/api_key/model/mode/timeout/verify_ssl）→ 采样参数（temperature/max_tokens）→ 思考模式（thinking_type/reasoning_effort）→ 预算（max_books/max_skills/cache_ttl）；**未填项自动跟随文本模型**（mode / reasoning_effort 可显式清空恢复跟随）；「测试挑选连接」调用 `POST /api/settings/ai/test-selector`（仅 api_key 必填）。
-- 表单字段与后端一致；API Key 输入框留空 = 保持不变；「测试连接」用当前表单值临时覆盖测试（不保存）。
+- 表单字段与后端一致；**三个页签的 API Key 输入框留空 = 保持不变**（已设置时显示「已设置」绿色徽标 + 占位提示，load/save/reloadEnv 后输入框均清空，避免掩码值回显被误提交）；「测试连接」用当前表单值临时覆盖测试（不保存）。
 - API 封装：`src/api/settings.ts` —— `getAiSettings / saveAiSettings / testAiSettings / testSelectorAiSettings`。
 
 ### 4.5 前端 AI 助手面板（`frontend/src/views/ReaderView.vue`）
