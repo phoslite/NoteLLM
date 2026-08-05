@@ -3,7 +3,8 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MdRender from '@/components/MdRender.vue'
-import { deleteAssetItem, getBookAsset, getTask, summarizeBook } from '@/api/rag'
+import { deleteAssetItem, getBookAsset, summarizeBook } from '@/api/rag'
+import { waitForTask } from '@/utils/task'
 import { deleteBook, getBook } from '@/api/books'
 import type { AssetEntry, BookAssetView, BookDetail } from '@/types'
 
@@ -19,7 +20,6 @@ const taskMsg = ref('')
 const active = ref<string[]>(['rag-summary', 'rag-keypoints', 'skill-list'])
 const expandedChunks = ref<Set<number>>(new Set())
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function refresh() {
   loading.value = true
@@ -45,22 +45,14 @@ function toggleChunk(i: number) {
   expandedChunks.value = next
 }
 
-async function pollTask(taskId: string) {
-  for (let i = 0; i < 180; i++) {
-    await sleep(1000)
-    const t = await getTask(taskId)
-    if (t.status === 'success') return
-    if (t.status === 'failed') throw new Error(t.error || '总结失败')
-  }
-  throw new Error('任务超时')
-}
 
 async function runSummarize() {
   busy.value = true
   taskMsg.value = 'AI 总结中…'
   try {
     const { task_id } = await summarizeBook(bookId)
-    await pollTask(task_id)
+    // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 pollTask 180s 超时保持一致）
+    await waitForTask(task_id, { timeoutMs: 180000 })
     await refresh()
     active.value = ['rag-summary', 'rag-keypoints', 'skill-list']
     ElMessage.success('总结完成')

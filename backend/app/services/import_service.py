@@ -107,9 +107,9 @@ def import_book_file(
         if cover:
             cover_rel = cover.name
 
-    # PDF（含文本型）：按原始页渲染页面图片（page_001.jpg ...），阅读时按页读图。
+    # PDF（含文本型）：页图渲染全部交给后台任务（_import_background 并发渲染），
+    # 同步阶段只写本地抽取文本作全文检索索引（审查 B-2：消除双倍页图渲染，恢复「秒回」）。
     if suffix == ".pdf":
-        render_pdf_pages(dest, dest.parent / "pages")
         # 本地抽取文本仅作全文检索索引（非空才落盘，不用于正文展示与 AI 上下文）。
         local_text_dir = dest.parent / "local_text"
         for i, page_text in enumerate(parsed.page_texts, 1):
@@ -153,13 +153,7 @@ def _import_background(book_id: int) -> dict:
         if path.suffix.lower() == ".pdf":
             update_progress(10, "渲染 PDF 页图")
             render_pdf_pages(path, path.parent / "pages", workers=settings.page_render_concurrency)
-            update_progress(30, "生成本地全文索引")
-            parsed = parse_book(path, title_hint=path.stem)
-            local_dir = path.parent / "local_text"
-            for i, page_text in enumerate(parsed.page_texts, 1):
-                if page_text.strip():
-                    local_dir.mkdir(parents=True, exist_ok=True)
-                    (local_dir / f"page_{i:03d}.txt").write_text(page_text, encoding="utf-8")
+            # 本地全文索引已在同步阶段写入（审查 B-2：后台不再重复解析 PDF）
         # 权重（决策 35）：渲染 40 / 图谱 40 / 视觉 20
         update_progress(40, "更新跨书关联")
         incremental_cross_book_graph(db, book.id)

@@ -109,13 +109,15 @@ def compute_cross_book_graph(db: Session) -> dict:
                 )
             )
     db.flush()
+    db.commit()  # 审查 B-1（问题5）：清理与本地边先落库，避免 LLM 打分期间持有 SQLite 写锁（分钟级）
     books_by_id = {b.id: b for b in books}
     llm_results = enrich_pairs_with_llm(db, books_by_id, keywords, candidates)
     for key, result in llm_results.items():
         rel = created.get(key)
         if rel is not None:
             apply_llm_result(rel, key[0], key[1], result)
-    db.commit()
+    if llm_results:
+        db.commit()
     return global_graph_payload(db, books)
 
 

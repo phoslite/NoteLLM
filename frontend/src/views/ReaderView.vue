@@ -203,11 +203,16 @@ const {
 } = doodle
 
 /* ---------- 章节加载 ---------- */
+/** 章节加载请求序号（审查 N-11）：快速切章时丢弃过期响应，防止旧章节内容/进度覆盖新章节。 */
+let chapterSeq = 0
+
 async function loadChapter(chapterId: number, restore: boolean) {
   if (!book.value) return
+  const seq = ++chapterSeq
   chapterLoading.value = true
   try {
     const content = await getChapterContent(bookId.value, chapterId)
+    if (seq !== chapterSeq) return // 过期响应：已有更新的章节请求
     currentChapterId.value = chapterId
     markChapterOpened()
     const prevPageMode = pageMode.value
@@ -223,9 +228,9 @@ async function loadChapter(chapterId: number, restore: boolean) {
       await saveNow()
     }
   } catch {
-    loadError.value = true
+    if (seq === chapterSeq) loadError.value = true
   } finally {
-    chapterLoading.value = false
+    if (seq === chapterSeq) chapterLoading.value = false
   }
 }
 
