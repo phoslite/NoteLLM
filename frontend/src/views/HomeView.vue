@@ -7,6 +7,8 @@ import { useBookStore } from '@/stores/book'
 import type { BookItem, SearchHit } from '@/types'
 import { chapterPercent } from '@/utils/progress'
 import { notifyTaskSubmitted } from '@/utils/task'
+import GlobalChatPanel from '@/components/GlobalChatPanel.vue'
+import { useGlobalAi } from '@/composables/useGlobalAi'
 
 const store = useBookStore()
 const router = useRouter()
@@ -39,6 +41,22 @@ const tagEditBook = ref<BookItem | null>(null)
 const tagDraft = ref<string[]>([])
 
 onMounted(() => store.fetchBooks())
+
+/* ---------- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） ---------- */
+const globalAi = useGlobalAi()
+const aiPanelCollapsed = ref(true)
+const aiUnread = ref(0)
+const aiInput = globalAi.input
+function toggleAiPanel() {
+  aiPanelCollapsed.value = !aiPanelCollapsed.value
+  if (!aiPanelCollapsed.value) aiUnread.value = 0
+}
+/** 折叠期间统计新增 AI 回复数（assistant 非流式消息）。 */
+watch(globalAi.messages, (msgs) => {
+  if (aiPanelCollapsed.value) {
+    aiUnread.value = msgs.filter((m) => m.role === 'assistant' && !m.local).length
+  }
+})
 
 /** 全部书籍的 tag 去重集合（用于筛选与补全候选） */
 const allTags = computed(() => {
@@ -380,6 +398,21 @@ function toggleTagFilter(tag: string) {
         </div>
       </div>
     </section>
+
+    <!-- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） -->
+    <GlobalChatPanel
+      v-model:input="aiInput"
+      :messages="globalAi.messages.value"
+      :streaming="globalAi.streaming.value"
+      :stream-error="globalAi.streamError.value"
+      :collapsed="aiPanelCollapsed"
+      :unread="aiUnread"
+      @send="globalAi.send()"
+      @abort="globalAi.abort()"
+      @clear="globalAi.clear()"
+      @copy="globalAi.copy"
+      @toggle-collapse="toggleAiPanel"
+    />
   </div>
 </template>
 

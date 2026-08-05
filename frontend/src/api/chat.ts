@@ -74,3 +74,68 @@ export function streamChat(
   })()
   return { promise, abort: () => controller.abort() }
 }
+
+/* ---------- 决策 37：主页全局 AI 对话（不绑定书籍/章节） ---------- */
+
+/** 读取全局对话历史（session_id 为前端打开面板时生成）。 */
+export function listGlobalChatMessages(sessionId: string) {
+  return get<ChatMessageItem[]>(`/ai/chat/messages?session_id=${encodeURIComponent(sessionId)}`)
+}
+
+export function clearGlobalChatMessages(sessionId: string) {
+  return del<null>(`/ai/chat/messages?session_id=${encodeURIComponent(sessionId)}`)
+}
+
+/** 全局对话流式（SSE）：事件回调同 streamChat；返回 { promise, abort }。 */
+export function streamGlobalChat(
+  body: {
+    question: string
+    session_id?: string | null
+    stream_key?: string | null
+  },
+  onEvent: (ev: ChatStreamEvent) => void,
+) {
+  const controller = new AbortController()
+  const promise = (async () => {
+    const resp = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      let msg = `请求失败（${resp.status}）`
+      try {
+        const data = await resp.json()
+        if (data?.detail) msg = data.detail
+      } catch {
+        /* 非 JSON 错误体时保留默认信息 */
+      }
+      throw new Error(msg)
+    }
+    if (!resp.body) throw new Error('浏览器不支持流式响应')
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const parts = buf.split('\n\n')
+      buf = parts.pop() ?? ''
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          const raw = line.slice(5).trim()
+          if (!raw) continue
+          try {
+            onEvent(JSON.parse(raw) as ChatStreamEvent)
+          } catch {
+            /* 忽略无法解析的事件 */
+          }
+        }
+      }
+    }
+  })()
+  return { promise, abort: () => controller.abort() }
+}

@@ -376,3 +376,35 @@ def load_skills(db: Session, book_id: int, task_text: str | None = None, top_n: 
     scored = sorted(skills, key=_score, reverse=True)
     hits = [s for s in scored if _score(s) > 0]
     return (hits or scored)[:top_n]
+
+
+def load_all_skills(db: Session, task_text: str | None = None, top_n: int = 8) -> list[dict]:
+    """全局 Skill 聚合（决策 37 主页全局 AI 对话）：全部书籍 skill 资产按任务文本相关性排序。
+
+    返回技能列表，每项追加 `book_id`/`book_title` 供跨书出处标注；无任务文本时按
+    最近资产顺序返回。共享主资产（merged_book_ids）经 list_assets_by_books 展开。
+    """
+    skills: list[dict] = []
+    books = {b.id: b for b in db.query(Book).all()}  # noqa: F401 仅供标题映射
+    assets_map = list_assets_by_books(db)
+    for book_id, kinds in assets_map.items():
+        content = kinds.get("skill") or {}
+        for s in content.get("skills") or []:
+            item = dict(s)
+            item["book_id"] = book_id
+            book = books.get(book_id)
+            item["book_title"] = book.title if book else ""
+            skills.append(item)
+    if not skills or not task_text:
+        return skills[:top_n]
+    tokens = _query_tokens(task_text)
+    if not tokens:
+        return skills[:top_n]
+
+    def _score(s: dict) -> int:
+        hay = " ".join(str(s.get(k, "")) for k in ("name", "applicable", "usage", "sources"))
+        return sum(1 for t in tokens if t in hay)
+
+    scored = sorted(skills, key=_score, reverse=True)
+    hits = [s for s in scored if _score(s) > 0]
+    return (hits or scored)[:top_n]

@@ -7,7 +7,8 @@ import { normalizeMath } from '@/utils/math'
 
 /** Markdown/LaTeX 统一渲染（技术栈规范 §4.6）：markdown-it + KaTeX auto-render + DOMPurify 消毒。 */
 /** 审查 N-22：markdown-it 无状态实例提为模块级单例，避免每个组件实例重复构建解析器。 */
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+/** 决策 31 增补（v1.72）：html 透传 + DOMPurify svg profile——支持 Markdown 中手写的 `<svg>…</svg>` 内嵌图形，脚本/事件属性/危险 URI 仍被消毒剔除。 */
+const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
 
 const props = defineProps<{ source: string; inline?: boolean }>()
 
@@ -75,7 +76,9 @@ function protectMath(src: string): { text: string; restore: (html: string) => st
 const html = computed(() => {
   const { text, restore } = protectMath(normalizeQuotes(props.source ?? ''))
   const rendered = props.inline ? md.renderInline(text) : md.render(text)
-  return DOMPurify.sanitize(restore(rendered))
+  return DOMPurify.sanitize(restore(rendered), {
+      USE_PROFILES: { html: true, svg: true, svgFilters: true },
+    })
 })
 
 async function renderMath() {
@@ -119,4 +122,7 @@ onMounted(renderMath)
 .md-render :deep(pre code) { background: none; padding: 0; }
 .md-render :deep(table) { border-collapse: collapse; margin: 0.8em 0; }
 .md-render :deep(th), .md-render :deep(td) { border: 1px solid var(--border-color); padding: 6px 10px; }
+.md-render :deep(img) { max-width: 100%; }
+.md-render :deep(svg) { max-width: 100%; height: auto; }
+.md-render :deep(figure), .md-render :deep(figcaption) { margin: 0.8em 0; }
 </style>

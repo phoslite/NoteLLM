@@ -17,7 +17,13 @@ from app.ai.prompts.chat import build_system_prompt, build_user_prompt
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories import books as book_repo
-from app.repositories.chat import clear_messages, list_messages, persist_chat, recent_history_texts
+from app.repositories.chat import (
+    clear_messages,
+    global_session_id,
+    list_messages,
+    persist_chat,
+    recent_history_texts,
+)
 from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.ai_context import (
     build_page_context_block,
@@ -28,7 +34,7 @@ from app.services.html_util import chapter_plain_text
 from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
 from app.services.media_service import markdown_image_data_uris
 from app.services.profile_service import get_all_profiles
-from app.services.rag_router import select_knowledge
+from app.services.rag_router import select_global_knowledge, select_knowledge
 from app.services.vision_extract import ensure_window_caches, extract_image_attachment
 
 
@@ -220,6 +226,82 @@ def prepare_chat_job(
     }
 
 
+def build_global_messages(
+    question: str,
+    rag_block: str,
+    skills: list[dict],
+    enable_body_send: bool,
+    history: list[dict] | None = None,
+    profiles: dict | None = None,
+) -> list[dict]:
+    """主页全局 AI 对话 messages（决策 37）：画像 + 跨书片段 + 全局 Skill，无书籍/章节上下文。
+
+    - system：全局助手角色（技能列表 + 三层画像，复用 build_system_prompt）；
+    - 隐私开启时把跨书检索片段块附加在问题后（出处【《书名》第X章 第Y段】）；
+    - history：global 会话最近轮次（10 轮 / 8k 字符预算）。
+    """
+    messages: list[dict] = [
+        {"role": "system", "content": build_system_prompt(skills, page_mode=False, mode=None, profiles=profiles)}
+    ]
+    if history:
+        messages.extend(history)
+    user = question
+    if enable_body_send and rag_block:
+        user = f"{question}\n\n【知识库检索片段（跨书，出处已标注，引用时保留原出处）】\n{rag_block}"
+    messages.append({"role": "user", "content": user})
+    return messages
+
+
+def prepare_global_job(
+    db: Session,
+    question: str,
+    session_id: str | None = None,
+    stream_key: str | None = None,
+) -> dict:
+    """组装主页全局 AI 对话任务（决策 37）：不绑定书籍/章节。
+
+    - 注入：冷/暖画像 + 全局 Skill（load_all_skills 按任务相关性 top8）+ 跨书 RAG
+      （select_global_knowledge：LLM 全库挑选 → 规则降级，会话缓存 `global:{session_id}`）；
+    - 隐私开关（ai_enable_body_send）关闭时仅注入 Skill，不注入 chunks 与画像（同决策 34）；
+    - 历史：global 会话最近 10 轮 / 8k 字符预算。
+    """
+    overrides = load_ai_overrides(db)
+    enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
+    profiles = get_all_profiles(db) if enable_body else None
+    knowledge = select_global_knowledge(db, question, session_id)
+    rag_chunks = knowledge["chunks"] if enable_body else []
+    skills = knowledge["skills"]
+    rag_block = _cross_book_rag_block(rag_chunks) if rag_chunks else ""
+    history = None
+    gsid = global_session_id(session_id) if session_id else None
+    if enable_body and gsid:
+        history = recent_history_texts(db, None, session_id=gsid)
+    messages = build_global_messages(question, rag_block, skills, enable_body, history, profiles)
+    return {
+        "client": build_client(db),
+        "messages": messages,
+        "persist": {
+            "book_id": None,
+            "chapter_id": None,
+            "selection": "",
+            "question": question,
+            "mode": None,
+            "stream_key": stream_key,
+            "session_id": gsid,
+        },
+    }
+
+
+def list_global_history(db: Session, session_id: str) -> list:
+    """主页全局 AI 对话历史（决策 37，按 `global:{session_id}` 读取）。"""
+    return list_messages(db, None, session_id=global_session_id(session_id))
+
+
+def clear_global_history(db: Session, session_id: str) -> None:
+    """清空主页全局 AI 对话历史（决策 37）。"""
+    clear_messages(db, None, session_id=global_session_id(session_id))
+
+
 CACHEABLE_MODES = ("解读", "概论", "思考逻辑")
 
 
@@ -350,6 +432,7 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                             mode=job["persist"].get("mode"),
                             answer=full,
                             stream_key=stream_key,
+                            session_id=job["persist"].get("session_id"),
                         )
                     finally:
                         db.close()
@@ -376,6 +459,7 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                 mode=job["persist"].get("mode"),
                 answer=full,
                 stream_key=stream_key,
+                session_id=job["persist"].get("session_id"),
             )
             if cache:
                 set_llm_cache(db, cache["book_id"], cache["kind"], cache["key"], {

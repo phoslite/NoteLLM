@@ -2,7 +2,9 @@
 
 会话键约定（决策 30）：
 - 默认对话：`book:{book_id}`（兼容旧数据）；
-- 能力模式：`book:{book_id}:{mode}`（解读 / 概论 / 思考逻辑分池，任务类型互相隔离）。
+- 能力模式：`book:{book_id}:{mode}`（解读 / 概论 / 思考逻辑分池，任务类型互相隔离）；
+- 全局对话（决策 37）：`global:{session_id}`（主页 AI 助手，不绑定书籍/章节，
+  由前端每次打开面板生成 session_id；book_id 可空，ref_book_id 为 NULL）。
 
 历史保留策略（性能优化决策 1，docs/性能优化路径.md §7）：
 每会话只保留最近 `chat_history_limit` 条（默认 200，.env 可配，0=不限制），
@@ -27,12 +29,30 @@ def chat_session_id(book_id: int, mode: str | None = None) -> str:
     return f"book:{book_id}:{mode}"
 
 
-def list_messages(db: Session, book_id: int, mode: str | None = None) -> list[ChatMessage]:
-    """读取本书指定会话的对话历史（按时间正序）。"""
+def global_session_id(client_session_id: str) -> str:
+    """主页全局对话会话 ID（决策 37）：`global:{client_session_id}`。
+
+    client_session_id 由前端每次打开全局 AI 面板生成；与书级会话隔离。
+    """
+    return f"global:{client_session_id}"
+
+
+def list_messages(
+    db: Session,
+    book_id: int | None = None,
+    mode: str | None = None,
+    session_id: str | None = None,
+) -> list[ChatMessage]:
+    """读取指定会话的对话历史（按时间正序）。
+
+    session_id 非空时按显式会话键读取（决策 37 全局对话用 global:{client_id}）；
+    否则回退书级会话键 `chat_session_id(book_id, mode)`。
+    """
+    key = session_id if session_id else chat_session_id(book_id, mode)
     return list(
         db.scalars(
             select(ChatMessage)
-            .where(ChatMessage.session_id == chat_session_id(book_id, mode))
+            .where(ChatMessage.session_id == key)
             .order_by(ChatMessage.id)
         )
     )
@@ -79,8 +99,9 @@ def list_recent_messages(db: Session, book_id: int, limit: int = 20) -> list[Cha
 
 def recent_history_texts(
     db: Session,
-    book_id: int,
+    book_id: int | None = None,
     mode: str | None = None,
+    session_id: str | None = None,
     max_rounds: int = 10,
     max_chars: int = 8000,
 ) -> list[dict]:
@@ -88,12 +109,14 @@ def recent_history_texts(
 
     - 按 `max_rounds` 轮（每轮 user+assistant 两条）取最近记录；
     - 按字符预算 `max_chars` 从**新到旧**选择、保留最近部分，返回时间正序的
-      `[{"role", "content"}]` 列表，供注入 `build_messages`。
+      `[{"role", "content"}]` 列表，供注入 `build_messages`；
+    - session_id 非空时按显式会话键（决策 37 全局对话），否则回退书级会话键。
     """
+    key = session_id if session_id else chat_session_id(book_id, mode)
     rows = list(
         db.scalars(
             select(ChatMessage)
-            .where(ChatMessage.session_id == chat_session_id(book_id, mode))
+            .where(ChatMessage.session_id == key)
             .order_by(ChatMessage.id.desc())
             .limit(max_rounds * 2)
         )
@@ -110,29 +133,39 @@ def recent_history_texts(
     return [{"role": r.role, "content": r.content} for r in selected]
 
 
-def clear_messages(db: Session, book_id: int, mode: str | None = None) -> None:
-    """清空本书指定会话的对话历史。"""
-    db.execute(delete(ChatMessage).where(ChatMessage.session_id == chat_session_id(book_id, mode)))
+def clear_messages(
+    db: Session,
+    book_id: int | None = None,
+    mode: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """清空指定会话的对话历史（session_id 非空时按显式会话键，决策 37）。"""
+    key = session_id if session_id else chat_session_id(book_id, mode)
+    db.execute(delete(ChatMessage).where(ChatMessage.session_id == key))
     db.commit()
 
 
 def persist_chat(
     db: Session,
-    book_id: int,
-    chapter_id: int,
-    selection: str,
-    question: str,
-    answer: str,
+    book_id: int | None = None,
+    chapter_id: int | None = None,
+    selection: str = "",
+    question: str = "",
+    answer: str = "",
     mode: str | None = None,
     stream_key: str | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """写入一条用户消息与一条助手消息（按书 × 模式会话）。
+    """写入一条用户消息与一条助手消息（按会话）。
+
+    session_id 非空时按显式会话键（决策 37 全局对话 `global:{client_id}`，
+    book_id/chapter_id 可空、ref_book_id 落 NULL）；否则回退书级会话键。
 
     stream_key（方案2 流式滚动落库）：同一流多次调用按键幂等复用 user/assistant 两行——
     首次调用插入，后续调用仅更新 assistant.content；流结束复用同一行写最终内容，
     前端固定频率轮询历史即可看到进行中的回答，且不产生残留行。
     """
-    session = chat_session_id(book_id, mode)
+    session = session_id if session_id else chat_session_id(book_id, mode)
     user_row: ChatMessage | None = None
     assistant_row: ChatMessage | None = None
     if stream_key:

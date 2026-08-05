@@ -314,6 +314,24 @@ python demo/chat_demo.py                                          # 交互式多
 - 修改：页缓存窗口大小、附件提取开关（`ai_send_page_image`）、RAG/Skill 注入策略改这里。
 
 
+### 14.4 全局 AI 对话（`services/chat_service.py` + `services/rag_router.py` + `api/routes/ai_chat.py`，决策 37）
+
+主页右下角全局 AI 助手：不绑定书籍/章节，在阅读之外使用 Skill/RAG 资产辅助用户。
+
+| 函数 | 说明 |
+| --- | --- |
+| `chat_service.prepare_global_job(db, question, session_id, stream_key)` | 组装全局对话任务：隐私开关（关闭仅注入 Skill）、画像（冷+暖）、`select_global_knowledge`、全局历史、messages、client；`persist.book_id=None`、`session_id=global:{client_id}` |
+| `chat_service.build_global_messages(question, rag_block, skills, enable_body_send, history, profiles)` | 全局 system（Skill+画像）+ history + 问题（隐私开启时附加跨书片段块） |
+| `chat_service.list_global_history(db, session_id)` / `clear_global_history(db, session_id)` | 按 `global:{session_id}` 读写历史（薄封装） |
+| `rag_router.select_global_knowledge(db, question, session_id)` | 全局知识挑选：LLM 全库目录挑选（`SYSTEM_PROMPT_GLOBAL`/`build_global_user_prompt`，无当前书/章）→ 规则降级（摘要关键词 top3 书 + 全局 Skill 相关性）；会话缓存键 `global:{session_id}` |
+| `rag_router._select_llm_global` / `_select_fallback_global` / `_global_query_tokens` | 全局挑选 LLM 版 / 规则版 / 中文二元组切词 |
+| `assets.load_all_skills(db, task_text, top_n=8)` | 全局 Skill 聚合（含 book_id/book_title，共享主资产展开，按任务相关性排序） |
+| `repositories/chat.global_session_id(client_id)` | 全局会话键 `global:{client_id}`；`persist_chat`/`list_messages`/`clear_messages`/`recent_history_texts` 均支持显式 `session_id`（book_id 可空） |
+
+- API：`POST /api/ai/chat`（SSE，body `{question, session_id, stream_key}`）、`GET/DELETE /api/ai/chat/messages?session_id=`。
+- 修改：全局挑选提示词改 `ai/prompts/rag_select.py`（`SYSTEM_PROMPT_GLOBAL`）；候选预算沿用 `rag_select_max_books/max_skills`。
+
+
 ## 15. AI 多接口格式支持（第 15 轮任务产出）
 
 文本大模型接口格式由 `AI_MODE` 控制，三选一（`backend/.env` 或设置页「接口模式」）：
