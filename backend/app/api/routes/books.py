@@ -104,6 +104,17 @@ def search_books_api(q: str = "", limit: int = 30, db: Session = Depends(get_db)
     return ok(search_books_service(db, keyword, min(limit, 100)))
 
 
+@router.get("/assets")
+def books_assets_brief(db: Session = Depends(get_db)):
+    """审查 A-6：批量返回全部书籍资产摘要（资产页列表用，消除逐书请求 N+1）。
+
+    注意：必须定义在 /books/{book_id} 之前，否则会被 int 参数路由截获。
+    """
+    from app.repositories.assets import list_asset_briefs
+
+    return ok(list_asset_briefs(db))
+
+
 @router.get("/{book_id}")
 def get_book(book_id: int, db: Session = Depends(get_db)):
     book = repo.get_book(db, book_id)

@@ -79,11 +79,17 @@ export function useReaderPageCache(opts: {
   let pollTimer: number | null = null
   let pollTaskId: string | null = null
 
-  function stopPolling() {
+  /** 只停定时器（审查 N-1）：可见性隐藏时调用，保留监听器以便恢复可见时重新开始轮询。 */
+  function pausePolling() {
     if (pollTimer != null) {
       window.clearInterval(pollTimer)
       pollTimer = null
     }
+  }
+
+  /** 任务终态清理：停定时器并移除可见性监听器。 */
+  function stopPolling() {
+    pausePolling()
     document.removeEventListener('visibilitychange', onTaskPollVisibility)
   }
 
@@ -111,7 +117,7 @@ export function useReaderPageCache(opts: {
 
   function onTaskPollVisibility() {
     if (document.visibilityState === 'visible') startPolling()
-    else stopPolling()
+    else pausePolling()
   }
 
   return {

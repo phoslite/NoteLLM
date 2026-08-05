@@ -18,12 +18,21 @@ from app.tasks import submit
 router = APIRouter(prefix="/api", tags=["assets"])
 
 
+def _run_summarize_task(book_id: int) -> dict:
+    """后台总结任务：独立会话 + finally 关闭（审查 A-1：会话泄漏修复）。"""
+    db = SessionLocal()
+    try:
+        return generate_rag_skill(db, book_id=book_id)
+    finally:
+        db.close()
+
+
 @router.post("/books/{book_id}/summarize")
 def summarize_book(book_id: int, db: Session = Depends(get_db)):
     """把书籍总结为 RAG + Skill 资产；后台任务执行，返回 task_id 供轮询。"""
     require_book(db, book_id)
     task_id = submit(
-        "text", "rag-skill-summarize", lambda: generate_rag_skill(SessionLocal(), book_id=book_id)
+        "text", "rag-skill-summarize", lambda: _run_summarize_task(book_id=book_id)
     )
     return ok({"task_id": task_id}, "已提交总结任务")
 

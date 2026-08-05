@@ -1,10 +1,13 @@
-"""FTS5 全书搜索服务（性能优化 §7 决策 3）：标题 + 正文全文检索，返回章节级命中。"""
+"""FTS5 全书搜索服务（性能优化 §7 决策 3）：标题 + 正文全文检索，返回章节级命中。
+
+SQL 已下沉 `repositories/search.py`（审查 P0-1），本层只做关键词拆词与结果组装。
+"""
 import re
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.repositories.search import fts_search, like_search
 
 # trigram 分词器查询保留字/特殊字符：分词时剔除，避免查询语法错误
 _FTS_SPECIALS = re.compile(r'["*():^~+-<>{}[\]]')
@@ -36,16 +39,6 @@ def _like_snippet(content: str, keyword: str, radius: int = 30) -> str:
 
 def _like_search(db: Session, keyword: str, limit: int) -> list[dict]:
     """1-2 字符短词回退：LIKE 扫描章节标题/正文（本地单用户库量级小，延迟可接受）。"""
-    pattern = f"%{keyword}%"
-    rows = db.execute(
-        text(
-            "SELECT c.book_id, b.title, c.id AS chapter_id, c.\"index\" AS chapter_index, "
-            "c.title AS chapter_title, c.content_text "
-            "FROM chapters c JOIN books b ON b.id = c.book_id "
-            "WHERE c.title LIKE :p OR c.content_text LIKE :p LIMIT :limit"
-        ),
-        {"p": pattern, "limit": limit},
-    ).mappings().all()
     return [
         {
             "book_id": r["book_id"],
@@ -55,7 +48,7 @@ def _like_search(db: Session, keyword: str, limit: int) -> list[dict]:
             "chapter_title": r["chapter_title"],
             "snippet": _like_snippet(r["content_text"] or "", keyword),
         }
-        for r in rows
+        for r in like_search(db, keyword, limit)
     ]
 
 
@@ -75,15 +68,4 @@ def search_books(db: Session, keyword: str, limit: int = 30) -> list[dict]:
     query = _fts_query(keyword)
     if not query:
         return _like_search(db, keyword, limit)
-    sql = text(
-        "SELECT f.book_id, b.title, f.chapter_id, c.\"index\" AS chapter_index, "
-        "c.title AS chapter_title, snippet(fts_chapters, 3, '‹', '›', '…', 30) AS snippet "
-        "FROM fts_chapters f "
-        "JOIN books b ON b.id = f.book_id "
-        "JOIN chapters c ON c.id = f.chapter_id "
-        "WHERE fts_chapters MATCH :q "
-        "ORDER BY bm25(fts_chapters) "
-        "LIMIT :limit"
-    )
-    rows = db.execute(sql, {"q": query, "limit": limit}).mappings().all()
-    return [dict(r) for r in rows]
+    return fts_search(db, query, limit)

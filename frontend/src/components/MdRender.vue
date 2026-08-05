@@ -6,10 +6,12 @@ import 'katex/dist/katex.min.css'
 import { normalizeMath } from '@/utils/math'
 
 /** Markdown/LaTeX 统一渲染（技术栈规范 §4.6）：markdown-it + KaTeX auto-render + DOMPurify 消毒。 */
+/** 审查 N-22：markdown-it 无状态实例提为模块级单例，避免每个组件实例重复构建解析器。 */
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+
 const props = defineProps<{ source: string; inline?: boolean }>()
 
 const el = ref<HTMLElement | null>(null)
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
 /**
  * 渲染前保护数学公式：把 $...$ / $$...$$ 整体替换为占位符，

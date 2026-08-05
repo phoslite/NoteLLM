@@ -59,6 +59,8 @@ _INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS ix_chapters_book_id ON chapters(book_id)",
     "CREATE INDEX IF NOT EXISTS ix_reading_logs_book_id ON reading_logs(book_id)",
     "CREATE INDEX IF NOT EXISTS ix_reading_logs_chapter_id ON reading_logs(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS ix_reading_logs_book_updated ON reading_logs(book_id, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_user_profiles_layer_dim ON user_profiles(layer, dimension)",
     "CREATE INDEX IF NOT EXISTS ix_notes_book_id ON notes(book_id)",
     "CREATE INDEX IF NOT EXISTS ix_notes_chapter_id ON notes(chapter_id)",
     "CREATE INDEX IF NOT EXISTS ix_bookmarks_book_id ON bookmarks(book_id)",

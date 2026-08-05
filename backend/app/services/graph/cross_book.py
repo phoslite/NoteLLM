@@ -19,21 +19,30 @@ from app.services.graph_sync import link_graph_assets
 def _note_keywords(note: Note, top_n: int = 30) -> set[str]:
     return set(extract_keywords(f"{note.quote_text or ''} {note.note_text or ''}", top_n))
 
-def _note_weight(db: Session, book_a_id: int, book_b_id: int, common: set[str]) -> float:
+def _load_notes_by_book(db: Session) -> dict[int, list[Note]]:
+    """一次性加载全部笔记并按 book_id 分组（审查 A-8：消除每对书籍组合的重复查询）。"""
+    notes_by_book: dict[int, list[Note]] = {}
+    for note in db.query(Note).all():
+        notes_by_book.setdefault(note.book_id, []).append(note)
+    return notes_by_book
+
+
+def _note_weight(
+    notes_by_book: dict[int, list[Note]], book_a_id: int, book_b_id: int, common: set[str]
+) -> float:
     """笔记加权：任一书笔记命中共同关键词 +2；两书笔记共享任意术语 +3/对（上限 15 分）。"""
     if not common:
         return 0.0
-    notes_a = db.query(Note).filter(Note.book_id == book_a_id).all()
-    notes_b = db.query(Note).filter(Note.book_id == book_b_id).all()
-    kw_a = [_note_keywords(n) for n in notes_a]
-    kw_b = [_note_keywords(n) for n in notes_b]
+    kw_a = [_note_keywords(n) for n in notes_by_book.get(book_a_id, [])]
+    kw_b = [_note_keywords(n) for n in notes_by_book.get(book_b_id, [])]
     a_hit = any(s & common for s in kw_a)
     b_hit = any(s & common for s in kw_b)
     cross = sum(1 for s1 in kw_a for s2 in kw_b if s1 & s2)
     return min(15.0, 2.0 * a_hit + 2.0 * b_hit + 3.0 * min(2, cross))
 
 def _pair_score(
-    db: Session, a: Book, b: Book, ka: dict[str, float], kb: dict[str, float]
+    db: Session, a: Book, b: Book, ka: dict[str, float], kb: dict[str, float],
+    notes_by_book: dict[int, list[Note]],
 ) -> tuple[float, list[str]] | None:
     """两书关联评分：关键词共现余弦分 + 笔记加权；低于阈值返回 None（不建边）。"""
     if not ka or not kb:
@@ -46,7 +55,7 @@ def _pair_score(
     score = round(100.0 * (dot / denom if denom else 0.0), 1)
     if score < 1.0:
         return None
-    score = min(100.0, round(score + _note_weight(db, a.id, b.id, common), 1))
+    score = min(100.0, round(score + _note_weight(notes_by_book, a.id, b.id, common), 1))
     reasons = sorted(common, key=lambda t: min(ka[t], kb[t]), reverse=True)[:5]
     return score, reasons
 
@@ -55,6 +64,7 @@ def compute_cross_book_graph(db: Session) -> dict:
     """重建全部书籍关联（先清空再计算）：关键词共现余弦分 + 笔记加权；同聚类低分「主题相似」边。"""
     books = db.query(Book).order_by(Book.id).all()
     keywords = {b.id: book_keywords(b) for b in books}
+    notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载，_pair_score 直接查内存
     db.query(BookRelation).delete()
     pairs: set[tuple[int, int]] = set()
     created: dict[tuple[int, int], BookRelation] = {}
@@ -62,7 +72,7 @@ def compute_cross_book_graph(db: Session) -> dict:
 
     for i, a in enumerate(books):
         for b in books[i + 1 :]:
-            result = _pair_score(db, a, b, keywords.get(a.id, {}), keywords.get(b.id, {}))
+            result = _pair_score(db, a, b, keywords.get(a.id, {}), keywords.get(b.id, {}), notes_by_book)
             if not result:
                 continue
             score, reasons = result
@@ -118,6 +128,7 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
     if not others:
         return {"relations_added": 0, "linked": 0}
     keywords = {b.id: book_keywords(b) for b in [book, *others]}
+    notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载
     existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in db.query(BookRelation).all()}
     added = 0
     created: dict[tuple[int, int], BookRelation] = {}
@@ -143,7 +154,7 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
         candidates.append((a.id, b.id, score))
 
     for other in others:
-        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}))
+        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book)
         if result:
             score, reasons = result
             add_pair(book, other, score, reasons, "概念共现")

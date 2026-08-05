@@ -24,7 +24,13 @@ from app.ai.prompts.rag_select import SYSTEM_PROMPT, build_user_prompt
 from app.core.config import settings
 from app.models.book import Book, Folder
 from app.models.graph import BookRelation
-from app.repositories.assets import get_asset, load_skills, read_asset_content, retrieve_rag_chunks
+from app.repositories.assets import (
+    get_asset,
+    list_assets_by_books,
+    load_skills,
+    read_asset_content,
+    retrieve_rag_chunks,
+)
 from app.services.profile_service import get_all_profiles
 
 # 候选目录与注入控制
@@ -51,8 +57,11 @@ _SESSION_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------- 候选目录
 
-def _book_domain(db: Session, book: Book) -> str:
-    """领域分组：用户 tag 优先（首个 tag），其次文件夹名，其次聚类领域，最后「未分类」。"""
+def _book_domain(book: Book, folder_names: dict[int, str]) -> str:
+    """领域分组：用户 tag 优先（首个 tag），其次文件夹名，其次聚类领域，最后「未分类」。
+
+    审查 A-7：folder 名一次性批量加载传入，消除逐书查询。
+    """
     try:
         tags = json.loads(book.tags_json or "[]")
     except (TypeError, ValueError):
@@ -60,9 +69,9 @@ def _book_domain(db: Session, book: Book) -> str:
     if tags:
         return str(tags[0])
     if book.folder_id:
-        folder = db.get(Folder, book.folder_id)
-        if folder and folder.name:
-            return folder.name
+        name = folder_names.get(book.folder_id)
+        if name:
+            return name
     return book.cluster_name or _UNCATEGORIZED
 
 
@@ -76,21 +85,25 @@ def build_catalog(db: Session, current_book_id: int) -> tuple[str, dict[int, dic
     书项 = {book_id, title, domain, summary, skill_names}；仅包含有 RAG/Skill 资产的书。
     """
     books = db.query(Book).all()
+    # 审查 A-7：资产与文件夹名一次性批量加载，目录构建从 5N-6N 次查询降为常数次
+    assets_map = list_assets_by_books(db)
+    folder_names = {f.id: f.name for f in db.query(Folder).all()}
     index: dict[int, dict] = {}
     groups: dict[str, list[dict]] = {}
     for b in books:
         if len(index) >= CATALOG_MAX_ENTRIES:
             break
-        if not _has_assets(db, b.id):
+        assets = assets_map.get(b.id)
+        if not assets:
             continue
-        rag = read_asset_content(db, b.id, "rag") or {}
-        skill = read_asset_content(db, b.id, "skill") or {}
+        rag = assets.get("rag") or {}
+        skill = assets.get("skill") or {}
         summary = str(rag.get("summary") or "")[:CATALOG_SUMMARY_CHARS]
         skill_names = [str(s.get("name") or "") for s in (skill.get("skills") or []) if s.get("name")]
         item = {
             "book_id": b.id,
             "title": b.title or "",
-            "domain": _book_domain(db, b),
+            "domain": _book_domain(b, folder_names),
             "summary": summary,
             "skill_names": skill_names[:CATALOG_SKILL_NAMES],
         }

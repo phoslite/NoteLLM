@@ -108,6 +108,48 @@ def get_asset(db: Session, book_id: int, kind: str) -> BookAsset | None:
     return _find_shared_asset(db, book_id, kind)
 
 
+def list_assets_by_books(db: Session) -> dict[int, dict[str, dict]]:
+    """批量加载全部书籍资产（含共享反查展开）：{book_id: {kind: content}}。
+
+    审查 A-7：消除 build_catalog 等场景的 5N-6N 次单书查询；共享主资产
+    （merged_book_ids）展开到每个成员书，内容剔除 merged_book_ids 元数据。
+    """
+    out: dict[int, dict[str, dict]] = {}
+    for row in db.query(BookAsset).all():
+        content = _load(row)
+        members = content.get("merged_book_ids")
+        content.pop("merged_book_ids", None)
+        book_ids = members if isinstance(members, list) and members else [row.book_id]
+        for book_id in book_ids:
+            out.setdefault(book_id, {})[row.kind] = content
+    return out
+
+
+def list_asset_briefs(db: Session) -> dict[int, dict]:
+    """批量资产摘要（审查 A-6）：{book_id: {version, has_rag, has_skill, rag_summary, merged_count}}。
+
+    供资产页列表一次请求展示全部书籍的资产状态，消除逐书 GET /books/{id}/asset 的 N+1。
+    """
+    brief: dict[int, dict] = {}
+    for row in db.query(BookAsset).all():
+        content = _load(row)
+        members = content.get("merged_book_ids")
+        book_ids = members if isinstance(members, list) and members else [row.book_id]
+        for book_id in book_ids:
+            entry = brief.setdefault(
+                book_id,
+                {"version": 0, "has_rag": False, "has_skill": False, "rag_summary": "", "merged_count": 0},
+            )
+            entry["version"] = max(entry["version"], row.version)
+            if row.kind == "rag":
+                entry["has_rag"] = True
+                entry["rag_summary"] = str(content.get("summary") or "")[:200]
+                entry["merged_count"] = len(members) if isinstance(members, list) else 0
+            else:
+                entry["has_skill"] = True
+    return brief
+
+
 def read_asset_content(db: Session, book_id: int, kind: str) -> dict:
     """读取资产内容 dict（剔除 merged_book_ids 元数据，保证与生成内容可比）；不存在返回 {}。"""
     asset = get_asset(db, book_id, kind)
