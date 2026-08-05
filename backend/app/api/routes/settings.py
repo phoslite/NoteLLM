@@ -47,6 +47,21 @@ class AiSettingsIn(BaseModel):
     vision_presence_penalty: float | None = None
     vision_enable_thinking: bool | None = None
     vision_thinking_budget: int | None = None
+    # 决策 34 挑选器（LLM 自主挑选 RAG/Skill）：独立模型配置，未填项回退主文本模型
+    rag_select_enabled: bool | None = None
+    rag_select_base_url: str | None = None
+    rag_select_api_key: str | None = None
+    rag_select_model: str | None = None
+    rag_select_mode: str | None = None
+    rag_select_timeout: int | None = None
+    rag_select_verify_ssl: bool | None = None
+    rag_select_max_tokens: int | None = None
+    rag_select_temperature: float | None = None
+    rag_select_thinking_type: str | None = None
+    rag_select_reasoning_effort: str | None = None
+    rag_select_max_books: int | None = None
+    rag_select_max_skills: int | None = None
+    rag_select_cache_ttl_minutes: int | None = None
 
 
 @router.get("/ai")
@@ -93,3 +108,12 @@ def test_vision_settings(body: AiSettingsIn | None = None, db: Session = Depends
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({"task_id": task_id}, "已提交视觉连接测试")
+
+@router.post("/ai/test-selector")
+def test_selector_settings(body: AiSettingsIn | None = None, db: Session = Depends(get_db)):
+    """用挑选器配置（rag_select_*，未填项回退主文本模型）发起一次最小请求验证连通性。"""
+    try:
+        task_id = submit_connect_test(db, body, selector=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ok({"task_id": task_id}, "已提交挑选器连接测试")

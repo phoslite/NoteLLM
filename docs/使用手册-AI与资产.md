@@ -184,9 +184,10 @@ python demo/chat_demo.py                                          # 交互式多
 | GET | `/api/settings/ai` | 读取当前 AI 配置（API Key 掩码后返回） |
 | PATCH | `/api/settings/ai` | 保存 AI 配置（空值忽略、保留旧值），返回掩码视图 |
 | POST | `/api/settings/ai/test` | 用当前（或请求体临时覆盖）配置发起最小对话，验证连通性与鉴权 |
+| POST | `/api/settings/ai/test-selector` | **挑选器独立测试连接（v1.113）**：仅 api_key 必填（其余未填项回退主文本模型），复用轮询式测试；返回 `{ok, message}` |
 | POST | `/api/settings/ai/reload-env` | **强制载入 .env 配置文件（v1.89）**：以 `backend/.env` 当前内容为准重置全部运行时 AI/视觉配置，立即生效（无需重启） |
 
-- 请求体字段：`base_url / api_key / model / mode / timeout / verify_ssl / enable_body_send / temperature` + 精细参数 `max_tokens / thinking_type / reasoning_effort / top_p / frequency_penalty / presence_penalty / stop` + 多模态 `vision_base_url / vision_api_key / vision_model / vision_timeout / vision_verify_ssl / vision_max_tokens / vision_temperature / vision_top_p / vision_frequency_penalty / vision_presence_penalty / vision_enable_thinking / vision_thinking_budget`；PATCH 时 `api_key` 留空 = 不修改。
+- 请求体字段：`base_url / api_key / model / mode / timeout / verify_ssl / enable_body_send / temperature` + 精细参数 `max_tokens / thinking_type / reasoning_effort / top_p / frequency_penalty / presence_penalty / stop` + 多模态 `vision_base_url / vision_api_key / vision_model / vision_timeout / vision_verify_ssl / vision_max_tokens / vision_temperature / vision_top_p / vision_frequency_penalty / vision_presence_penalty / vision_enable_thinking / vision_thinking_budget`；PATCH 时 `api_key` 留空 = 不修改。挑选器独立字段 `rag_select_enabled / rag_select_base_url / rag_select_api_key / rag_select_model / rag_select_mode / rag_select_timeout / rag_select_verify_ssl / rag_select_max_tokens / rag_select_temperature / rag_select_thinking_type / rag_select_reasoning_effort / rag_select_max_books / rag_select_max_skills / rag_select_cache_ttl_minutes`（v1.113，设置页「挑选模型」页签）；**显式清空语义**：`rag_select_mode` / `rag_select_reasoning_effort` 空串 = 跟随主模型（合法值直接写入），其余键空串仍 = 不修改。
 - 前端字段名 → 仓储键（`ai_*`）映射由 `FIELD_TO_KEY` 定义；保存与掩码视图复用 `app/repositories/settings.py`。
 - 测试连接返回 `{ok, message}`；失败不抛 500，以 `ok=false` 返回友好信息（网络/鉴权错误不泄露 Key）。
 - **强制载入 .env（v1.89）**：`POST /api/settings/ai/reload-env` → 仓储 `repositories/settings.py::reload_ai_overrides_from_env(db, env_path=None)`——用 `dotenv_values` 只读解析 .env（路径探测：`./.env` → `backend/.env` → 模块上级 `backend/.env`），对 `AI_OVERRIDE_KEYS` 全量同步：.env 存在的键写入 DB 覆盖、不存在的键删除覆盖（回落默认），返回掩码视图；`.env` 缺失返回 404。前端设置页头部「🔄 强制载入 .env」按钮（`ElMessageBox` 二次确认，丢弃未保存修改与已保存覆盖后按 .env 重置并刷新表单），`api/settings.ts::reloadEnvSettings()` 调用；适用于手工编辑 .env 后立即生效、或误改设置页后一键还原。
@@ -230,9 +231,9 @@ python demo/chat_demo.py                                          # 交互式多
 
 ### 4.4 前端 AI 配置页（rontend/src/views/SettingsView.vue）
 
-- 页面布局（v1.7x 重构）：顶部页头（标题 + 保存配置按钮）＋ el-tabs 双 Tab——「文本模型」与「多模态视觉模型」各自独立；Tab 内按「连接信息 / 采样参数 / 思考模式 / 隐私与附件」分组卡片（视觉模型无隐私组），字段由 `textFields` / `visionFields` 声明式驱动（FieldDef：text/password/number/switch/select + section 分组 + tip 提示），字段变化走 getField / setField 统一读写表单。
+- 页面布局（v1.7x 重构）：顶部页头（标题 + 保存配置按钮）＋ el-tabs **三 Tab**——「文本模型」「多模态视觉模型」「挑选模型」各自独立；Tab 内按「连接信息 / 采样参数 / 思考模式 / 隐私与附件」分组卡片（视觉模型无隐私组；挑选模型含「总开关 / 预算」组），字段由 `textFields` / `visionFields` / `selectorFields` 声明式驱动（FieldDef：text/password/number/switch/select + section 分组 + tip 提示），字段变化走 getField / setField 统一读写表单。挑选页签（v1.113）：总开关 → 连接信息（base_url/api_key/model/mode/timeout/verify_ssl）→ 采样参数（temperature/max_tokens）→ 思考模式（thinking_type/reasoning_effort）→ 预算（max_books/max_skills/cache_ttl）；**未填项自动跟随文本模型**（mode / reasoning_effort 可显式清空恢复跟随）；「测试挑选连接」调用 `POST /api/settings/ai/test-selector`（仅 api_key 必填）。
 - 表单字段与后端一致；API Key 输入框留空 = 保持不变；「测试连接」用当前表单值临时覆盖测试（不保存）。
-- API 封装：`src/api/settings.ts` —— `getAiSettings / saveAiSettings / testAiSettings`。
+- API 封装：`src/api/settings.ts` —— `getAiSettings / saveAiSettings / testAiSettings / testSelectorAiSettings`。
 
 ### 4.5 前端 AI 助手面板（`frontend/src/views/ReaderView.vue`）
 
@@ -561,12 +562,13 @@ ReaderChatPanel 提问（携带 session_id）
 | `RAG_SELECT_TIMEOUT` / `RAG_SELECT_VERIFY_SSL` | `60` / `true` | 挑选调用超时与 SSL |
 | `RAG_SELECT_MAX_TOKENS` | `512` | 挑选输出上限（轻量调用） |
 | `RAG_SELECT_TEMPERATURE` | `0.0` | 挑选要确定性，默认低温 |
-| `RAG_SELECT_THINKING_TYPE` | `disabled` | 挑选禁思考 |
+| `RAG_SELECT_THINKING_TYPE` | `disabled` | 挑选思考模式（chat 模式 `enabled`/`disabled`；DeepSeek 建议 `enabled` + reasoning_effort） |
+| `RAG_SELECT_REASONING_EFFORT` | 空 | 挑选思考强度（`low/medium/high`，**DeepSeek 适配 v1.113**）；空 = 跟随主文本模型 `AI_REASONING_EFFORT` |
 | `RAG_SELECT_MAX_BOOKS` | `3` | 预算：最多注入书数（含当前书） |
 | `RAG_SELECT_MAX_SKILLS` | `2` | 预算：最多注入 Skill 数 |
 | `RAG_SELECT_CACHE_TTL_MINUTES` | `60` | 会话挑选缓存 TTL（0=不缓存） |
 
-- 设置页不展示挑选器配置（仅 `.env` + 强制载入 env 生效）；`AI_OVERRIDE_KEYS` 已登记 `rag_select_*`，强制载入 env 可写覆盖。
+- **设置页「挑选模型」页签可配置（v1.113）**：全部 `rag_select_*` 字段（总开关/连接信息/采样/思考/预算）均可在设置页填写，未填项自动跟随文本模型；`.env` 仍可配置 + 强制载入 env 覆盖；`AI_OVERRIDE_KEYS` 已登记 `rag_select_*`。测试连接用 `POST /api/settings/ai/test-selector`。
 
 ### 19.7 前端 session_id 传递
 
@@ -582,6 +584,6 @@ ReaderChatPanel 提问（携带 session_id）
 
 - 想调整「挑哪些书」：改挑选提示词（预算/规则/画像提示）或目录构建（分组/摘要截断）。
 - 想调整「注入多少」：`RAG_SELECT_MAX_BOOKS` / `RAG_SELECT_MAX_SKILLS` / `INJECT_TOP_K_PER_BOOK`。
-- 想换独立挑选模型：`.env` 填 `RAG_SELECT_*` 四项（base_url/api_key/model/mode），留空即用主模型。
+- 想换独立挑选模型：设置页「挑选模型」页签填写（或 `.env` 填 `RAG_SELECT_*`：base_url/api_key/model/mode/reasoning_effort），留空即用主模型。
 - 想关闭该功能：`AI_RAG_SELECT_ENABLED=false`（退回规则降级，行为与决策 34 落地前一致）。
 - 回归验证：`backend/tests/test_rag_router.py` 7 项（目录/预算/降级/会话缓存/页模式/隐私/跨书引用）。

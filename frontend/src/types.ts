@@ -161,6 +161,22 @@ export interface AiSettings {
   vision_presence_penalty: number | null
   vision_enable_thinking: boolean
   vision_thinking_budget: number | null
+  // 决策 34 挑选器（LLM 自主挑选 RAG/Skill）：独立模型配置，未填项回退主文本模型
+  rag_select_enabled: boolean
+  rag_select_base_url: string
+  rag_select_api_key: string
+  rag_select_api_key_set: boolean
+  rag_select_model: string
+  rag_select_mode: string
+  rag_select_timeout: number
+  rag_select_verify_ssl: boolean
+  rag_select_max_tokens: number
+  rag_select_temperature: number | null
+  rag_select_thinking_type: string
+  rag_select_reasoning_effort: string
+  rag_select_max_books: number
+  rag_select_max_skills: number
+  rag_select_cache_ttl_minutes: number
 }
 
 export interface ChatMessageItem {

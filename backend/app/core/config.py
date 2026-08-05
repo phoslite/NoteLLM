@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     rag_select_max_tokens: int = 512  # 挑选输出上限（低 token 轻量调用）
     rag_select_temperature: float | None = 0.0  # 挑选要确定性，默认低温
     rag_select_thinking_type: str = "disabled"  # 挑选禁思考
+    rag_select_reasoning_effort: str = ""  # 挑选推理强度（DeepSeek reasoning_effort，chat 模式；空=回退主模型）
     rag_select_max_books: int = 3  # 预算：最多注入书数（含当前书）
     rag_select_max_skills: int = 2  # 预算：最多注入 Skill 数
     rag_select_cache_ttl_minutes: int = 60  # session_id 会话挑选缓存 TTL；0=不缓存

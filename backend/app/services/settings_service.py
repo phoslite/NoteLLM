@@ -5,8 +5,10 @@
 from app.ai.client import LLMClient, LLMError
 from app.repositories.settings import (
     CLIENT_KWARG_KEYS,
+    SELECTOR_CLIENT_KWARG_KEYS,
     VISION_CLIENT_KWARG_KEYS,
     client_kwargs,
+    selector_client_kwargs,
     vision_client_kwargs,
 )
 from app.tasks import submit
@@ -41,6 +43,20 @@ FIELD_TO_KEY: dict[str, str] = {
     "vision_presence_penalty": "vision_presence_penalty",
     "vision_enable_thinking": "vision_enable_thinking",
     "vision_thinking_budget": "vision_thinking_budget",
+    "rag_select_enabled": "ai_rag_select_enabled",
+    "rag_select_base_url": "rag_select_base_url",
+    "rag_select_api_key": "rag_select_api_key",
+    "rag_select_model": "rag_select_model",
+    "rag_select_mode": "rag_select_mode",
+    "rag_select_timeout": "rag_select_timeout",
+    "rag_select_verify_ssl": "rag_select_verify_ssl",
+    "rag_select_max_tokens": "rag_select_max_tokens",
+    "rag_select_temperature": "rag_select_temperature",
+    "rag_select_thinking_type": "rag_select_thinking_type",
+    "rag_select_reasoning_effort": "rag_select_reasoning_effort",
+    "rag_select_max_books": "rag_select_max_books",
+    "rag_select_max_skills": "rag_select_max_skills",
+    "rag_select_cache_ttl_minutes": "rag_select_cache_ttl_minutes",
 }
 
 
@@ -63,9 +79,16 @@ def _run_connect_test(kwargs: dict, *, kind: str = "text") -> dict:
     return {"ok": True, "message": "连接成功，回复：" + (reply or "")[:50]}
 
 
-def build_test_kwargs(db, body, *, vision: bool = False) -> dict:
-    """合并当前配置与请求临时覆盖；缺失关键项返回 None（由路由转 400）。"""
-    if vision:
+def build_test_kwargs(db, body, *, vision: bool = False, selector: bool = False) -> dict:
+    """合并当前配置与请求临时覆盖；缺失关键项返回 None（由路由转 400）。
+
+    selector=True 时用挑选器配置（rag_select_* 未填项自动回退主文本模型，
+    故必填检查仅 api_key）。"""
+    if selector:
+        kwargs = selector_client_kwargs(db)
+        mapping = SELECTOR_CLIENT_KWARG_KEYS
+        required = ("api_key",)
+    elif vision:
         kwargs = vision_client_kwargs(db)
         mapping = VISION_CLIENT_KWARG_KEYS
         required = ("api_key", "base_url", "model")
@@ -82,11 +105,15 @@ def build_test_kwargs(db, body, *, vision: bool = False) -> dict:
     return kwargs
 
 
-def submit_connect_test(db, body, *, vision: bool = False) -> str:
+def submit_connect_test(db, body, *, vision: bool = False, selector: bool = False) -> str:
     """提交连接测试后台任务，返回 task_id。"""
-    kwargs = build_test_kwargs(db, body, vision=vision)
+    kwargs = build_test_kwargs(db, body, vision=vision, selector=selector)
     if kwargs is None:
+        if selector:
+            raise ValueError("请先配置挑选器或文本模型的 API Key（挑选器未填项自动回退主模型）")
         raise ValueError("请先配置 AI Base URL 与 API Key" if not vision else "请先配置多模态 Base URL、API Key 与模型")
+    if selector:
+        return submit("text", "test-selector-connection", lambda: _run_connect_test(kwargs, kind="text"))
     task_type = "vision" if vision else "text"
     task_name = "test-vision-connection" if vision else "test-text-connection"
     return submit(task_type, task_name, lambda: _run_connect_test(kwargs, kind=task_type))

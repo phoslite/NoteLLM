@@ -54,6 +54,7 @@ AI_OVERRIDE_KEYS: dict[str, str] = {
     "rag_select_max_tokens": "RAG_SELECT_MAX_TOKENS",
     "rag_select_temperature": "RAG_SELECT_TEMPERATURE",
     "rag_select_thinking_type": "RAG_SELECT_THINKING_TYPE",
+    "rag_select_reasoning_effort": "RAG_SELECT_REASONING_EFFORT",
     "rag_select_max_books": "RAG_SELECT_MAX_BOOKS",
     "rag_select_max_skills": "RAG_SELECT_MAX_SKILLS",
     "rag_select_cache_ttl_minutes": "RAG_SELECT_CACHE_TTL_MINUTES",
@@ -143,6 +144,7 @@ SELECTOR_CLIENT_KWARG_KEYS: dict[str, str] = {
     "rag_select_max_tokens": "max_tokens",
     "rag_select_temperature": "temperature",
     "rag_select_thinking_type": "thinking_type",
+    "rag_select_reasoning_effort": "reasoning_effort",
 }
 # 空值回退到主文本模型的对应项
 _SELECTOR_FALLBACK: dict[str, str] = {
@@ -152,6 +154,7 @@ _SELECTOR_FALLBACK: dict[str, str] = {
     "rag_select_mode": "ai_mode",
     "rag_select_timeout": "ai_timeout",
     "rag_select_verify_ssl": "ai_verify_ssl",
+    "rag_select_reasoning_effort": "ai_reasoning_effort",
 }
 
 
@@ -210,8 +213,13 @@ def load_ai_overrides(db: Session) -> dict:
     return overrides
 
 
+# 允许「显式清空」的键：空字符串是合法值（如挑选器 mode 空=跟随主模型）
+_CLEARABLE_EMPTY_KEYS = {"rag_select_mode", "rag_select_reasoning_effort"}
+
+
 def save_ai_overrides(db: Session, data: dict) -> dict:
-    """保存运行时 AI 配置；返回掩码后的当前视图。空字符串/None 视为未修改（保留旧值）。"""
+    """保存运行时 AI 配置；返回掩码后的当前视图。空字符串/None 视为未修改（保留旧值）；
+    _CLEARABLE_EMPTY_KEYS 例外：空字符串为合法值（如挑选器 mode 空=跟随主模型），显式写入。"""
     for key, value in data.items():
         if key not in AI_OVERRIDE_KEYS or value is None:
             continue
@@ -221,7 +229,7 @@ def save_ai_overrides(db: Session, data: dict) -> dict:
             text = str(value)
         else:
             text = str(value).strip()
-        if not text:
+        if not text and key not in _CLEARABLE_EMPTY_KEYS:
             continue
         set_setting(db, key, text)
     return ai_settings_view(db)
@@ -273,6 +281,22 @@ def ai_settings_view(db: Session) -> dict:
         "vision_presence_penalty": overrides.get("vision_presence_penalty", settings.vision_presence_penalty),
         "vision_enable_thinking": overrides.get("vision_enable_thinking", settings.vision_enable_thinking),
         "vision_thinking_budget": overrides.get("vision_thinking_budget", settings.vision_thinking_budget),
+        # 决策 34 挑选器（LLM 自主挑选 RAG/Skill）：独立配置，未填项回退主文本模型
+        "rag_select_enabled": overrides.get("ai_rag_select_enabled", settings.ai_rag_select_enabled),
+        "rag_select_base_url": overrides.get("rag_select_base_url", settings.rag_select_base_url),
+        "rag_select_api_key": mask_api_key(overrides.get("rag_select_api_key", settings.rag_select_api_key)),
+        "rag_select_api_key_set": bool(overrides.get("rag_select_api_key", settings.rag_select_api_key)),
+        "rag_select_model": overrides.get("rag_select_model", settings.rag_select_model),
+        "rag_select_mode": overrides.get("rag_select_mode", settings.rag_select_mode),
+        "rag_select_timeout": overrides.get("rag_select_timeout", settings.rag_select_timeout),
+        "rag_select_verify_ssl": overrides.get("rag_select_verify_ssl", settings.rag_select_verify_ssl),
+        "rag_select_max_tokens": overrides.get("rag_select_max_tokens", settings.rag_select_max_tokens),
+        "rag_select_temperature": overrides.get("rag_select_temperature", settings.rag_select_temperature),
+        "rag_select_thinking_type": overrides.get("rag_select_thinking_type", settings.rag_select_thinking_type),
+        "rag_select_reasoning_effort": overrides.get("rag_select_reasoning_effort", settings.rag_select_reasoning_effort),
+        "rag_select_max_books": overrides.get("rag_select_max_books", settings.rag_select_max_books),
+        "rag_select_max_skills": overrides.get("rag_select_max_skills", settings.rag_select_max_skills),
+        "rag_select_cache_ttl_minutes": overrides.get("rag_select_cache_ttl_minutes", settings.rag_select_cache_ttl_minutes),
     }
 
 def find_env_file() -> Path | None:

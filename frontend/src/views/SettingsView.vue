@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAiSettings, reloadEnvSettings, saveAiSettings, testAiSettings, testVisionAiSettings } from '@/api/settings'
+import { getAiSettings, reloadEnvSettings, saveAiSettings, testAiSettings, testSelectorAiSettings, testVisionAiSettings } from '@/api/settings'
 import type { AiSettings } from '@/types'
 import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
 
 const loading = ref(false)
 const testing = ref(false)
 const visionTesting = ref(false)
+const selectorTesting = ref(false)
 const reloadingEnv = ref(false)
 const activeTab = ref('text')
 const form = reactive<AiSettings>({
@@ -41,6 +42,21 @@ const form = reactive<AiSettings>({
   vision_presence_penalty: null,
   vision_enable_thinking: false,
   vision_thinking_budget: null,
+  rag_select_enabled: true,
+  rag_select_base_url: '',
+  rag_select_api_key: '',
+  rag_select_api_key_set: false,
+  rag_select_model: '',
+  rag_select_mode: '',
+  rag_select_timeout: 60,
+  rag_select_verify_ssl: true,
+  rag_select_max_tokens: 512,
+  rag_select_temperature: 0,
+  rag_select_thinking_type: 'disabled',
+  rag_select_reasoning_effort: '',
+  rag_select_max_books: 3,
+  rag_select_max_skills: 2,
+  rag_select_cache_ttl_minutes: 60,
 })
 
 type FieldType = 'text' | 'password' | 'number' | 'switch' | 'select'
@@ -94,11 +110,30 @@ const visionFields: FieldDef[] = [
   { key: 'vision_thinking_budget', label: '思维链上限', type: 'number', section: '思考模式', min: 256, max: 65536, step: 256, tip: 'SiliconFlow thinking_budget，仅推理模型使用' },
 ]
 
+const selectorFields: FieldDef[] = [
+  { key: 'rag_select_enabled', label: '启用挑选器', type: 'switch', section: '总开关', tip: '总开关：关闭后跳过 LLM 挑选，直接使用规则回退（暖画像 top3 + 谱系 top2 + 关键词）' },
+  { key: 'rag_select_base_url', label: 'Base URL', type: 'text', section: '连接信息', placeholder: '留空跟随主模型', tip: '两种写法：① 基础地址（如 https://api.deepseek.com 或 https://host/v1），按接口模式自动补全（chat→/v1/chat/completions、responses→/v1/responses、anthropic→/v1/messages）；② 完整接口 URL，直接使用。留空则复用文本模型配置', wide: true },
+  { key: 'rag_select_api_key', label: 'API Key', type: 'password', section: '连接信息' },
+  { key: 'rag_select_model', label: '模型', type: 'text', section: '连接信息', placeholder: '留空跟随主模型', tip: '如 deepseek-chat / deepseek-v4-flash；留空则复用文本模型' },
+  { key: 'rag_select_mode', label: '接口模式', type: 'select', section: '连接信息', clearable: true, placeholder: '跟随主模型', options: [{ label: '跟随主模型（留空）', value: '' }, { label: 'chat（messages）', value: 'chat' }, { label: 'responses（instructions/input）', value: 'responses' }, { label: 'anthropic（Messages API）', value: 'anthropic' }], tip: 'DeepSeek 官方推荐 chat；responses 需模型与网关支持' },
+  { key: 'rag_select_timeout', label: '超时（秒）', type: 'number', section: '连接信息', min: 5, max: 600 },
+  { key: 'rag_select_verify_ssl', label: '校验 SSL', type: 'switch', section: '连接信息' },
+  { key: 'rag_select_temperature', label: '温度', type: 'number', section: '采样参数', min: 0, max: 2, step: 0.1, tip: '挑选要确定性，默认 0.0；DeepSeek 思考模式下不生效' },
+  { key: 'rag_select_max_tokens', label: '生成上限', type: 'number', section: '采样参数', min: 64, max: 8192, step: 64, tip: '挑选输出上限（轻量 JSON 输出，默认 512）' },
+  { key: 'rag_select_thinking_type', label: '思考模式', type: 'select', section: '思考模式', clearable: true, placeholder: '默认（不传）', options: [{ label: '关闭思考', value: 'disabled' }, { label: '开启思考', value: 'enabled' }], tip: 'DeepSeek thinking.type；挑选是轻量结构化任务，默认 disabled' },
+  { key: 'rag_select_reasoning_effort', label: '推理强度', type: 'select', section: '思考模式', clearable: true, placeholder: '跟随主模型', options: [{ label: '跟随主模型（留空）', value: '' }, { label: 'low', value: 'low' }, { label: 'medium', value: 'medium' }, { label: 'high', value: 'high' }, { label: 'max', value: 'max' }], tip: 'DeepSeek reasoning_effort（chat 模式）；关闭思考时不要同时设置' },
+  { key: 'rag_select_max_books', label: '注入书数上限', type: 'number', section: '预算', min: 1, max: 10, tip: '最多注入的书数（含当前书），默认 3' },
+  { key: 'rag_select_max_skills', label: 'Skill 数上限', type: 'number', section: '预算', min: 0, max: 10, tip: '最多注入的 Skill 数，默认 2' },
+  { key: 'rag_select_cache_ttl_minutes', label: '会话缓存 TTL（分钟）', type: 'number', section: '预算', min: 0, max: 1440, tip: '同一 session_id 的挑选结果缓存时长；0=不缓存，默认 60' },
+]
+
 const sectionIcons: Record<string, string> = {
   连接信息: '🔌',
   采样参数: '🎛️',
   思考模式: '🧠',
   隐私与附件: '🔒',
+  总开关: '🎚️',
+  预算: '💰',
 }
 
 function sectionsOf(fields: FieldDef[]) {
@@ -116,6 +151,7 @@ function setField(key: string, value: any) {
 function fieldPlaceholder(f: FieldDef): string {
   if (f.key === 'api_key') return form.api_key_set ? '已设置（留空保持不变）' : '请输入 API Key'
   if (f.key === 'vision_api_key') return form.vision_api_key_set ? '已设置（留空保持不变）' : '请输入多模态 API Key'
+  if (f.key === 'rag_select_api_key') return form.rag_select_api_key_set ? '已设置（留空保持不变）' : '请输入挑选器 API Key'
   return f.placeholder ?? ''
 }
 
@@ -139,6 +175,16 @@ const tabs = computed(() => [
     testing: visionTesting.value,
     testLabel: '测试视觉连接',
     onTest: testVision,
+  },
+  {
+    name: 'selector',
+    label: '挑选模型',
+    desc: 'AI 自主挑选 RAG / Skill · 未填项自动跟随文本模型',
+    fields: selectorFields,
+    sections: sectionsOf(selectorFields),
+    testing: selectorTesting.value,
+    testLabel: '测试挑选连接',
+    onTest: testSelector,
   },
 ])
 
@@ -170,9 +216,23 @@ function toPayload() {
     vision_presence_penalty: form.vision_presence_penalty,
     vision_enable_thinking: form.vision_enable_thinking,
     vision_thinking_budget: form.vision_thinking_budget,
+    rag_select_enabled: form.rag_select_enabled,
+    rag_select_base_url: form.rag_select_base_url,
+    rag_select_model: form.rag_select_model,
+    rag_select_mode: form.rag_select_mode,
+    rag_select_timeout: form.rag_select_timeout,
+    rag_select_verify_ssl: form.rag_select_verify_ssl,
+    rag_select_max_tokens: form.rag_select_max_tokens,
+    rag_select_temperature: form.rag_select_temperature,
+    rag_select_thinking_type: form.rag_select_thinking_type,
+    rag_select_reasoning_effort: form.rag_select_reasoning_effort,
+    rag_select_max_books: form.rag_select_max_books,
+    rag_select_max_skills: form.rag_select_max_skills,
+    rag_select_cache_ttl_minutes: form.rag_select_cache_ttl_minutes,
   }
   if (form.api_key.trim()) payload.api_key = form.api_key.trim()
   if (form.vision_api_key.trim()) payload.vision_api_key = form.vision_api_key.trim()
+  if (form.rag_select_api_key.trim()) payload.rag_select_api_key = form.rag_select_api_key.trim()
   return payload
 }
 
@@ -273,6 +333,27 @@ async function testVision() {
   }
 }
 
+async function testSelector() {
+  selectorTesting.value = true
+  try {
+    const { task_id } = await testSelectorAiSettings(toPayload())
+    notifyTaskSubmitted()
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000, signal: taskAbort.signal })
+    if (t.status === 'failed') {
+      ElMessage.error(t.error || '挑选器连接测试失败')
+    } else {
+      const result = (t.result ?? {}) as { ok?: boolean; message?: string }
+      if (result.ok) ElMessage.success(result.message || '挑选器连接成功')
+      else ElMessage.warning(result.message || '挑选器连接失败')
+    }
+  } catch (err) {
+    if (isTaskAbort(err)) return
+    ElMessage.error((err as Error).message)
+  } finally {
+    selectorTesting.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -284,11 +365,11 @@ onMounted(load)
           <span class="title-ico">⚙️</span>
           <span>设置</span>
         </h2>
-        <p class="head-sub">文本模型负责阅读问答与 RAG/Skill 总结；多模态视觉模型负责 PDF 页面信息提取（扫描件与文本型统一），两者独立配置</p>
+        <p class="head-sub">文本模型负责阅读问答与 RAG/Skill 总结；多模态视觉模型负责 PDF 页面信息提取（扫描件与文本型统一）；挑选模型由 AI 自主挑选 RAG / Skill（未填项自动跟随文本模型）</p>
       </div>
       <div class="head-actions">
         <el-button :loading="reloadingEnv" @click="reloadEnv">🔄 强制载入 .env</el-button>
-        <el-button type="primary" :loading="testing || visionTesting" @click="save">💾 保存配置</el-button>
+        <el-button type="primary" :loading="testing || visionTesting || selectorTesting" @click="save">💾 保存配置</el-button>
       </div>
     </header>
 

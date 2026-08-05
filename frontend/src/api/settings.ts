@@ -23,3 +23,8 @@ export function reloadEnvSettings() {
 export function testVisionAiSettings(body?: Partial<AiSettings>) {
   return post<{ task_id: string }>('/settings/ai/test-vision', body ?? {})
 }
+
+/** 测试挑选器连接（后台任务）：用挑选器配置（未填项回退主模型）发起最小请求，返回 task_id 供轮询。 */
+export function testSelectorAiSettings(body?: Partial<AiSettings>) {
+  return post<{ task_id: string }>('/settings/ai/test-selector', body ?? {})
+}
