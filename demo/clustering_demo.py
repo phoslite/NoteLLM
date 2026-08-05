@@ -22,21 +22,22 @@ from collections import Counter, defaultdict
 # ---------------------------------------------------------------- 示例语料
 # 每本书：(书名, {关键词: 词频})；词频为整数，模拟 extract_keywords 输出。
 BOOKS = [
-    ("泛函分析", {"函数": 6, "空间": 5, "线性": 4, "算子": 4, "拓扑": 3, "巴拿赫": 3, "泛函": 4, "分析": 5}),
-    ("实变函数论", {"函数": 6, "测度": 4, "积分": 4, "勒贝格": 3, "空间": 3, "可测": 3, "分析": 4}),
-    ("变分法基础", {"变分": 5, "泛函": 4, "极值": 4, "欧拉": 3, "微分": 3, "函数": 3}),
-    ("变分学讲义", {"变分": 5, "泛函": 4, "极值": 3, "欧拉": 3, "拉格朗日": 3, "分析": 3}),
-    ("数学分析习题", {"函数": 5, "极限": 4, "导数": 4, "积分": 4, "级数": 3, "连续": 3, "分析": 5}),
-    ("线性代数讲义", {"矩阵": 5, "向量": 4, "线性": 4, "行列式": 3, "特征值": 3, "空间": 3}),
-    ("点集拓扑", {"拓扑": 5, "开集": 4, "紧致": 3, "连通": 3, "连续": 3, "空间": 4, "度量": 3}),
-    ("群论导论", {"群": 5, "子群": 4, "同态": 3, "环": 3, "域": 3, "代数": 3}),
-    ("概率论与数理统计", {"概率": 5, "随机": 4, "分布": 4, "期望": 3, "方差": 3, "统计": 4}),
-    ("数理统计教程", {"统计": 5, "抽样": 3, "估计": 4, "检验": 3, "分布": 3, "假设": 3}),
-    ("在世界的关节处下刀", {"关节": 4, "下刀": 3, "图形": 3, "渲染": 3, "动画": 3, "函数": 2}),
+    (7, "泛函分析", {"函数": 6, "空间": 5, "线性": 4, "算子": 4, "拓扑": 3, "巴拿赫": 3, "泛函": 4, "分析": 5}, None),
+    (8, "实变函数论", {"函数": 6, "测度": 4, "积分": 4, "勒贝格": 3, "空间": 3, "可测": 3, "分析": 4}, None),
+    (9, "变分法基础", {"变分": 5, "泛函": 4, "极值": 4, "欧拉": 3, "微分": 3, "函数": 3}, None),
+    (10, "变分学讲义", {"变分": 5, "泛函": 4, "极值": 3, "欧拉": 3, "拉格朗日": 3, "分析": 3}, None),
+    (11, "数学分析习题", {"函数": 5, "极限": 4, "导数": 4, "积分": 4, "级数": 3, "连续": 3, "分析": 5}, None),
+    (12, "线性代数讲义", {"矩阵": 5, "向量": 4, "线性": 4, "行列式": 3, "特征值": 3, "空间": 3}, None),
+    (13, "点集拓扑", {"拓扑": 5, "开集": 4, "紧致": 3, "连通": 3, "连续": 3, "空间": 4, "度量": 3}, None),
+    (14, "群论导论", {"群": 5, "子群": 4, "同态": 3, "环": 3, "域": 3, "代数": 3}, None),
+    (15, "概率论与数理统计", {"概率": 5, "随机": 4, "分布": 4, "期望": 3, "方差": 3, "统计": 4}, None),
+    (16, "数理统计教程", {"统计": 5, "抽样": 3, "估计": 4, "检验": 3, "分布": 3, "假设": 3}, None),
+    (17, "在世界的关节处下刀", {"关节": 4, "下刀": 3, "图形": 3, "渲染": 3, "动画": 3, "函数": 2}, None),
 ]
+IDS = [b[0] for b in BOOKS]
 N = len(BOOKS)
-TITLES = [t for t, _ in BOOKS]
-KEYWORDS = [dict(kw) for _, kw in BOOKS]
+TITLES = [t for _, t, _, _ in BOOKS]
+SAMPLES = [s for _, _, _, s in BOOKS]
 
 
 # ---------------------------------------------------------------- 工具函数
@@ -125,37 +126,61 @@ SYNONYM_GROUPS: list[tuple[str, list[str]]] = [
     ("宏观经济学", ["总体经济学"]),
     ("密码学", ["密码编码学"]),
     ("因果推断", ["因果分析"]),
-    ("固定收益", ["固定收益证券", "固收"]),
+    ("固定收益", ["固定收益证券", "固收", "fixed income"]),
     ("资产定价", ["定价理论"]),
 ]
 _ALIAS_TO_CANONICAL = {a: c for c, aliases in SYNONYM_GROUPS for a in aliases}
 
 
-def canonical_terms(term_freq: dict) -> dict:
+def _hit_words(sample: str | None, term_freq: dict) -> list[tuple[str, str]]:
+    """词库术语命中（模拟正式版 _lexicon_hits 的子串匹配）：
+    规范词/别名在样本文本中命中（中文子串 / 英文子串忽略大小写）；
+    无样本时退化为关键词整词命中。返回 [(规范词, 命中的词)]，长词优先按词长降序。"""
+    hits: list[tuple[str, str]] = []
+    if sample:
+        lowered = sample.lower()
+        for c, aliases in SYNONYM_GROUPS:
+            for w in [c] + aliases:
+                if not w:
+                    continue
+                if re.search(r"[\u4e00-\u9fff]", w):
+                    ok = w in sample
+                else:
+                    ok = w.lower() in lowered
+                if ok:
+                    hits.append((c, w))
+    else:
+        for t in term_freq:
+            low = t.lower()
+            if low in _ALIAS_TO_CANONICAL:
+                hits.append((_ALIAS_TO_CANONICAL[low], t))
+            else:
+                for c, aliases in SYNONYM_GROUPS:
+                    if c == low or any(a == low for a in aliases):
+                        hits.append((c, t))
+                        break
+    return sorted(hits, key=lambda h: len(h[1]), reverse=True)
+
+
+def canonical_terms(term_freq: dict, sample: str | None = None) -> dict:
     """同义词归一化（§2.1 归一注入点，demo 模拟版）：
-    1. 别名整词折叠到规范词（频数求和），如「变分」→「变分法」；
-    2. 长词优先——仅当规范词/别名**整词出现在关键词表**（模拟词库术语命中文本）时，
-       其内部子串 token 权重 ×0.3（如「傅里叶变换」命中时「傅里」「里叶」不再独立计分），
-       避免误伤未出现长词时独立存在的短术语（如「拓扑」「概率」）。"""
-    out: dict[str, float] = {}
-    appeared: set[str] = set()  # 关键词表中整词出现的规范词/别名（长词命中信号）
-    for t in term_freq:
-        low = t.lower()
-        if low in _ALIAS_TO_CANONICAL:
-            appeared.add(_ALIAS_TO_CANONICAL[low])
-        else:
-            for c, aliases in SYNONYM_GROUPS:
-                if c == low or any(a == low for a in aliases):
-                    appeared.add(c)
-                    break
-    for t, v in term_freq.items():
+    1. 词库术语命中注入——规范词/别名在样本文本中命中（正式版 _lexicon_hits 子串匹配），
+       规范词以 100 权重进入候选（别名命中折叠到规范词），同时其内部 token 权重 ×0.3
+       （长词优先：如「傅里叶变换」命中时「傅里」「里叶」不再独立计分）；
+    2. 无样本文本时退化为关键词整词折叠（内置示例库）。"""
+    out = dict(term_freq)
+    for c, _w in _hit_words(sample, term_freq):
+        for t in list(out):
+            if c in t or _w in t:
+                out[t] = out.get(t, 0.0) * 0.3  # 长词内部子串抑制
+        out[c] = max(out.get(c, 0.0), 100.0)  # 术语注入
+    # 别名整词折叠（未作为术语注入路径处理的）
+    for t, v in list(out.items()):
         low = t.lower()
         if low in _ALIAS_TO_CANONICAL:
             c = _ALIAS_TO_CANONICAL[low]
             out[c] = out.get(c, 0.0) + v
-            continue
-        suppressed = any(c in t for c in appeared)  # 长词内部子串 → 抑制
-        out[t] = v * 0.3 if suppressed else v
+            del out[t]
     return out
 
 
@@ -253,6 +278,57 @@ def show(groups: list[list[int]], label: str) -> None:
         print(f"  [{cluster_name(g)}]  {', '.join(names)}")
 
 
+# ---------------------------------------------------------------- 金标评估（--eval）
+def load_gold(path: str) -> dict[int, str]:
+    """金标簇：{"书id": "簇名"}；返回 {行号: 簇名}（按语料 IDS 映射，未覆盖行跳过）。"""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    by_id = {int(k): v for k, v in data.items()}
+    return {i: by_id[bid] for i, bid in enumerate(IDS) if bid in by_id}
+
+
+def evaluate(groups: list[list[int]], gold: dict[int, str]) -> dict:
+    """聚类质量指标（改进方案 §4）：pair-F、簇纯度、簇数/最大簇/孤立簇。"""
+    n = sum(len(g) for g in groups)
+    tp = fp = fn = pairs = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            gi, gj = gold.get(i), gold.get(j)
+            if gi is None or gj is None:
+                continue
+            same_gold = gi == gj
+            same_cluster = any(i in g and j in g for g in groups)
+            pairs += 1
+            if same_cluster and same_gold:
+                tp += 1
+            elif same_cluster and not same_gold:
+                fp += 1
+            elif not same_cluster and same_gold:
+                fn += 1
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    pair_f = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    purity = sum(
+        max(sum(1 for i in g if gold.get(i) == c) for c in set(gold.get(i) for i in g if i in gold))
+        / len(g)
+        for g in groups
+        if any(i in gold for i in g)
+    )
+    purity /= sum(1 for g in groups if any(i in gold for i in g))
+    return {
+        "pair_f": pair_f, "precision": precision, "recall": recall,
+        "purity": purity, "clusters": len(groups),
+        "max_size": max((len(g) for g in groups), default=0),
+        "singletons": sum(1 for g in groups if len(g) == 1),
+    }
+
+
+def eval_row(label: str, groups: list[list[int]], gold: dict[int, str]) -> None:
+    m = evaluate(groups, gold)
+    print(f"  {label:<28} pairF={m['pair_f']:.3f} P={m['precision']:.3f} R={m['recall']:.3f} "
+          f"purity={m['purity']:.3f} 簇数={m['clusters']} 最大簇={m['max_size']} 单点簇={m['singletons']}")
+
+
 # ---------------------------------------------------------------- D. O3 LLM 降分融合
 def llm_fuse_demo() -> None:
     print("\n=== O3 LLM 允许降分融合（0.4*kw + 0.6*llm）===")
@@ -273,15 +349,16 @@ def llm_fuse_demo() -> None:
 # ---------------------------------------------------------------- main
 def _load_input(path: str | None) -> tuple[int, str]:
     """加载语料：默认内置示例库；--input 为 JSON [{title, keywords}]（真实库导出见 export_real_corpus.py）。"""
-    global BOOKS, TITLES, KEYWORDS, N
+    global BOOKS, TITLES, KEYWORDS, IDS, N
     if not path:
         return N, "内置示例库（复现 D1：函数/分析/空间高 df 泛化词误吸）"
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict):
         data = data.get("books") or []
-    rows = [(b["title"], dict(b.get("keywords") or {})) for b in data if b.get("title")]
-    BOOKS, TITLES, KEYWORDS = rows, [t for t, _ in rows], [kw for _, kw in rows]
+    rows = [(b.get("id", i), b["title"], dict(b.get("keywords") or {}), b.get("sample")) for i, b in enumerate(data) if b.get("title")]
+    BOOKS, TITLES, KEYWORDS, SAMPLES = rows, [t for _, t, _, _ in rows], [kw for _, _, kw, _ in rows], [s for _, _, _, s in rows]
+    IDS = [b[0] for b in BOOKS]
     N = len(BOOKS)
     return N, f"实际语料 {path}（{N} 本）"
 
@@ -293,14 +370,25 @@ def main() -> None:
     parser.add_argument("--input", default=None, help="实际语料 JSON [{title, keywords}]")
     parser.add_argument("--no-synonyms", action="store_true", help="关闭同义词归一化（对照）")
     parser.add_argument("--no-fuse", action="store_true", help="跳过 LLM 降分演示")
+    parser.add_argument("--eval", default=None, help="金标簇 JSON（书id: 簇名），打印 A/B/C 质量指标")
     args = parser.parse_args()
 
     count, desc = _load_input(args.input)
     global KEYWORDS
     if not args.no_synonyms:
-        KEYWORDS = [canonical_terms(kw) for kw in KEYWORDS]
+        KEYWORDS = [canonical_terms(kw, s) for kw, s in zip(KEYWORDS, SAMPLES, strict=True)]
     sim = idf_cosine()
     print(f"语料 {count} 本（{desc}）；同义词归一化={'开' if not args.no_synonyms else '关'}")
+    if args.eval:
+        gold = load_gold(args.eval)
+        print(f"金标覆盖 {len(gold)}/{count} 本（{args.eval}）")
+        if args.algo in ("all", "greedy"):
+            eval_row("A 现行贪心吸收", greedy_clusters(), gold)
+        if args.algo in ("all", "cc"):
+            eval_row(f"B 连通分量 tau={args.tau}", connected_components(sim, args.tau), gold)
+        if args.algo in ("all", "lpa"):
+            eval_row(f"C 加权LPA tau={args.tau}", label_propagation(sim, args.tau), gold)
+        return
     if args.algo in ("all", "greedy"):
         show(greedy_clusters(), "A 现行：min 伪余弦 + 贪心吸收")
     if args.algo in ("all", "cc"):

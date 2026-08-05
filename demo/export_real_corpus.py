@@ -16,6 +16,7 @@ sys.path.insert(0, str(_BACKEND))
 
 from app.core.database import SessionLocal
 from app.repositories.graph import list_books
+from app.services.graph.corpus import book_corpus
 from app.services.graph.keywords import book_keywords
 
 
@@ -26,7 +27,9 @@ def main() -> None:
         out: list[dict] = []
         for b in books:
             kw = book_keywords(b, 80)
-            out.append({"title": b.title, "keywords": kw})
+            # 语料样本（前 600 字）：供 demo 模拟词库术语子串命中注入（正式版 _lexicon_hits）
+            sample = book_corpus(b)[:600]
+            out.append({"id": b.id, "title": b.title, "keywords": kw, "sample": sample})
             print(f"  {b.id:>2} kw={len(kw):>3}  {b.title[:44]}")
         path = Path(__file__).resolve().parent / "real_corpus.json"
         path.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
