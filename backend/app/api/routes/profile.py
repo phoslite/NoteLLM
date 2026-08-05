@@ -11,16 +11,39 @@ from app.services.profile_learning import (
     learning_state,
     save_thresholds,
 )
-from app.services.profile_service import get_all_profiles, reset_profiles
+from app.services.profile_service import (
+    get_all_profiles,
+    reset_profiles,
+)
+from app.services.profile_service import (
+    update_cold_profile as update_cold_profile_service,
+)
 from app.services.recommendation_service import generate_recommendations
 
 router = APIRouter(prefix="/api", tags=["profile"])
+
+
+class ColdProfileIn(BaseModel):
+    domain_preferences: dict[str, int] | None = None
+    long_term_interests: list[str] | None = None
 
 
 class ThresholdsIn(BaseModel):
     warm_threshold: int | None = None
     related_strength: float | None = None
     review_days: int | None = None
+
+
+@router.patch("/profile/cold")
+def update_cold_profile(body: ColdProfileIn, db: Session = Depends(get_db)):
+    """手动编辑冷画像（方案 A：仅冷画像可编辑——领域偏好 / 长期兴趣）。"""
+    return ok(
+        update_cold_profile_service(
+            db,
+            domain_preferences=body.domain_preferences,
+            long_term_interests=body.long_term_interests,
+        )
+    )
 
 
 @router.get("/profile")

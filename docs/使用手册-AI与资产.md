@@ -122,6 +122,8 @@ python demo/chat_demo.py                                          # 交互式多
 | `content_hash(obj)` | 规范化 JSON（剔除 `merged_book_ids` 元数据、排序键、紧凑序列化）的 sha256 前 16 位指纹；条目与整条资产去重均用它（v1.65） |
 | `_book_file_hash(db, book_id)` | 懒回填/读取书籍内容 hash：优先 `book.content_hash`，旧书缺失时读原文件 sha256 回填（v1.67） |
 | `merge_duplicate_assets(db)` | 跨书去重合并：**按书籍内容 hash（原文件 sha256，存于 `book.content_hash`，只与书籍内容相关）** 相同的整条资产合并为一条主资产（保留最新），被合并书 id 记入主资产 `content.merged_book_ids`，其资产行删除；已合并成员书内容 hash 变化后自动解除引用；返回 `{rag, skill}` 合并数（v1.65，v1.67 改判定基准） |
+| `list_assets_by_books(db)` | 批量加载全部书籍资产（含共享反查展开）：`{book_id: {kind: content}}`，内容剔除 `merged_book_ids`；供候选目录一次构建（v1.104 审查 A-7） |
+| `list_asset_briefs(db)` | 批量资产摘要：`{book_id: {version, has_rag, has_skill, rag_summary, merged_count}}`，供 `GET /api/books/assets` 资产页列表一次请求（v1.104 审查 A-6） |
 | `get_asset / read_asset_content / list_assets` | 无独立资产行时反查共享主资产，透明返回；`read_asset_content` 剔除 `merged_book_ids` 元数据（与生成内容可比）（v1.65） |
 
 
@@ -157,6 +159,7 @@ python demo/chat_demo.py                                          # 交互式多
 | POST | `/api/books/{id}/archive` | 读完归档（M9）：PDF 先视觉通读全书并缓存 → 文本模型总结 RAG/Skill → 标记读完；返回 `{task_id}`（轮询 `/api/tasks/{task_id}`） |
 | GET | `/api/tasks/{task_id}` | 轮询任务状态 `{status, result, error}` |
 | GET | `/api/books/{id}/asset` | 读取 RAG/Skill 资产（含各自 version 与更新时间） |
+| GET | `/api/books/assets` | **批量资产摘要（v1.104 审查 A-6）**：一次返回全部书籍 `{book_id: {version, has_rag, has_skill, rag_summary, merged_count}}`，资产页列表不再逐书请求；定义于 `routes/books.py`（须在 `/{book_id}` 前注册） |
 | DELETE | `/api/books/{id}/asset?kind=rag\|skill` | 删除整条资产；返回 `{deleted}`（v1.64） |
 | DELETE | `/api/books/{id}/asset/{kind}/{section}/{index}` | 删除资产内第 index 项（0 基）：`rag/key_points`、`rag/chunks`、`skill/skills`；删除后 version + 1，返回新内容（v1.64） |
 | POST | `/api/assets/dedupe` | 跨书资产去重合并（**书籍内容 hash** 相同合并为一条共享资产），返回 `{rag, skill}` 合并数（v1.65，v1.67 改基准） |
@@ -165,7 +168,7 @@ python demo/chat_demo.py                                          # 交互式多
 
 ### 3.6 前端资料页（`frontend/src/views/RagView.vue` + `src/api/rag.ts`）
 
-- 路由 `/rag`（资产列表页，`RagView.vue`，v1.74 两级结构）：上传 Markdown/PDF/TXT/EPUB → 导入 → 自动总结（轮询任务）；**上传总结完成后，在页面上侧以固定大小卡片展示该次提交的 RAG 摘要与 Skill 条数**（`.submitted-fixed` 固定高度 + `overflow: hidden`，无滚动条）；资产列表行仅显示**有无**（`RAG/Skill vN` / `未总结`）、**简略摘要**（MdRender 渲染、两行截断）与「查看完整 RAG/Skill」**入口**。
+- 路由 `/rag`（资产列表页，`RagView.vue`，v1.74 两级结构；v1.104 列表改 `listAssetBriefs` 批量摘要一次请求，总结完成详情单独 `getBookAsset` 拉取）：上传 Markdown/PDF/TXT/EPUB → 导入 → 自动总结（轮询任务）；**上传总结完成后，在页面上侧以固定大小卡片展示该次提交的 RAG 摘要与 Skill 条数**（`.submitted-fixed` 固定高度 + `overflow: hidden`，无滚动条）；资产列表行仅显示**有无**（`RAG/Skill vN` / `未总结`）、**简略摘要**（MdRender 渲染、两行截断）与「查看完整 RAG/Skill」**入口**。
 - 路由 `/rag/:bookId`（下级完整内容页，`RagDetailView.vue`，v1.74）：RAG 摘要 / 关键知识点 / 知识分块 / Skill 技能全部用 `MdRender`（markdown-it + KaTeX + DOMPurify）渲染，`el-collapse` **折叠展开**；支持单条删除（`deleteAssetItem`）、整书移除（`deleteBook`）、未总结时一键总结（`summarizeBook`）。
 - API 封装：`src/api/rag.ts` 的 `summarizeBook` / `archiveBook` / `getTask` / `getBookAsset` / `deleteAssetItem` / `dedupeAssets`；下级详情页「移除书籍（含 RAG/Skill）」走 `api/books.ts` 的 `deleteBook`；阅读页「📥 归档并总结 RAG/Skill」按钮走 `archiveBook` + `getTask` 轮询；类型见 `src/types.ts`（`RagContent` / `SkillContent` / `BookAssetView` / `TaskStatus`）。
 - 修改：新增折叠分区/渲染字段时改 `RagDetailView.vue`（el-collapse 分区 + MdRender 渲染）；「最近提交总结」固定高度在 `.submitted-fixed`（148px + overflow: hidden）；轮询间隔在 `pollTask` 中调整。
@@ -209,9 +212,10 @@ python demo/chat_demo.py                                          # 交互式多
 | `extract_citations(text)` | 从回答中解析引用出处 → `[{chapter, para}]` |
 | `retrieve_rag_chunks(db, book_id, question, top_k=4)` | 按关键词重叠从书籍 RAG 资产检索相关片段（含出处），无命中返回空 |
 | `load_skills(db, book_id)` | 读取书籍 Skill 资产技能列表 |
-| `build_messages(book, chapter, question, selection, rag_chunks, skills, enable_body_send)` | 组装 system/user messages；隐私开关关闭时不发正文 |
+| `build_messages(book, chapter, question, selection, rag_chunks, skills, enable_body_send, crop_text=None, media_texts=None)` | 组装 system/user messages；隐私开关关闭时不发正文；划线裁剪图/正文插图以视觉提取文本（`crop_text`/`media_texts`）注入，不再直发图片（决策 36） |
 | `persist_chat(db, book_id, chapter_id, selection, question, answer)` | 写入一条 user + 一条 assistant 历史 |
 | `stream_chat(job)` | SSE 事件生成器（start/delta/end/error + 落库兜底） |
+| `replay_cached_chat(db, book, chapter, question, selection, mode, cache_key_val)` | LLM 结果缓存命中回放（`cached=true`，审查 P0-4 下沉；chat 路由只做流式包装） |
 | `build_client(db)` | 按运行时配置构建 LLMClient（.env + 设置页覆盖） |
 | `is_configured(db)` | 是否已配置 API Key |
 
@@ -303,11 +307,29 @@ python demo/chat_demo.py                                          # 交互式多
 | 函数 | 说明 |
 | --- | --- |
 | `resolve_chat_chapter(db, book_id, chapter_id)` | 解析目标章节，返回 `(chapters, chapter)`；空书返回 `([], None)` |
-| `prepare_chat_job(db, book, chapter, question, selection, crop_image, crop_label)` | 组装对话任务：隐私/视觉覆盖、`[P-1,P,P+1]` 页缓存窗口或页图附件回退、RAG/Skill 检索、messages、client |
+| `prepare_chat_job(db, book, chapter, question, selection, crop_image, crop_label)` | 组装对话任务：隐私/视觉覆盖、`[P-1,P,P+1]` 页缓存窗口（不再回退直发页图）、附件经 `extract_image_attachment` 视觉提取为文本（命中缓存不重复调用，决策 36）、RAG/Skill 检索、messages、client |
 | `list_history(db, book_id)` / `clear_history(db, book_id)` | 对话历史读取 / 清空（薄封装） |
 
 - 使用：`api/routes/chat.py` 只做参数校验与流式返回，不再直连仓储。
-- 修改：页缓存/页图回退顺序、RAG/Skill 注入策略改这里。
+- 修改：页缓存窗口大小、附件提取开关（`ai_send_page_image`）、RAG/Skill 注入策略改这里。
+
+
+### 14.4 全局 AI 对话（`services/chat_service.py` + `services/rag_router.py` + `api/routes/ai_chat.py`，决策 37）
+
+主页右下角全局 AI 助手：不绑定书籍/章节，在阅读之外使用 Skill/RAG 资产辅助用户。
+
+| 函数 | 说明 |
+| --- | --- |
+| `chat_service.prepare_global_job(db, question, session_id, stream_key)` | 组装全局对话任务：隐私开关（关闭仅注入 Skill）、画像（冷+暖）、`select_global_knowledge`、全局历史、messages、client；`persist.book_id=None`、`session_id=global:{client_id}` |
+| `chat_service.build_global_messages(question, rag_block, skills, enable_body_send, history, profiles)` | 全局 system（Skill+画像）+ history + 问题（隐私开启时附加跨书片段块） |
+| `chat_service.list_global_history(db, session_id)` / `clear_global_history(db, session_id)` | 按 `global:{session_id}` 读写历史（薄封装） |
+| `rag_router.select_global_knowledge(db, question, session_id)` | 全局知识挑选：LLM 全库目录挑选（`SYSTEM_PROMPT_GLOBAL`/`build_global_user_prompt`，无当前书/章）→ 规则降级（摘要关键词 top3 书 + 全局 Skill 相关性）；会话缓存键 `global:{session_id}` |
+| `rag_router._select_llm_global` / `_select_fallback_global` / `_global_query_tokens` | 全局挑选 LLM 版 / 规则版 / 中文二元组切词 |
+| `assets.load_all_skills(db, task_text, top_n=8)` | 全局 Skill 聚合（含 book_id/book_title，共享主资产展开，按任务相关性排序） |
+| `repositories/chat.global_session_id(client_id)` | 全局会话键 `global:{client_id}`；`persist_chat`/`list_messages`/`clear_messages`/`recent_history_texts` 均支持显式 `session_id`（book_id 可空） |
+
+- API：`POST /api/ai/chat`（SSE，body `{question, session_id, stream_key}`）、`GET/DELETE /api/ai/chat/messages?session_id=`。
+- 修改：全局挑选提示词改 `ai/prompts/rag_select.py`（`SYSTEM_PROMPT_GLOBAL`）；候选预算沿用 `rag_select_max_books/max_skills`。
 
 
 ## 15. AI 多接口格式支持（第 15 轮任务产出）
@@ -420,7 +442,7 @@ python demo/parallel_llm.py --tasks 3 --workers 3 --skip-scan --vision-env backe
 | 真实 API 二次实测（6 任务） | 串行 25.9s → 并发 4 workers 11.1s，加速 2.33x，6/6 成功；单次延迟波动大（平均 4.7~8.9s、最大 18.8s），并发可摊平波动 |
 | worker 扫描实测（6 任务，真实 API） | 1/2/4/8 workers = 53.2/19.9/13.1/11.7s；**4 workers 为甜点**（比 2 快 35%），8 workers 仅再快 12% 且单任务平均延迟反升（服务端排队），说明有并发上限 |
 | 异构并行二次实测 | 文本 3 + 视觉 3 = 5.98s，6/6 成功 |
-| WinError 10013 | 本机沙箱限制并发出站套接字所致，真实环境不存在；与 v1.14 结论一致（运行环境出站 TCP 被拦截，非代码缺陷） |
+| WinError 10013 | 本机沙箱限制并发出站套接字所致（`errno=13`/EACCES，真实错误码在 `winerror=10013`），真实环境不存在；与 v1.14 结论一致（运行环境出站 TCP 被拦截，非代码缺陷）。v1.106 修复 client.py 误判：原只判 `reason.errno == 10013` 永不命中（Windows errno 映射为 13），现同时判断 `winerror` 与 `errno`，友好提示新增「沙盒环境启动请改用普通终端/start.bat」排查项 |
 
 结论：并发在真实 API 下可稳定获得 3~4x 加速，worker 数与任务数匹配时接近线性扩展；文本与多模态异构并行互不阻塞。
 
@@ -495,7 +517,7 @@ ReaderChatPanel 提问（携带 session_id）
 
 | 函数 | 说明 |
 | --- | --- |
-| `build_catalog(db, current_book_id) -> (text, index)` | 遍历全部书，仅收录有 RAG/Skill 资产的书；按领域分组（用户 tag 首个 → 文件夹名 → 聚类领域 → 「未分类」），冷画像 `domain_preferences` 偏好领域排前；每书一行 = `id=.. 《书名》（【当前阅读】）摘要：前 60 字，技能：≤5 个技能名`；目录硬上限 150 条 |
+| `build_catalog(db, current_book_id) -> (text, index)` | 遍历全部书，仅收录有 RAG/Skill 资产的书（v1.104：资产与文件夹名一次性批量加载 `list_assets_by_books`，构建从 5N-6N 次查询降为常数次）；按领域分组（用户 tag 首个 → 文件夹名 → 聚类领域 → 「未分类」），冷画像 `domain_preferences` 偏好领域排前；每书一行 = `id=.. 《书名》（【当前阅读】）摘要：前 60 字，技能：≤5 个技能名`；目录硬上限 150 条 |
 
 - 使用：仅 `rag_router._select_llm` 内部调用。
 - 修改：分组优先级、摘要/技能名截断长度（`CATALOG_SUMMARY_CHARS` / `CATALOG_SKILL_NAMES` / `CATALOG_MAX_ENTRIES`）、目录行格式改这里。

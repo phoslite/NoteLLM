@@ -127,7 +127,7 @@ def generate_rag_skill(
         chunks = page_chunks(page_texts)
         llm_input = build_page_input(page_texts)
     else:
-        chunks = chunk_book(chapters)
+        chunks = chunk_book(chapters, is_html=book.format == "epub")
         llm_input = build_llm_input(chapters, chunks)
 
     # 再次阅读归档：已有**实质**资产 → 增量增改模式（旧资产概要 + 新笔记/对话 + 正文）。

@@ -1,4 +1,6 @@
 """书籍媒体资源管理：封面提取/回填、旧版扁平目录迁移、共享残留清理。"""
+import base64
+import re
 import shutil
 from pathlib import Path
 
@@ -11,6 +13,108 @@ from app.parsers.epub import extract_epub_cover
 from app.parsers.pdf import extract_pdf_cover
 
 PAGE_IMAGE_PATTERN = "page_{page_index:03d}.jpg"
+
+# 决策 31：Markdown 内嵌本地图片（白名单扩展名 + 防越越）
+MEDIA_ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+_MD_MEDIA_REF_RE = re.compile(r"(images/[^\s\"')[\]]+)")
+_MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml"}
+PLACEHOLDER_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120">'
+                  '<rect width="100%" height="100%" fill="#f2f3f5"/>'
+                  '<text x="50%" y="50%" font-size="14" fill="#909399" '
+                  'text-anchor="middle" dominant-baseline="middle">图片缺失</text></svg>')
+
+
+def book_images_dir(book) -> Path:
+    """Markdown 内嵌本地图片目录（决策 31）：<book_dir>/images/ 。"""
+    return Path(book.file_path).parent / "images"
+
+
+def copy_markdown_images(content: str, bases: list[Path]) -> str:
+    """把 Markdown 内嵌本地图片（相对/绝对/file://）复制到 bases[0]/images/ 并改写引用。
+
+    bases 按优先级排列：书籍目录、上传原目录。http(s)/data 引用不改写；
+    文件不存在或扩展名不在白名单时保留原引用（渲染时占位提示）。
+    """
+    images_dir = bases[0] / "images"
+    used: set[str] = set()
+
+    def repl(m: re.Match) -> str:
+        alt, raw = m.group(1), m.group(2).strip()
+        if raw.startswith(("http://", "https://", "data:")):
+            return m.group(0)
+        candidate = raw
+        if candidate.startswith("file://"):
+            candidate = candidate[len("file://"):].lstrip("/")
+        p = Path(candidate)
+        found: Path | None = None
+        if p.is_absolute():
+            if p.is_file():
+                found = p
+        else:
+            for base in bases:
+                cand = base / p
+                if cand.is_file():
+                    found = cand
+                    break
+        if found is None or found.suffix.lower() not in MEDIA_ALLOWED_EXT:
+            return m.group(0)
+        name = found.name
+        if name in used:
+            stem, ext = found.stem, found.suffix
+            i = 2
+            while f"{stem}_{i}{ext}" in used:
+                i += 1
+            name = f"{stem}_{i}{ext}"
+        used.add(name)
+        images_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(found, images_dir / name)
+        return f"![{alt}](images/{name})"
+
+    return _MD_IMAGE_RE.sub(repl, content)
+
+
+def rewrite_chapter_media_urls(content: str, book_id: int) -> str:
+    """章节返回时把 images/<name> 引用重写为可访问 URL（决策 31）。"""
+    if not content or "images/" not in content:
+        return content
+    return _MD_MEDIA_REF_RE.sub(lambda m: f"/api/books/{book_id}/media/{Path(m.group(1)).name}", content)
+
+
+def resolve_book_media(book, filename: str) -> Path | None:
+    """白名单 + 防越越解析 Markdown 内嵋图片（决策 31）。"""
+    name = Path(filename).name
+    if name != filename or Path(filename).suffix.lower() not in MEDIA_ALLOWED_EXT:
+        return None
+    images_dir = book_images_dir(book)
+    path = images_dir / name
+    try:
+        resolved = path.resolve()
+        if resolved.parent != images_dir.resolve() or not resolved.is_file():
+            return None
+    except OSError:
+        return None
+    return resolved
+
+
+def markdown_image_data_uris(book, content: str, limit: int = 3) -> list[str]:
+    """Markdown 内嵌图片附件（决策 31）：扫描 images/<name> 引用读为 data URI，最多 limit 张。"""
+    images_dir = book_images_dir(book)
+    if not images_dir.exists():
+        return []
+    uris: list[str] = []
+    for ref in _MD_MEDIA_REF_RE.findall(content or ""):
+        path = images_dir / Path(ref).name
+        if not path.exists() or path.suffix.lower() not in MEDIA_ALLOWED_EXT:
+            continue
+        mime = _MEDIA_MIME.get(path.suffix.lower(), "application/octet-stream")
+        uris.append(f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}")
+        if len(uris) >= limit:
+            break
+    return uris
+
+
 
 
 def page_image_path(book: Book, page_index: int) -> Path:

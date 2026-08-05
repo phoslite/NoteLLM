@@ -1,6 +1,8 @@
 """M4 AI 接入测试：设置 API（查看/保存/掩码）、对话流式 SSE、历史落库。"""
 import json
 
+import pytest
+
 from app.ai.client import LLMClient, LLMError
 from app.services.ai_context import paragraph_numbered
 from app.services.citations import extract_citations
@@ -169,3 +171,45 @@ def test_build_user_prompt_placeholder_scanned_book():
     p = build_user_prompt("书", 1, "第一章", "【第1段】正文", "", "", "问题", enable_body_send=True, page_mode=False)
     assert "【第1段】正文" in p
     assert "暂无正文" not in p
+
+def test_chat_stream_midway_network_error_emits_error_event(client, monkeypatch):
+    """审查 C-问题9：流中途网络异常 → SSE error 事件（不再静默断流）。"""
+    _configure(client)
+    book_id = _upload(client)
+    ch = client.get(f"/api/books/{book_id}").json()["data"]["chapters"][0]["id"]
+
+    def fake_stream_events(self, messages):
+        yield {"kind": "delta", "text": "前半段"}
+        raise OSError(10054, "远程主机强迫关闭了一个现有的连接")
+
+    monkeypatch.setattr(LLMClient, "stream_events", fake_stream_events)
+    with client.stream("POST", f"/api/books/{book_id}/chat", json={"question": "解读", "chapter_id": ch}) as resp:
+        events = [json.loads(line[5:]) for line in resp.iter_lines() if (line or "").startswith("data:")]
+    types = [e["type"] for e in events]
+    assert "error" in types, types
+    err = next(e for e in events if e["type"] == "error")
+    assert "流式输出中断" in err["message"], err
+
+def test_send_before_placeholder_leak_guard(client, monkeypatch):
+    """审查 2-3：发送前断言拦截「正文未发送」占位符泄漏（回归）。"""
+    from app.core.database import SessionLocal
+    from app.models.book import Book, Chapter
+    from app.services import chat_service
+
+    a = _upload(client)
+    db = SessionLocal()
+    try:
+        book = db.get(Book, a)
+        chapter = db.query(Chapter).filter_by(book_id=a).first()
+        orig_build = chat_service.build_messages
+
+        def poisoned(*args, **kwargs):
+            msgs = orig_build(*args, **kwargs)
+            msgs[-1] = {**msgs[-1], "content": "（正文未发送，遵循隐私设置）"}
+            return msgs
+
+        monkeypatch.setattr(chat_service, "build_messages", poisoned)
+        with pytest.raises(RuntimeError):
+            chat_service.prepare_chat_job(db, book, chapter, "问题", "", mode=None)
+    finally:
+        db.close()

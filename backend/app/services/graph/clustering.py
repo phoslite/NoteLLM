@@ -10,15 +10,19 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.time import utcnow
-from app.models.asset import BookAsset
 from app.models.book import Book, Folder
 from app.repositories.assets import get_asset, read_asset_content
 from app.repositories.books import book_tags
+from app.repositories.graph import (
+    asset_classify_versions,
+    list_books,
+    list_folders_by_ids,
+    list_post_classified_books,
+)
 from app.services.graph.keywords import book_keywords, sanitize_cluster_name
 from app.services.graph.lexicon import (
     _GENERIC_DOMAIN_TERMS,
@@ -72,7 +76,7 @@ def _cluster_signatures(db: Session, books: list[Book]) -> tuple[dict[int, str],
     folder_ids = {b.folder_id for b in books if b.folder_id}
     names: dict[int, str] = {}
     if folder_ids:
-        rows = db.query(Folder).filter(Folder.id.in_(folder_ids)).all()
+        rows = list_folders_by_ids(db, folder_ids)
         names = {f.id: sanitize_cluster_name(f.name) for f in rows}
     sigs: dict[int, str] = {}
     folder_names: dict[int, str] = {}
@@ -94,16 +98,8 @@ def _cluster_signatures(db: Session, books: list[Book]) -> tuple[dict[int, str],
     return sigs, folder_names
 
 def _classify_version_map(db: Session, book_ids: list[int]) -> dict[int, int]:
-    """批量取书籍当前资产版本（懒校验 post-classify 是否失效用）。"""
-    if not book_ids:
-        return {}
-    rows = (
-        db.query(BookAsset.book_id, func.max(BookAsset.version))
-        .filter(BookAsset.book_id.in_(book_ids))
-        .group_by(BookAsset.book_id)
-        .all()
-    )
-    return dict(rows)
+    """批量取书籍当前资产版本（懒校验 post-classify 是否失效用，查询下沉仓储）。"""
+    return asset_classify_versions(db, book_ids)
 
 def _write_classify(db: Session, book: Book, name: str, source: str, version: int) -> None:
     """落盘聚类归属（§9.5 两阶段分类）：聚类名统一清洗，值未变化不写库。"""
@@ -144,11 +140,7 @@ def post_classify_book(db: Session, book: Book) -> str:
         return book.cluster_name or ""
 
     others: list[tuple[Book, dict[str, float]]] = []
-    for ob in (
-        db.query(Book)
-        .filter(Book.id != book.id, Book.classify_source == "post", Book.cluster_name.isnot(None))
-        .all()
-    ):
+    for ob in list_post_classified_books(db, exclude_book_id=book.id):
         content = read_asset_content(db, ob.id, "rag")
         if content:
             others.append((ob, _posterior_keywords(content)))
@@ -200,11 +192,7 @@ def merge_and_rename_clusters(db: Session) -> dict:
     - 重命名：簇名取簇内出现于最多书的后验术语（众数），冲突时跳过。
     - 只处理 classify_source=post 的书；tag/文件夹硬约束不受影响。
     """
-    books = (
-        db.query(Book)
-        .filter(Book.classify_source == "post", Book.cluster_name.isnot(None))
-        .all()
-    )
+    books = list_post_classified_books(db)
     if not books:
         return {"merged": 0, "renamed": 0}
     by_book: dict[int, dict] = {}
@@ -284,16 +272,17 @@ def merge_and_rename_clusters(db: Session) -> dict:
     db.commit()
     return {"merged": merged, "renamed": renamed}
 
-def assign_clusters(db: Session, books: list[Book] | None = None) -> dict[int, str]:
+def assign_clusters(db: Session, books: list[Book] | None = None, persist: bool = True) -> dict[int, str]:
     """聚类分层：post 落盘（未失效）→ tag → 文件夹名 → 领域自动聚类；仍无归属归「其他」。
 
     获得 RAG/Skill 资产后的书由 post_classify_book 落盘 cluster_name（§9 两阶段分类），
     只要资产版本未变这里直接采用；否则实时重算并回写 classify_source/classified_at/classify_version。
     结果带落盘缓存：聚类是**全局群体依赖**的，缓存以「全书库签名」为键——
+    persist=False 时（GET 只读链路）仅返回结果，不写库也不写缓存；落盘交给导入/后台任务。
     同一批书（内容/tag/文件夹/资产版本均未变）重复打开谱系图直接命中，不再全量重算；
     任一书变化（增删改/归档）→ 群体签名变化 → 自动失效重算。
     """
-    books = books or db.query(Book).order_by(Book.id).all()
+    books = books or list_books(db)
     sigs: dict[int, str] = {}
     folder_names: dict[int, str] = {}
     if books:
@@ -361,31 +350,32 @@ def assign_clusters(db: Session, books: list[Book] | None = None) -> dict[int, s
         for m in group:
             result[m.id] = name
 
-    # 回写 classify 字段（post 未失效的书不动）
-    now = utcnow()
-    for b in books:
-        if b.classify_source == "post" and b.classify_version == versions.get(b.id):
-            continue
-        name = result.get(b.id) or "其他"
-        tags = [t for t in (sanitize_cluster_name(t) for t in book_tags(b)) if t]
-        if tags:
-            src = "tag"
-        elif b.folder_id:
-            src = "folder" if folder_names[b.id] else "pre"
-        else:
-            src = "pre"
-        if b.cluster_name != name or b.classify_source != src or b.classify_version != versions.get(b.id, 0):
-            b.cluster_name = name
-            b.classify_source = src
-            b.classified_at = now
-            b.classify_version = versions.get(b.id, 0)
-    db.commit()
-    # 写回落盘缓存（下次打开谱系图直接命中；任一书内容/tag/文件夹/资产版本变化由群体签名失效）
-    if books:
-        _save_cluster_cache(
-            {
-                "population": _population_signature(sigs),
-                "books": {str(b.id): {"cluster": result.get(b.id) or "其他"} for b in books},
-            }
-        )
+    # 回写 classify 字段（post 未失效的书不动）；persist=False 仅读链路不落盘
+    if persist:
+        now = utcnow()
+        for b in books:
+            if b.classify_source == "post" and b.classify_version == versions.get(b.id):
+                continue
+            name = result.get(b.id) or "其他"
+            tags = [t for t in (sanitize_cluster_name(t) for t in book_tags(b)) if t]
+            if tags:
+                src = "tag"
+            elif b.folder_id:
+                src = "folder" if folder_names[b.id] else "pre"
+            else:
+                src = "pre"
+            if b.cluster_name != name or b.classify_source != src or b.classify_version != versions.get(b.id, 0):
+                b.cluster_name = name
+                b.classify_source = src
+                b.classified_at = now
+                b.classify_version = versions.get(b.id, 0)
+        db.commit()
+        # 写回落盘缓存（下次打开谱系图直接命中；任一书内容/tag/文件夹/资产版本变化由群体签名失效）
+        if books:
+            _save_cluster_cache(
+                {
+                    "population": _population_signature(sigs),
+                    "books": {str(b.id): {"cluster": result.get(b.id) or "其他"} for b in books},
+                }
+            )
     return result

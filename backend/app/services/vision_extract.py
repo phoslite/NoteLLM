@@ -7,6 +7,7 @@
 - 受「发送书籍内容至模型」隐私开关约束；随书删除随目录清理。
 """
 import base64
+import hashlib
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -15,7 +16,7 @@ from app.ai.client import LLMClient
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories import books as book_repo
-from app.repositories.settings import load_ai_overrides, vision_client_kwargs
+from app.repositories.settings import load_ai_overrides, vision_client_kwargs, vision_configured
 from app.services.media_service import page_image_path
 
 PAGE_TEXT_DIR = "page_text"
@@ -63,6 +64,66 @@ def _extract_page_text(client: LLMClient, book, page_index: int) -> str:
     text = client.chat(messages).strip()
     if not text:
         raise RuntimeError(f"第 {page_index} 页提取结果为空")
+    return text
+
+
+ATTACHMENT_TEXT_DIR = "attachment_text"
+
+ATTACHMENT_SYSTEM = (
+    "你是文档图片识别助手。请把用户提供的这张图片完整地转为结构化 Markdown 文本：\n"
+    "1) 转录图片中的全部文字；公式使用 LaTeX（行内 $...$、块级 $...$），禁止输出 Unicode 数学字符（如 Λ、∈、ℝ、√），一律写成 LaTeX 命令（如 \\Lambda、\\in、\\mathbb{R}、\\sqrt）；表格转为 Markdown 表格；\n"
+    "2) 图片/图表用文字描述其内容与作用；\n"
+    "3) 不要遗漏任何可见文字；只输出图片内容本身，不要任何前言后语。"
+)
+
+
+def attachment_text_path(image_uri: str) -> Path:
+    """附件提取文本缓存路径：data/cache/attachment_text/<sha256(image_uri)>.md（内容寻址，跨书共享）。"""
+    key = hashlib.sha256(image_uri.encode("utf-8")).hexdigest()[:32]
+    return Path(settings.data_dir) / "cache" / ATTACHMENT_TEXT_DIR / f"{key}.md"
+
+
+def read_attachment_cache(image_uri: str) -> str | None:
+    """读取附件提取缓存；不存在或为空返回 None。"""
+    path = attachment_text_path(image_uri)
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    return text or None
+
+
+def extract_image_attachment(db: Session, image_uri: str, hint: str = "") -> str | None:
+    """决策 36：附件图片（划线裁剪图 / Markdown 插图）统一走视觉模型提取为文本。
+
+    - 命中缓存（按图片内容 hash）直接返回，不重复调用多模态 API；
+    - 未配置视觉模型返回 None（调用方降级为纯文本，主模型永不收图）；
+    - 提取失败/结果为空返回 None（不落盘，下次可重试）。
+    """
+    cached = read_attachment_cache(image_uri)
+    if cached:
+        return cached
+    if not vision_configured(db):
+        return None
+    client = LLMClient(**vision_client_kwargs(db), kind="vision")
+    try:
+        messages = [
+            {"role": "system", "content": ATTACHMENT_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": hint or "请提取这张图片的完整内容。"},
+                    {"type": "image_url", "image_url": {"url": image_uri, "detail": "high"}},
+                ],
+            },
+        ]
+        text = client.chat(messages).strip()
+    except Exception:  # noqa: BLE001 提取失败降级纯文本，不中断对话
+        return None
+    if not text:
+        return None
+    path = attachment_text_path(image_uri)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
     return text
 
 

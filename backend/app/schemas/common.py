@@ -35,14 +35,3 @@ class ChapterOut(BaseModel):
     title: str
     word_count: int
     read_flag: bool
-
-
-class BookDetailOut(BookOut):
-    chapters: list[ChapterOut] = []
-
-
-class FolderOut(BaseModel):
-    id: int
-    name: str
-    parent_id: int | None = None
-    book_count: int = 0

@@ -3,21 +3,23 @@ from collections import defaultdict
 
 from sqlalchemy.orm import Session
 
-from app.models.activity import Note
 from app.models.book import Book, Chapter
 from app.models.graph import KnowledgePoint, KpRelation
+from app.repositories.graph import (
+    clear_book_knowledge_graph,
+    list_knowledge_points,
+    list_kp_ids_by_book,
+    list_kp_relations,
+    list_notes,
+)
 from app.services.graph.corpus import _chapter_text
 from app.services.graph.keywords import _THEOREM_RE
 
 
 def build_intra_book_graph(db: Session, book: Book) -> dict:
     """重建单书内部知识图谱：章节级 + 重要段落级 + 用户标记级，点间关系按阅读顺序。"""
-    old_ids = [k.id for k in db.query(KnowledgePoint.id).filter(KnowledgePoint.book_id == book.id).all()]
-    if old_ids:
-        db.query(KpRelation).filter(
-            KpRelation.from_kp_id.in_(old_ids) | KpRelation.to_kp_id.in_(old_ids)
-        ).delete(synchronize_session=False)
-    db.query(KnowledgePoint).filter(KnowledgePoint.book_id == book.id).delete(synchronize_session=False)
+    old_ids = list_kp_ids_by_book(db, book.id)
+    clear_book_knowledge_graph(db, book.id, old_ids)
 
     chapter_points: list[tuple[Chapter, KnowledgePoint]] = []
     for ch in sorted(book.chapters, key=lambda c: c.index):
@@ -53,7 +55,7 @@ def build_intra_book_graph(db: Session, book: Book) -> dict:
                     )
                 )
     # 用户标记级：笔记/高亮/批注/思考/不理解 自动纳入
-    for note in db.query(Note).filter(Note.book_id == book.id).order_by(Note.id).all():
+    for note in list_notes(db, book.id):
         title = (note.quote_text or note.note_text or note.note_type or "").strip()[:50]
         if not title:
             continue
@@ -78,12 +80,7 @@ def build_intra_book_graph(db: Session, book: Book) -> dict:
             )
         )
     # 关系：同章内重要段落「承接」
-    kps = (
-        db.query(KnowledgePoint)
-        .filter(KnowledgePoint.book_id == book.id, KnowledgePoint.level == "重要段落")
-        .order_by(KnowledgePoint.id)
-        .all()
-    )
+    kps = list_knowledge_points(db, book.id, level="重要段落")
     by_chapter: dict[int, list[KnowledgePoint]] = defaultdict(list)
     for kp in kps:
         by_chapter[kp.chapter_id].append(kp)
@@ -100,12 +97,7 @@ def build_intra_book_graph(db: Session, book: Book) -> dict:
 
 def intra_graph_payload(db: Session, book: Book) -> dict:
     """书内知识图谱数据：知识点节点 + 知识点关系 + 章节索引。"""
-    kps = (
-        db.query(KnowledgePoint)
-        .filter(KnowledgePoint.book_id == book.id)
-        .order_by(KnowledgePoint.id)
-        .all()
-    )
+    kps = list_knowledge_points(db, book.id)
     kp_ids = [k.id for k in kps]
     nodes = [
         {
@@ -119,12 +111,7 @@ def intra_graph_payload(db: Session, book: Book) -> dict:
         }
         for k in kps
     ]
-    rels = (
-        db.query(KpRelation)
-        .filter(KpRelation.from_kp_id.in_(kp_ids))
-        .order_by(KpRelation.id)
-        .all()
-    )
+    rels = list_kp_relations(db, kp_ids)
     edges = [
         {
             "from": r.from_kp_id,

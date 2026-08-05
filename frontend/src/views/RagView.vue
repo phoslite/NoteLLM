@@ -3,14 +3,15 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MdRender from '@/components/MdRender.vue'
-import { dedupeAssets, getBookAsset, getTask, summarizeBook } from '@/api/rag'
+import { dedupeAssets, getBookAsset, listAssetBriefs, summarizeBook } from '@/api/rag'
+import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
 import { listBooks, uploadBook } from '@/api/books'
-import type { AssetEntry, BookAssetView, BookItem } from '@/types'
+import type { BookAssetBrief, BookAssetView, BookItem } from '@/types'
 
 const router = useRouter()
 
 const books = ref<BookItem[]>([])
-const assets = ref<Record<number, BookAssetView>>({})
+const assets = ref<Record<number, BookAssetBrief>>({})
 const loading = ref(false)
 const pickedFile = ref<File | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -20,18 +21,15 @@ const busyId = ref<number | null>(null)
 const taskMsg = ref('')
 const submittedId = ref<number | null>(null)
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function refresh() {
   loading.value = true
   try {
     books.value = await listBooks()
-    const entries = await Promise.all(books.value.map((b) => getBookAsset(b.id).catch(() => null)))
-    const map: Record<number, BookAssetView> = {}
-    books.value.forEach((b, i) => {
-      if (entries[i]) map[b.id] = entries[i]!
-    })
-    assets.value = map
+    // 审查 A-6：批量资产摘要一次请求，替代逐书 GET /books/{id}/asset
+    assets.value = await listAssetBriefs()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
   }
@@ -41,14 +39,13 @@ function assetOf(bookId: number) {
   return assets.value[bookId] ?? null
 }
 
-function mergedCount(entry: AssetEntry<unknown> | null | undefined) {
-  const content = entry?.content as Record<string, unknown> | undefined
-  const ids = content?.merged_book_ids
-  return Array.isArray(ids) && ids.length ? ids.length : 0
+function mergedCount(entry: BookAssetBrief | null | undefined) {
+  return entry?.merged_count ?? 0
 }
 
 const submittedBook = computed(() => books.value.find((b) => b.id === submittedId.value) ?? null)
-const submittedAsset = computed(() => (submittedId.value ? assetOf(submittedId.value) : null))
+// 审查 A-6：列表 map 仅存摘要，提交总结成功后单独拉取完整资产展示详情
+const submittedAsset = ref<BookAssetView | null>(null)
 const ragKeys = computed(() => submittedAsset.value?.rag?.content.key_points ?? [])
 const ragChunks = computed(() => submittedAsset.value?.rag?.content.chunks ?? [])
 const skillItems = computed(() => submittedAsset.value?.skill?.content.skills ?? [])
@@ -89,24 +86,18 @@ function onDrop(e: DragEvent) {
   if (file) pickedFile.value = file
 }
 
-async function pollTask(taskId: string) {
-  for (let i = 0; i < 180; i++) {
-    await sleep(1000)
-    const t = await getTask(taskId)
-    if (t.status === 'success') return
-    if (t.status === 'failed') throw new Error(t.error || '总结失败')
-  }
-  throw new Error('任务超时')
-}
 
 async function runSummarize(bookId: number) {
   busyId.value = bookId
   taskMsg.value = 'AI 总结中…'
   try {
     const { task_id } = await summarizeBook(bookId)
-    await pollTask(task_id)
+    notifyTaskSubmitted()
+    // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 pollTask 180s 超时保持一致）
+    await waitForTask(task_id, { timeoutMs: 180000 })
     await refresh()
     submittedId.value = bookId
+    submittedAsset.value = await getBookAsset(bookId)
     ElMessage.success('总结完成')
   } catch (err) {
     ElMessage.error((err as Error).message)
@@ -263,12 +254,12 @@ onMounted(refresh)
             <el-tag size="small" :type="assetOf(b.id)?.version ? 'success' : 'info'">
               {{ assetOf(b.id)?.version ? `RAG/Skill v${assetOf(b.id)!.version}` : '未总结' }}
             </el-tag>
-            <el-tag v-if="mergedCount(assetOf(b.id)?.rag)" size="small" type="warning">
-              共享 {{ mergedCount(assetOf(b.id)?.rag) }} 本
+            <el-tag v-if="assetOf(b.id)?.merged_count" size="small" type="warning">
+              共享 {{ assetOf(b.id)?.merged_count }} 本
             </el-tag>
           </div>
-          <div class="brief" :class="{ muted: !assetOf(b.id)?.rag }">
-            <MdRender v-if="assetOf(b.id)?.rag" :source="assetOf(b.id)?.rag?.content.summary || '（无摘要）'" />
+          <div class="brief" :class="{ muted: !assetOf(b.id)?.has_rag }">
+            <MdRender v-if="assetOf(b.id)?.rag_summary" :source="assetOf(b.id)?.rag_summary || '（无摘要）'" />
             <span v-else>（尚未总结，点击右侧「AI 总结」生成 RAG 与 Skill）</span>
           </div>
         </div>

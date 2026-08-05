@@ -1,4 +1,4 @@
-import type { BookDetail, BookItem } from '@/types'
+import type { BookDetail, BookItem, SearchHit } from '@/types'
 import { del, get, patch, post } from './client'
 
 export function listBooks(params?: { folder_id?: number; q?: string }) {
@@ -7,6 +7,11 @@ export function listBooks(params?: { folder_id?: number; q?: string }) {
 
 export function reorderBooks(orderedIds: number[]) {
   return post<{ reordered: number }>('/books/reorder', { ordered_ids: orderedIds })
+}
+
+/** FTS5 全书搜索（性能优化决策 3）：章节级命中（书名/章节标题/正文，bm25 排序）。 */
+export function searchBooks(q: string, limit = 10) {
+  return get<SearchHit[]>('/books/search', { q, limit })
 }
 
 export function getBook(bookId: number) {

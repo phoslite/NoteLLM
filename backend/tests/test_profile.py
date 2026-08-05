@@ -191,3 +191,23 @@ def test_recommendations_review_due_and_rhythm(client):
     assert data["review"][0]["days_ago"] == 3
     assert data["rhythm"]["level"] == "stable"
     assert "数学" in data["rhythm"]["tip"]
+
+def test_update_cold_profile_edits_domains_and_interests(client):
+    """方案 A：仅冷画像可编辑——领域偏好 / 长期兴趣，名称清洗与分数裁剪。"""
+    r = client.patch(
+        "/api/profile/cold",
+        json={
+            "domain_preferences": {"数学：分析": 12, "概率论": 3, "!!!": 5},
+            "long_term_interests": ["实分析", "实分析", "参数论（不动点）"],
+        },
+    )
+    assert r.status_code == 200
+    cold = r.json()["data"]
+    assert cold["domain_preferences"] == {"数学 分析": 10, "概率论": 3}  # 清洗标点 + 裁剪上限
+    assert cold["long_term_interests"] == ["实分析", "参数论 不动点"]  # 去重 + 清洗
+    # 仅更新传入字段：再次仅传领域时长期兴趣不变；分数 0 裁为 1
+    r2 = client.patch("/api/profile/cold", json={"domain_preferences": {"解析数论": 0}})
+    assert r2.status_code == 200
+    cold2 = r2.json()["data"]
+    assert cold2["domain_preferences"] == {"解析数论": 1}
+    assert cold2["long_term_interests"] == ["实分析", "参数论 不动点"]

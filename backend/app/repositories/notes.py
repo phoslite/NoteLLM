@@ -11,10 +11,6 @@ def list_notes(db: Session, book_id: int) -> list[Note]:
     return list(db.scalars(select(Note).where(Note.book_id == book_id).order_by(Note.chapter_id, Note.id)))
 
 
-def get_note(db: Session, note_id: int) -> Note | None:
-    return db.get(Note, note_id)
-
-
 def create_note(
     db: Session,
     book_id: int,

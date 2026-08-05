@@ -120,20 +120,20 @@ def test_build_mindmap_messages_placeholder_scanned_book():
 
     # 隐私关闭：保留原占位
     msgs = mindmap_service.build_mindmap_messages(
-        book, chapter, "", "", [], [], False, None, None
+        book, chapter, "", "", [], [], False
     )
     assert "正文未发送，遵循隐私设置" in msgs[-1]["content"]
 
     # 隐私开启 + 扫描件按页阅读：扫描件说明，不得出现「未发送」
     msgs = mindmap_service.build_mindmap_messages(
-        book, chapter, "", "", [], [], True, None, None
+        book, chapter, "", "", [], [], True
     )
     assert "未发送" not in msgs[-1]["content"]
     assert "扫描版 PDF" in msgs[-1]["content"]
 
     # 有页缓存时正常注入页缓存
     msgs = mindmap_service.build_mindmap_messages(
-        book, chapter, "", "", [], [], True, None, "【第 1 页】变分法基本概念"
+        book, chapter, "", "", [], [], True, "【第 1 页】变分法基本概念"
     )
     assert "页缓存" in msgs[-1]["content"]
     assert "扫描版" not in msgs[-1]["content"]

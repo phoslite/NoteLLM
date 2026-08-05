@@ -23,6 +23,8 @@ from app.repositories import books as book_repo
 from app.repositories.books import add_chapters, create_book
 from app.repositories.settings import vision_configured
 from app.services.graph.cross_book import incremental_cross_book_graph
+from app.services.html_util import html_to_text
+from app.services.media_service import copy_markdown_images
 from app.services.vision_extract import extract_book_pages_task
 from app.tasks import submit, update_progress
 
@@ -30,7 +32,7 @@ _FORMAT_MAP = {".md": "md", ".markdown": "md", ".txt": "txt", ".pdf": "pdf", ".e
 
 
 def _upload_dir() -> Path:
-    """分块流式上传的暂存目录（路由与字节兼容入口共用）。"""
+    """分块流式上传的暂存目录。"""
     d = settings.data_dir / "uploads"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -43,22 +45,6 @@ def _sha256_file(path: Path) -> str:
         while chunk := f.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def import_book(
-    db: Session,
-    file_bytes: bytes,
-    filename: str,
-    title: str | None = None,
-    author: str | None = None,
-) -> tuple[Book, str]:
-    """兼容入口（测试/小文件）：字节整读 → 暂存文件 → 走 import_book_file 同一落盘路径。"""
-    src = _upload_dir() / f"{uuid.uuid4().hex}.upload"
-    src.write_bytes(file_bytes)
-    try:
-        return import_book_file(db, src, filename, title=title, author=author)
-    finally:
-        src.unlink(missing_ok=True)
 
 
 def import_book_file(
@@ -85,6 +71,7 @@ def import_book_file(
     book_dir = book_root / file_id
     book_dir.mkdir(parents=True, exist_ok=True)
     dest = book_dir / f"{file_id}{suffix}"
+    orig_dir = src_path.parent  # 决策 31：相对图片引用的原目录基准
     try:
         shutil.move(str(src_path), str(dest))
     except OSError:
@@ -92,44 +79,63 @@ def import_book_file(
         src_path.unlink(missing_ok=True)
     if content_hash is None:
         content_hash = _sha256_file(dest)
+    if dest.stat().st_size > settings.max_upload_bytes:  # 审查 C-问题13：大小上限兜底（路由分块写入已先拦截）
+        shutil.rmtree(book_dir, ignore_errors=True)
+        raise ValueError(f"文件超过大小上限 {settings.max_upload_bytes // (1024 * 1024)}MB")
 
-    parsed = parse_book(dest, title_hint=Path(filename).stem)
-    book_title = (title or parsed.title or Path(filename).stem).strip() or Path(filename).stem
+    try:
+        parsed = parse_book(dest, title_hint=Path(filename).stem, images_dir=book_dir / "images")
+        # 决策 31：Markdown 内嵌本地图片复制到书籍 images/ 并改写引用
+        if suffix in (".md", ".markdown", ".txt"):
+            for c in parsed.chapters:
+                c.content = copy_markdown_images(c.content, [book_dir, orig_dir])
+        book_title = (title or parsed.title or Path(filename).stem).strip() or Path(filename).stem
 
-    # 封面：PDF 渲染第 1 页；EPUB 提取 OPF cover；Markdown/TXT 无封面（前端显示占位）。
-    cover_rel: str | None = None
-    if suffix == ".pdf":
-        cover = extract_pdf_cover(dest, dest.parent / "cover.jpg")
-        if cover:
-            cover_rel = cover.name
-    elif suffix == ".epub":
-        cover = extract_epub_cover(dest, dest.parent)
-        if cover:
-            cover_rel = cover.name
+        # 封面：PDF 渲染第 1 页；EPUB 提取 OPF cover；Markdown/TXT 无封面（前端显示占位）。
+        cover_rel: str | None = None
+        if suffix == ".pdf":
+            cover = extract_pdf_cover(dest, dest.parent / "cover.jpg")
+            if cover:
+                cover_rel = cover.name
+        elif suffix == ".epub":
+            cover = extract_epub_cover(dest, dest.parent)
+            if cover:
+                cover_rel = cover.name
 
-    # PDF（含文本型）：按原始页渲染页面图片（page_001.jpg ...），阅读时按页读图。
-    if suffix == ".pdf":
-        render_pdf_pages(dest, dest.parent / "pages")
-        # 本地抽取文本仅作全文检索索引（非空才落盘，不用于正文展示与 AI 上下文）。
-        local_text_dir = dest.parent / "local_text"
-        for i, page_text in enumerate(parsed.page_texts, 1):
-            if page_text.strip():
-                local_text_dir.mkdir(parents=True, exist_ok=True)
-                (local_text_dir / f"page_{i:03d}.txt").write_text(page_text, encoding="utf-8")
+        # PDF（含文本型）：页图渲染全部交给后台任务（_import_background 并发渲染），
+        # 同步阶段只写本地抽取文本作全文检索索引（审查 B-2：消除双倍页图渲染，恢复「秒回」）。
+        if suffix == ".pdf":
+            # 本地抽取文本仅作全文检索索引（非空才落盘，不用于正文展示与 AI 上下文）。
+            local_text_dir = dest.parent / "local_text"
+            for i, page_text in enumerate(parsed.page_texts, 1):
+                if page_text.strip():
+                    local_text_dir.mkdir(parents=True, exist_ok=True)
+                    (local_text_dir / f"page_{i:03d}.txt").write_text(page_text, encoding="utf-8")
 
-    book = create_book(
-        db,
-        title=book_title,
-        content_hash=content_hash,
-        author=author or parsed.author or None,
-        format=_FORMAT_MAP[suffix],
-        file_path=str(dest),
-        cover=cover_rel,
-        is_scanned=parsed.is_scanned,
-        page_count=parsed.page_count,
-        total_chapters=len(parsed.chapters),
-    )
-    add_chapters(db, book.id, [(c.index, c.title, c.content, c.page_index) for c in parsed.chapters])
+        book = create_book(
+            db,
+            title=book_title,
+            content_hash=content_hash,
+            author=author or parsed.author or None,
+            format=_FORMAT_MAP[suffix],
+            file_path=str(dest),
+            cover=cover_rel,
+            is_scanned=parsed.is_scanned,
+            page_count=parsed.page_count,
+            total_chapters=len(parsed.chapters),
+        )
+        # EPUB 方案 A：正文为消毒后 HTML，字数按纯文本统计（避免标签计入）
+        word_counts = [len(html_to_text(c.content)) for c in parsed.chapters] if suffix == ".epub" else None
+        add_chapters(
+            db,
+            book.id,
+            [(c.index, c.title, c.content, c.page_index) for c in parsed.chapters],
+            word_counts=word_counts,
+        )
+    except Exception:
+        # 审查 C-问题2：解析/入库失败清理孤儿目录，防磁盘垃圾累积与 hash 去重干扰
+        shutil.rmtree(book_dir, ignore_errors=True)
+        raise
     task_id = submit(
         "render",
         "import-background",
@@ -153,13 +159,7 @@ def _import_background(book_id: int) -> dict:
         if path.suffix.lower() == ".pdf":
             update_progress(10, "渲染 PDF 页图")
             render_pdf_pages(path, path.parent / "pages", workers=settings.page_render_concurrency)
-            update_progress(30, "生成本地全文索引")
-            parsed = parse_book(path, title_hint=path.stem)
-            local_dir = path.parent / "local_text"
-            for i, page_text in enumerate(parsed.page_texts, 1):
-                if page_text.strip():
-                    local_dir.mkdir(parents=True, exist_ok=True)
-                    (local_dir / f"page_{i:03d}.txt").write_text(page_text, encoding="utf-8")
+            # 本地全文索引已在同步阶段写入（审查 B-2：后台不再重复解析 PDF）
         # 权重（决策 35）：渲染 40 / 图谱 40 / 视觉 20
         update_progress(40, "更新跨书关联")
         incremental_cross_book_graph(db, book.id)

@@ -12,8 +12,6 @@ from app.repositories.reading import (
     get_latest_log,
     set_all_chapters_read_flag,
     set_chapter_read_flag,
-    update_book_reading,
-    upsert_log,
 )
 from app.schemas.common import ok
 from app.schemas.serializers import (
@@ -22,7 +20,7 @@ from app.schemas.serializers import (
     chapter_to_dict,
     progress_to_dict,
 )
-from app.services.profile_service import update_hot_profile
+from app.services.reading_service import save_book_progress
 
 router = APIRouter(prefix="/api/books", tags=["reading"])
 
@@ -69,7 +67,7 @@ def get_chapter_content(book_id: int, chapter_id: int, db: Session = Depends(get
     chapter = next((c for c in book_repo.list_chapters(db, book_id) if c.id == chapter_id), None)
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
-    return ok(chapter_content_to_dict(chapter))
+    return ok(chapter_content_to_dict(chapter, book_id))
 
 
 @router.get("/{book_id}/progress")
@@ -83,26 +81,10 @@ def get_progress(book_id: int, db: Session = Depends(get_db)):
 def save_progress(book_id: int, body: ProgressIn, db: Session = Depends(get_db)):
     """保存阅读位置：ReadingLog + 书籍整体进度；mark_read=True 时标记章节已读。"""
     book = require_book(db, book_id)
-    chapters = book_repo.list_chapters(db, book_id)
-    if not any(c.id == body.chapter_id for c in chapters):
-        raise HTTPException(status_code=404, detail="章节不存在")
-    log = upsert_log(db, book_id, body.chapter_id, body.position)
-    if body.progress is None:
-        total = len(chapters) or 1
-        idx = next((i for i, c in enumerate(chapters) if c.id == body.chapter_id), 0)
-        progress = (idx + max(0.0, min(1.0, body.position))) / total
-    else:
-        progress = body.progress
-    book = update_book_reading(db, book, progress, body.chapter_id, mark_read=body.mark_read)
-    # 热画像回写：当前书进度与章节脉络（失败不影响阅读）
     try:
-        chapter = next((c for c in chapters if c.id == body.chapter_id), None)
-        update_hot_profile(
-            db,
-            book,
-            progress=progress,
-            chapter_title=chapter.title if chapter else None,
+        book, log = save_book_progress(
+            db, book, body.chapter_id, body.position, body.progress, body.mark_read
         )
-    except Exception:
-        db.rollback()
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="章节不存在") from exc
     return ok(progress_to_dict(book, log))

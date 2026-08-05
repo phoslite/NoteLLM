@@ -8,6 +8,17 @@ from app.models.activity import Note
 from app.models.book import Book
 from app.models.graph import BookRelation, KnowledgePoint
 from app.repositories.assets import read_asset_content
+from app.repositories.graph import (
+    clear_relations,
+    count_knowledge_points,
+    count_relations,
+    list_books,
+    list_books_by_ids,
+    list_books_except,
+    list_knowledge_points,
+    list_notes,
+    list_relations,
+)
 from app.services.graph.clustering import assign_clusters
 from app.services.graph.edges import pair_key
 from app.services.graph.intra_book import build_intra_book_graph
@@ -19,21 +30,30 @@ from app.services.graph_sync import link_graph_assets
 def _note_keywords(note: Note, top_n: int = 30) -> set[str]:
     return set(extract_keywords(f"{note.quote_text or ''} {note.note_text or ''}", top_n))
 
-def _note_weight(db: Session, book_a_id: int, book_b_id: int, common: set[str]) -> float:
+def _load_notes_by_book(db: Session) -> dict[int, list[Note]]:
+    """一次性加载全部笔记并按 book_id 分组（审查 A-8：消除每对书籍组合的重复查询）。"""
+    notes_by_book: dict[int, list[Note]] = {}
+    for note in list_notes(db):
+        notes_by_book.setdefault(note.book_id, []).append(note)
+    return notes_by_book
+
+
+def _note_weight(
+    notes_by_book: dict[int, list[Note]], book_a_id: int, book_b_id: int, common: set[str]
+) -> float:
     """笔记加权：任一书笔记命中共同关键词 +2；两书笔记共享任意术语 +3/对（上限 15 分）。"""
     if not common:
         return 0.0
-    notes_a = db.query(Note).filter(Note.book_id == book_a_id).all()
-    notes_b = db.query(Note).filter(Note.book_id == book_b_id).all()
-    kw_a = [_note_keywords(n) for n in notes_a]
-    kw_b = [_note_keywords(n) for n in notes_b]
+    kw_a = [_note_keywords(n) for n in notes_by_book.get(book_a_id, [])]
+    kw_b = [_note_keywords(n) for n in notes_by_book.get(book_b_id, [])]
     a_hit = any(s & common for s in kw_a)
     b_hit = any(s & common for s in kw_b)
     cross = sum(1 for s1 in kw_a for s2 in kw_b if s1 & s2)
     return min(15.0, 2.0 * a_hit + 2.0 * b_hit + 3.0 * min(2, cross))
 
 def _pair_score(
-    db: Session, a: Book, b: Book, ka: dict[str, float], kb: dict[str, float]
+    db: Session, a: Book, b: Book, ka: dict[str, float], kb: dict[str, float],
+    notes_by_book: dict[int, list[Note]],
 ) -> tuple[float, list[str]] | None:
     """两书关联评分：关键词共现余弦分 + 笔记加权；低于阈值返回 None（不建边）。"""
     if not ka or not kb:
@@ -46,23 +66,24 @@ def _pair_score(
     score = round(100.0 * (dot / denom if denom else 0.0), 1)
     if score < 1.0:
         return None
-    score = min(100.0, round(score + _note_weight(db, a.id, b.id, common), 1))
+    score = min(100.0, round(score + _note_weight(notes_by_book, a.id, b.id, common), 1))
     reasons = sorted(common, key=lambda t: min(ka[t], kb[t]), reverse=True)[:5]
     return score, reasons
 
 
 def compute_cross_book_graph(db: Session) -> dict:
     """重建全部书籍关联（先清空再计算）：关键词共现余弦分 + 笔记加权；同聚类低分「主题相似」边。"""
-    books = db.query(Book).order_by(Book.id).all()
+    books = list_books(db)
     keywords = {b.id: book_keywords(b) for b in books}
-    db.query(BookRelation).delete()
+    notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载，_pair_score 直接查内存
+    clear_relations(db)
     pairs: set[tuple[int, int]] = set()
     created: dict[tuple[int, int], BookRelation] = {}
     candidates: list[tuple[int, int, float]] = []
 
     for i, a in enumerate(books):
         for b in books[i + 1 :]:
-            result = _pair_score(db, a, b, keywords.get(a.id, {}), keywords.get(b.id, {}))
+            result = _pair_score(db, a, b, keywords.get(a.id, {}), keywords.get(b.id, {}), notes_by_book)
             if not result:
                 continue
             score, reasons = result
@@ -99,13 +120,15 @@ def compute_cross_book_graph(db: Session) -> dict:
                 )
             )
     db.flush()
+    db.commit()  # 审查 B-1（问题5）：清理与本地边先落库，避免 LLM 打分期间持有 SQLite 写锁（分钟级）
     books_by_id = {b.id: b for b in books}
     llm_results = enrich_pairs_with_llm(db, books_by_id, keywords, candidates)
     for key, result in llm_results.items():
         rel = created.get(key)
         if rel is not None:
             apply_llm_result(rel, key[0], key[1], result)
-    db.commit()
+    if llm_results:
+        db.commit()
     return global_graph_payload(db, books)
 
 
@@ -114,11 +137,12 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
     book = db.get(Book, book_id)
     if not book:
         return {"relations_added": 0, "linked": 0}
-    others = [b for b in db.query(Book).filter(Book.id != book.id).order_by(Book.id).all()]
+    others = list_books_except(db, book.id)
     if not others:
         return {"relations_added": 0, "linked": 0}
     keywords = {b.id: book_keywords(b) for b in [book, *others]}
-    existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in db.query(BookRelation).all()}
+    notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载
+    existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in list_relations(db)}
     added = 0
     created: dict[tuple[int, int], BookRelation] = {}
     candidates: list[tuple[int, int, float]] = []
@@ -143,7 +167,7 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
         candidates.append((a.id, b.id, score))
 
     for other in others:
-        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}))
+        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book)
         if result:
             score, reasons = result
             add_pair(book, other, score, reasons, "概念共现")
@@ -193,7 +217,7 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
         return {"source": source, "books": [], "total": 0}
 
     hits: dict[int, dict] = {}
-    for other_kp in db.query(KnowledgePoint).filter(KnowledgePoint.book_id != kp.book_id).all():
+    for other_kp in list_knowledge_points(db, exclude_book_id=kp.book_id):
         common = tokens & set(extract_keywords(f"{other_kp.title or ''} {other_kp.summary or ''}", 30))
         if not common:
             continue
@@ -208,7 +232,7 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
                 "common": sorted(common)[:6],
             }
         )
-    for book in db.query(Book).filter(Book.id != kp.book_id).all():
+    for book in list_books_except(db, kp.book_id):
         rag = read_asset_content(db, book.id, "rag")
         for kp_text in rag.get("key_points") or []:
             if not isinstance(kp_text, str):
@@ -219,7 +243,7 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
                 break  # 每书 RAG 至多记一条提示
 
     books: list[dict] = []
-    for b in db.query(Book).filter(Book.id.in_(list(hits))).all():
+    for b in list_books_by_ids(db, list(hits)):
         info = hits[b.id]
         books.append(
             {
@@ -235,8 +259,8 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
 
 def global_graph_payload(db: Session, books: list[Book] | None = None) -> dict:
     """全局谱系数据：聚类 + 书籍节点 + 关联边。"""
-    books = books or db.query(Book).order_by(Book.id).all()
-    clusters = assign_clusters(db, books)
+    books = books or list_books(db)
+    clusters = assign_clusters(db, books, persist=False)
     cluster_map: dict[str, list[int]] = defaultdict(list)
     for b in books:
         cluster_map[clusters.get(b.id) or "其他"].append(b.id)
@@ -253,7 +277,7 @@ def global_graph_payload(db: Session, books: list[Book] | None = None) -> dict:
         }
         for b in books
     ]
-    relations = db.query(BookRelation).order_by(BookRelation.id).all()
+    relations = list_relations(db)
     edges = [
         {
             "id": r.id,
@@ -282,7 +306,7 @@ def rebuild_all_graph(db: Session, on_progress=None) -> dict:
     on_progress(progress, stage)：可选进度回调（决策 35 权重 20/50/30：
     书内图 0→20、跨书 20→70、联动 70→100）。
     """
-    books = db.query(Book).order_by(Book.id).all()
+    books = list_books(db)
     total = max(1, len(books))
     for idx, b in enumerate(books):
         if on_progress:
@@ -300,7 +324,7 @@ def rebuild_all_graph(db: Session, on_progress=None) -> dict:
         on_progress(100, "图谱重建完成")
     return {
         "books": len(books),
-        "relations": db.query(BookRelation).count(),
-        "knowledge_points": db.query(KnowledgePoint).count(),
+        "relations": count_relations(db),
+        "knowledge_points": count_knowledge_points(db),
         "linked": linked["stubs"],
     }

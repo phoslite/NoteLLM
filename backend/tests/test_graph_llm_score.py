@@ -178,3 +178,54 @@ def test_from_book_column_migrated(client):
     with engine.connect() as conn:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(book_relations)")).fetchall()]
     assert "from_book_id" in cols
+
+def test_full_rebuild_commits_local_edges_before_llm(client, monkeypatch):
+    """审查 B-1：全量重建在 LLM 打分前先提交本地边（写锁不横跨 LLM 调用）。
+
+    探测客户端在 chat 时用独立连接查询 BookRelation——若提交已发生则可见 >= 1 行；
+    重建结束后 LLM 结果（方向/强度）也已提交，独立连接可见。
+    """
+    from app.core.database import SessionLocal
+    from app.models.graph import BookRelation
+    from app.services.graph.cross_book import compute_cross_book_graph
+
+    _import_md(client, "提交A.md", BOOK_A)
+    _import_md(client, "提交B.md", BOOK_B)
+
+    seen = {}
+
+    class _ProbeClient:
+        def chat(self, messages):
+            assert len(messages) == 2
+            probe = SessionLocal()
+            try:
+                seen["visible_before_chat"] = probe.query(BookRelation).count()
+            finally:
+                probe.close()
+            return json.dumps(
+                {
+                    "strength": 90,
+                    "from_book": "A",
+                    "direction": "承接",
+                    "relation_type": "理论传承",
+                    "reasons": ["变分法"],
+                },
+                ensure_ascii=False,
+            )
+
+    _enable_llm(monkeypatch, _ProbeClient())
+
+    db = SessionLocal()
+    try:
+        compute_cross_book_graph(db)
+    finally:
+        db.close()
+
+    assert seen.get("visible_before_chat", 0) >= 1, "LLM 打分前本地边未提交（写锁横跨 LLM 调用）"
+    probe = SessionLocal()
+    try:
+        rows = probe.query(BookRelation).all()
+        assert rows, "重建后应存在跨书关联"
+        assert any(r.direction == "承接" and r.strength >= 90.0 for r in rows), "LLM 结果未合并提交"
+    finally:
+        probe.close()

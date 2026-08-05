@@ -1,4 +1,4 @@
-import type { BookAssetView } from '@/types'
+import type { BookAssetBrief, BookAssetView } from '@/types'
 import { del, get, post } from './client'
 
 /** 触发书籍总结为 RAG/Skill（后台任务），返回 task_id。 */
@@ -32,4 +32,9 @@ export function dedupeAssets() {
 /** 读取书籍的 RAG/Skill 资产。 */
 export function getBookAsset(bookId: number) {
   return get<BookAssetView>(`/books/${bookId}/asset`)
+}
+
+/** 批量资产摘要（审查 A-6）：全部书籍的资产状态一次返回，资产页列表不再逐书请求。 */
+export function listAssetBriefs() {
+  return get<Record<number, BookAssetBrief>>('/books/assets')
 }

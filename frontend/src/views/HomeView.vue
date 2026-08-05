@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { deleteBook, reorderBooks, updateBook, uploadBook } from '@/api/books'
+import { deleteBook, reorderBooks, searchBooks, updateBook, uploadBook } from '@/api/books'
 import { useBookStore } from '@/stores/book'
-import type { BookItem } from '@/types'
+import type { BookItem, SearchHit } from '@/types'
 import { chapterPercent } from '@/utils/progress'
 import { notifyTaskSubmitted } from '@/utils/task'
+import GlobalChatPanel from '@/components/GlobalChatPanel.vue'
+import { useGlobalAi } from '@/composables/useGlobalAi'
 
 const store = useBookStore()
 const router = useRouter()
@@ -40,6 +42,40 @@ const tagDraft = ref<string[]>([])
 
 onMounted(() => store.fetchBooks())
 
+/* ---------- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） ---------- */
+const globalAi = useGlobalAi()
+const aiPanelCollapsed = ref(true)
+const aiUnread = ref(0)
+const aiInput = globalAi.input
+function toggleAiPanel() {
+  aiPanelCollapsed.value = !aiPanelCollapsed.value
+  if (!aiPanelCollapsed.value) {
+    aiUnread.value = 0
+    void globalAi.refreshHistory() // 展开时载入该会话全部历史（需求 v1.73）
+  }
+}
+/** 删除当前全局 AI 会话（二次确认；删除后换新会话键，重开为全新对话）。 */
+async function onDeleteAiSession() {
+  try {
+    await ElMessageBox.confirm('确定删除当前会话？其全部对话历史与知识挑选缓存将一并移除，重开后为全新会话。', '删除会话', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  await globalAi.deleteSession()
+  ElMessage.success('已删除会话')
+}
+
+/** 折叠期间统计新增 AI 回复数（assistant 非流式消息）。 */
+watch(globalAi.messages, (msgs) => {
+  if (aiPanelCollapsed.value) {
+    aiUnread.value = msgs.filter((m) => m.role === 'assistant' && !m.local).length
+  }
+})
+
 /** 全部书籍的 tag 去重集合（用于筛选与补全候选） */
 const allTags = computed(() => {
   const set = new Set<string>()
@@ -56,6 +92,42 @@ const displayedBooks = computed(() => {
     return [b.title, b.author ?? '', ...b.tags].some((t) => t.toLowerCase().includes(kw))
   })
 })
+
+/* ---------- 全书内容搜索（审查 A-5：FTS5 后端搜索入口，防抖 300ms） ---------- */
+const searchHits = ref<SearchHit[]>([])
+const showSearchHits = ref(false)
+let searchTimer: number | undefined
+
+watch(searchQuery, (kw) => {
+  window.clearTimeout(searchTimer)
+  const q = kw.trim()
+  if (!q) {
+    searchHits.value = []
+    showSearchHits.value = false
+    return
+  }
+  searchTimer = window.setTimeout(async () => {
+    try {
+      searchHits.value = await searchBooks(q)
+      showSearchHits.value = true
+    } catch {
+      searchHits.value = []
+      showSearchHits.value = false
+    }
+  }, 300)
+})
+
+function onSearchBlur() {
+  // 延迟关闭，保证结果项 mousedown 先触发跳转
+  setTimeout(() => {
+    showSearchHits.value = false
+  }, 150)
+}
+
+function goSearchHit(hit: SearchHit) {
+  showSearchHits.value = false
+  router.push(`/reader/${hit.book_id}`)
+}
 
 async function onFilePicked(e: Event) {
   const input = e.target as HTMLInputElement
@@ -206,14 +278,34 @@ function toggleTagFilter(tag: string) {
               <i class="dot reading"></i>{{ shelfStats.reading }} 在读
             </span>
           </div>
-          <el-input
-            v-model="searchQuery"
-            placeholder="搜索书名 / 作者 / 标签"
-            clearable
-            class="search-input"
-          >
-            <template #prefix><span class="search-icon">🔍</span></template>
-          </el-input>
+          <div class="search-wrap">
+            <el-input
+              v-model="searchQuery"
+              placeholder="搜索书名 / 作者 / 标签 / 全文"
+              clearable
+              class="search-input"
+              @blur="onSearchBlur"
+            >
+              <template #prefix><span class="search-icon">🔍</span></template>
+            </el-input>
+            <div v-if="showSearchHits" class="search-hits">
+              <template v-if="searchHits.length">
+                <div
+                  v-for="h in searchHits"
+                  :key="h.chapter_id"
+                  class="search-hit"
+                  @mousedown.prevent="goSearchHit(h)"
+                >
+                  <div class="hit-title">
+                    {{ h.title }}
+                    <span class="hit-chapter">第 {{ h.chapter_index ?? '?' }} 章 · {{ h.chapter_title }}</span>
+                  </div>
+                  <div class="hit-snippet">{{ h.snippet }}</div>
+                </div>
+              </template>
+              <div v-else class="search-hits-empty">未找到章节命中</div>
+            </div>
+          </div>
           <el-select
             v-model="activeTag"
             clearable
@@ -324,6 +416,22 @@ function toggleTagFilter(tag: string) {
         </div>
       </div>
     </section>
+
+    <!-- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） -->
+    <GlobalChatPanel
+      v-model:input="aiInput"
+      :messages="globalAi.messages.value"
+      :streaming="globalAi.streaming.value"
+      :stream-error="globalAi.streamError.value"
+      :collapsed="aiPanelCollapsed"
+      :unread="aiUnread"
+      @send="globalAi.send()"
+      @abort="globalAi.abort()"
+      @clear="globalAi.clear()"
+      @delete-session="onDeleteAiSession"
+      @copy="globalAi.copy"
+      @toggle-collapse="toggleAiPanel"
+    />
   </div>
 </template>
 
@@ -371,7 +479,23 @@ function toggleTagFilter(tag: string) {
 .dot.done { background: var(--success); }
 .dot.reading { background: var(--primary-color); }
 .toolbar-right { display: flex; align-items: center; gap: 10px; }
+.search-wrap { position: relative; }
 .search-input { width: 250px; }
+.search-hits {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50;
+  background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md); max-height: 320px; overflow-y: auto;
+}
+.search-hit { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--border-color); }
+.search-hit:last-child { border-bottom: none; }
+.search-hit:hover { background: var(--panel-bg); }
+.hit-title { font-size: 12.5px; font-weight: 700; color: var(--text-color); }
+.hit-chapter { font-weight: 400; color: var(--text-secondary); margin-left: 6px; }
+.hit-snippet {
+  font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.search-hits-empty { padding: 10px; font-size: 12.5px; color: var(--text-secondary); text-align: center; }
 .tag-filter { width: 150px; }
 .search-icon { font-size: 13px; }
 .drag-hint { font-size: 12px; color: var(--text-secondary); }

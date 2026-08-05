@@ -10,6 +10,7 @@
   相关书关键内容追加进暖画像 related_books；阈值由画像阈值自动学习产出、设置页可手动覆盖。
 """
 import json
+import re
 
 from sqlalchemy.orm import Session
 
@@ -71,6 +72,52 @@ def get_warm(db: Session) -> dict:
 
 def get_cold(db: Session) -> dict:
     return _load(db, COLD, "default", {})
+
+
+_COLD_NAME_CLEAN_RE = re.compile(r"[^\w\u4e00-\u9fff ]+", re.UNICODE)
+
+
+def _clean_cold_name(name: str) -> str:
+    """冷画像手动编辑名称清洗：只保留汉字/英文数字/下划线/空格（与聚类标签规则一致）。"""
+    s = _COLD_NAME_CLEAN_RE.sub(" ", name or "").strip()
+    return re.sub(r"\s+", " ", s)
+
+
+def update_cold_profile(
+    db: Session,
+    domain_preferences: dict[str, int] | None = None,
+    long_term_interests: list[str] | None = None,
+) -> dict:
+    """手动编辑冷画像（方案 A：仅冷画像可编辑——领域偏好 / 专业领域长期兴趣）。
+
+    只更新传入字段；分数裁剪 1~10，名称清洗特殊标点，空值删除条目。
+    """
+    cold = get_cold(db)
+    if domain_preferences is not None:
+        cleaned: dict[str, int] = {}
+        for name, score in domain_preferences.items():
+            n = _clean_cold_name(str(name))
+            if not n:
+                continue
+            try:
+                s = max(1, min(10, int(score)))
+            except (TypeError, ValueError):
+                s = 1
+            cleaned[n] = s
+        cold["domain_preferences"] = cleaned
+    if long_term_interests is not None:
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for item in long_term_interests:
+            n = _clean_cold_name(str(item))
+            if n and n not in seen:
+                seen.add(n)
+                uniq.append(n)
+        cold["long_term_interests"] = uniq
+    _save(db, COLD, "default", cold)
+    return cold
+
+
 
 
 def get_all_profiles(db: Session) -> dict:

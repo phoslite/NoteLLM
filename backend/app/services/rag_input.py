@@ -1,14 +1,19 @@
 """RAG 输入准备：章节/页缓存切块与 LLM 输入正文构建（纯函数，无仓储依赖）。"""
 
 from app.core.config import settings
+from app.services.html_util import html_to_text
 
 CHUNK_CHARS = 1600   # 长章节按段落切块的字数阈值
 SEND_BUDGET = 8000   # 发送给 LLM 的正文总字数上限（防止超长书籍超 token）
 
 
-def chunk_chapter(chapter, chunk_chars: int = CHUNK_CHARS) -> list[dict]:
-    """单个章节 → RAG 片段列表；每段记录 chapter_index/chapter_title/para_pos 出处。"""
-    paras = [p.strip() for p in (chapter.content_text or "").splitlines() if p.strip()]
+def chunk_chapter(chapter, chunk_chars: int = CHUNK_CHARS, is_html: bool = False) -> list[dict]:
+    """单个章节 → RAG 片段列表；每段记录 chapter_index/chapter_title/para_pos 出处。
+
+    is_html：EPUB 章节正文为消毒后 HTML（方案 A），切块前经 html_to_text 转纯文本。
+    """
+    content = html_to_text(chapter.content_text or "") if is_html else (chapter.content_text or "")
+    paras = [p.strip() for p in content.splitlines() if p.strip()]
     chunks: list[dict] = []
     buf: list[str] = []
     start: int | None = None
@@ -39,15 +44,15 @@ def chunk_chapter(chapter, chunk_chars: int = CHUNK_CHARS) -> list[dict]:
                 "chapter_index": chapter.index,
                 "chapter_title": chapter.title,
                 "para_pos": "-",
-                "text": chapter.content_text or "",
+                "text": content,
             }
         )
     return chunks
 
 
-def chunk_book(chapters) -> list[dict]:
+def chunk_book(chapters, is_html: bool = False) -> list[dict]:
     """整本书 → 全部 RAG 片段（按章节顺序）。"""
-    return [c for ch in chapters for c in chunk_chapter(ch)]
+    return [c for ch in chapters for c in chunk_chapter(ch, is_html=is_html)]
 
 
 def page_chunks(page_texts: dict[int, str]) -> list[dict]:

@@ -25,31 +25,7 @@
 
     <!-- ================= 全局视图 ================= -->
     <template v-if="view === 'global'">
-      <section v-if="graph" class="stat-grid">
-        <div v-for="s in statCards" :key="s.label" class="stat-card" :style="{ '--sc': s.color }">
-          <span class="stat-ico">{{ s.icon }}</span>
-          <div class="stat-body">
-            <b>{{ s.value }}</b>
-            <span>{{ s.label }}</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="filter-bar">
-        <span class="filter-label">领域筛选</span>
-        <div class="cluster-tags">
-          <el-check-tag :checked="clusterFilter === ''" @click="setCluster('')">全部</el-check-tag>
-          <el-check-tag
-            v-for="c in graph?.clusters ?? []"
-            :key="c.name"
-            :checked="clusterFilter === c.name"
-            @click="setCluster(c.name)"
-          >
-            {{ c.name }}<span class="count-badge">{{ c.book_count }}</span>
-          </el-check-tag>
-        </div>
-        <span v-if="graph && graph.nodes.length === 0" class="empty-tip">暂无书籍，请先导入书籍</span>
-      </section>
+      <GraphGlobalPanel :graph="graph" :cluster-filter="clusterFilter" @cluster-change="setCluster" />
 
       <div ref="el" class="graph-canvas">
         <div v-if="!graph" class="canvas-hint">{{ loading ? '正在加载谱系图…' : '暂无数据' }}</div>
@@ -58,24 +34,7 @@
 
     <!-- ================= 书内视图 ================= -->
     <template v-else>
-      <section v-if="intra" class="stat-grid stat-grid-small">
-        <div class="stat-card mini"><b>{{ intraStats.chapters }}</b><span>章节</span></div>
-        <div class="stat-card mini"><b>{{ intraStats.nodes }}</b><span>知识点</span></div>
-        <div class="stat-card mini"><b>{{ intraStats.edges }}</b><span>关系</span></div>
-        <div class="stat-card mini">
-          <b>{{ Object.values(levelFilter).filter(Boolean).length }}/3</b><span>层级显示</span>
-        </div>
-      </section>
-
-      <section class="filter-bar">
-        <span class="filter-label">知识点层级</span>
-        <div class="level-tags">
-          <el-check-tag :checked="levelFilter['章节级']" @click="toggleLevel('章节级')">章节级</el-check-tag>
-          <el-check-tag :checked="levelFilter['重要段落']" @click="toggleLevel('重要段落')">重要段落</el-check-tag>
-          <el-check-tag :checked="levelFilter['用户标记']" @click="toggleLevel('用户标记')">用户标记</el-check-tag>
-        </div>
-        <span class="count-tip">{{ intra ? `${intra.nodes.length} 个知识点 / ${intra.edges.length} 条关系` : '' }}</span>
-      </section>
+      <GraphIntraPanel :intra="intra" :level-filter="levelFilter" @level-toggle="toggleLevel" />
 
       <div ref="el" class="graph-canvas">
         <div v-if="!intra" class="canvas-hint">加载中…</div>
@@ -101,7 +60,7 @@
         <div class="rel-meta">
           <el-tag size="small" type="info">{{ detailEdge.relation_type }}</el-tag>
           <el-tag size="small" :type="detailEdge.direction === '无' ? 'info' : 'danger'">
-            {{ detailEdge.direction === '无' ? '双向关联' : edgeDirLabel(detailEdge, new Map(graph?.nodes.map((n) => [n.id, n]) ?? [])) }}
+            {{ detailEdge.direction === '无' ? '双向关联' : edgeDirLabel(detailEdge, nodeMapOf(graph)) }}
           </el-tag>
           <el-tag size="small" type="warning" effect="dark">强度 {{ detailEdge.strength }}</el-tag>
         </div>
@@ -168,16 +127,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import type { GlobalGraph, GraphEdge, GraphNode, IntraGraph, KpNode, KnowledgeAppearsIn } from '@/types'
 import { getGlobalGraph, getIntraGraph, getKnowledgeAppearsIn, rebuildGraph, rebuildBookGraph, relationFeedback, syncGraphAssets } from '@/api/graph'
-import { LABEL_FONT_SIZE, ensureGraphLabelReady, labelRichFormatter, renderTooltipHtml } from '@/utils/graphLabel'
-import { bestEdgeSet, edgeStrokeColor, kpEdgeColor, linkEndpoints } from '@/utils/graphEdges'
+import { ensureGraphLabelReady } from '@/utils/graphLabel'
+import { edgeDirLabel } from '@/utils/graphEdges'
+import { buildGlobalOption, buildIntraOption, nodeMapOf } from '@/utils/graphOption'
 import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
 import MdRender from '@/components/MdRender.vue'
+import GraphGlobalPanel from '@/components/graph/GraphGlobalPanel.vue'
+import GraphIntraPanel from '@/components/graph/GraphIntraPanel.vue'
 
 const router = useRouter()
 
@@ -200,46 +162,6 @@ const strengthInput = ref(50)
 const kpDetailVisible = ref(false)
 const kpDetail = ref<KnowledgeAppearsIn | null>(null)
 const kpLoading = ref(false)
-
-const PALETTE = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9b59b6', '#2ecc71', '#e74c3c', '#16a085', '#8e44ad']
-const LEVEL_COLOR: Record<string, string> = { 章节级: '#409eff', 重要段落: '#f56c6c', 用户标记: '#e6a23c' }
-
-function truncate(s: string, n: number) {
-  return (s || '').length > n ? `${(s || '').slice(0, n)}…` : s || ''
-}
-
-function clusterColor(name: string): string {
-  const names = [...new Set((graph.value?.clusters ?? []).map((c) => c.name))]
-  const i = names.indexOf(name)
-  return PALETTE[i % PALETTE.length] ?? '#909399'
-}
-
-const globalStats = computed(() => {
-  const nodes = graph.value?.nodes ?? []
-  const edges = graph.value?.edges ?? []
-  return {
-    books: nodes.length,
-    edges: edges.length,
-    clusters: new Set(nodes.map((n) => n.cluster)).size,
-    built: nodes.filter((n) => n.graph_built).length,
-    directed: edges.filter((e) => e.direction !== '无').length,
-  }
-})
-
-const statCards = computed(() => [
-  { icon: '📚', label: '书籍', value: globalStats.value.books, color: '#409eff' },
-  { icon: '🔗', label: '关联', value: globalStats.value.edges, color: '#67c23a' },
-  { icon: '➡️', label: '有向传承', value: globalStats.value.directed, color: '#f56c6c' },
-  { icon: '🗂️', label: '领域', value: globalStats.value.clusters, color: '#e6a23c' },
-  { icon: '✅', label: '已建图谱', value: globalStats.value.built, color: '#9b59b6' },
-])
-
-const intraStats = computed(() => ({
-  chapters: intra.value?.chapters.length ?? 0,
-  nodes: intra.value?.nodes.length ?? 0,
-  edges: intra.value?.edges.length ?? 0,
-}))
-
 /** 画布元素变化（全局↔书内切换）时重建 ECharts 实例，避免渲染到已卸载的 DOM。 */
 function ensureChart(): echarts.ECharts | null {
   if (!el.value) return null
@@ -251,6 +173,18 @@ function ensureChart(): echarts.ECharts | null {
   return chart
 }
 
+/** 任务轮询取消（审查 N-19）：离开页面时中止等待，避免卸载后继续轮询。 */
+const taskAbort = new AbortController()
+
+function waitTask(taskId: string, opts: { intervalMs?: number; timeoutMs?: number } = {}) {
+  return waitForTask(taskId, { ...opts, signal: taskAbort.signal })
+}
+
+/** 中止轮询产生的错误在 catch 中静默忽略。 */
+function isTaskAbort(err: unknown): boolean {
+  return (err as Error)?.name === 'AbortError'
+}
+
 async function loadGlobal() {
   loading.value = true
   try {
@@ -260,7 +194,7 @@ async function loadGlobal() {
       // 懒构建后台化（决策 35）：任务完成后自动重拉
       ElMessage.info('图谱构建中…')
       notifyTaskSubmitted()
-      await waitForTask(g.task_id)
+      await waitTask(g.task_id)
       graph.value = await getGlobalGraph()
     } else {
       graph.value = g
@@ -268,6 +202,7 @@ async function loadGlobal() {
     await nextTick()
     renderGlobal()
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -280,7 +215,7 @@ async function onRebuildGlobal() {
     const { task_id } = await rebuildGraph()
     ElMessage.info('图谱重建任务已提交…')
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id)
+    const t = await waitTask(task_id)
     if (t.status === 'failed') {
       ElMessage.error(`重建失败：${t.error || '未知错误'}`)
       return
@@ -293,6 +228,7 @@ async function onRebuildGlobal() {
       `图谱已重建：${stats.books ?? 0} 本 / ${stats.relations ?? 0} 条关联，联动存根 ${stats.linked ?? 0} 条`,
     )
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -306,7 +242,7 @@ async function onSyncAssets() {
     const { task_id } = await syncGraphAssets()
     ElMessage.info('图谱资产联动任务已提交…')
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id)
+    const t = await waitTask(task_id)
     if (t.status === 'failed') {
       ElMessage.error(`联动失败：${t.error || '未知错误'}`)
       return
@@ -317,6 +253,7 @@ async function onSyncAssets() {
       `联动完成：存根 ${result.stubs ?? 0} 条 / LLM 更新 ${result.llm_updated ?? 0} 本 / 术语补水 ${result.domain_terms ?? 0} 条`,
     )
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     syncing.value = false
@@ -350,7 +287,7 @@ async function openIntraBook(node: GraphNode) {
       // 书内图谱懒构建后台化：任务完成后重拉
       ElMessage.info('本书知识图谱构建中…')
       notifyTaskSubmitted()
-      await waitForTask(g.task_id)
+      await waitTask(g.task_id)
       intra.value = await getIntraGraph(node.id)
     } else {
       intra.value = g
@@ -359,6 +296,7 @@ async function openIntraBook(node: GraphNode) {
     await nextTick()
     renderIntra()
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -373,7 +311,7 @@ async function rebuildCurrent() {
     const { task_id } = await rebuildBookGraph(bookId)
     ElMessage.info('本书知识图谱重建任务已提交…')
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id)
+    const t = await waitTask(task_id)
     if (t.status === 'failed') {
       ElMessage.error(`重建失败：${t.error || '未知错误'}`)
       return
@@ -383,6 +321,7 @@ async function rebuildCurrent() {
     renderIntra()
     ElMessage.success('本书知识图谱已重建')
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     loading.value = false
@@ -397,6 +336,7 @@ async function openKpDetail(kp: KpNode) {
   try {
     kpDetail.value = await getKnowledgeAppearsIn(kp.id)
   } catch (err) {
+    if (isTaskAbort(err)) return
     ElMessage.error((err as Error).message)
   } finally {
     kpLoading.value = false
@@ -415,110 +355,11 @@ async function switchKpBook(bookId: number) {
   if (found) await openIntraBook(found)
 }
 
-/** 有向边：返回箭头 source→target（无方向返回 book_a→book_b 且 directed=false）。 */
-/** 关联方向展示（数值端点，供 nodeMap 查书名）：方向判定复用 linkEndpoints，避免两处实现。 */
-function edgeEndpoints(e: GraphEdge) {
-  const { source, target, directed } = linkEndpoints(e)
-  return { source: Number(source), target: Number(target), directed }
-}
-/** 关联方向展示文案（详情弹窗用）。 */
-function edgeDirLabel(edge: GraphEdge, nodeMap: Map<number, GraphNode>): string {
-  const { source, target, directed } = edgeEndpoints(edge)
-  if (!directed) return '双向关联'
-  return `${nodeMap.get(source)?.title ?? source} → ${nodeMap.get(target)?.title ?? target}`
-}
-
 /* ---------- 全局谱系图渲染 ---------- */
 function renderGlobal() {
   const inst = ensureChart()
   if (!inst || !graph.value) return
-  const g = graph.value
-  const nodeMap = new Map(g.nodes.map((n) => [n.id, n]))
-  let nodes = g.nodes
-  if (clusterFilter.value) nodes = g.nodes.filter((n) => n.cluster === clusterFilter.value)
-  const ids = new Set(nodes.map((n) => n.id))
-  const edges = g.edges.filter((e) => ids.has(e.book_a) && ids.has(e.book_b))
-
-  // 每本书的「关系最密切」边（加粗/红色强调）
-  const bestSet = bestEdgeSet(edges)
-
-  const data = nodes.map((n) => {
-    const label = labelRichFormatter(n.title, LABEL_FONT_SIZE)
-    return {
-      id: n.id,
-      name: n.title,
-      value: n.chapter_count,
-      symbolSize: 16 + Math.min(24, Math.log2((n.chapter_count || 1) + 1) * 5),
-      itemStyle: { color: clusterColor(n.cluster) },
-      category: n.cluster,
-      book: n,
-      label: { formatter: label.formatter, rich: label.rich },
-    }
-  })
-
-  const links = edges.map((e) => {
-    const { source, target, directed } = linkEndpoints(e)
-    const isBest = bestSet.has(e.id)
-    return {
-      source,
-      target,
-      value: e.strength,
-      relation: e,
-      isBest,
-      lineStyle: {
-        width: isBest ? 4 + e.strength / 20 : 1.5 + e.strength / 40,
-        color: edgeStrokeColor(e.strength, isBest),
-        curveness: 0.08,
-      },
-      edgeLabel: (() => {
-        const label = labelRichFormatter(`${e.strength}分 ${e.reasons[0] ?? ''}`.trim(), LABEL_FONT_SIZE, 14)
-        return {
-          show: bestSet.has(e.id) && e.strength >= 20,
-          formatter: label.formatter,
-          rich: label.rich,
-          fontSize: LABEL_FONT_SIZE,
-          color: '#c0392b',
-        }
-      })(),
-      symbol: directed ? ['none', 'arrow'] : 'none',
-    }
-  })
-
-  inst.setOption(
-    {
-      tooltip: {
-        trigger: 'item',
-        formatter: (p: any) => {
-          if (p.dataType === 'edge') {
-            const r = p.data.relation
-            const reasons = (r.reasons ?? []).map((x: string) => `• ${renderTooltipHtml(x, true)}`).join('<br/>')
-            return `<b>${renderTooltipHtml(nodeMap.get(r.book_a)?.title ?? '—', true)} ↔ ${renderTooltipHtml(nodeMap.get(r.book_b)?.title ?? '—', true)}</b><br/>强度：${r.strength}｜类型：${r.relation_type}<br/>方向：${edgeDirLabel(r, nodeMap)}<br/>原因：<br/>${reasons || '—'}`
-          }
-          const b: GraphNode = p.data.book
-          return `<b>${renderTooltipHtml(b.title, true)}</b><br/>领域：${b.cluster}｜章节：${b.chapter_count}<br/>状态：${b.status}${b.graph_built ? '' : '<br/>（图谱未构建）'}<br/>点击查看本书知识图谱`
-        },
-      },
-      legend: { top: 4, data: [...new Set(nodes.map((n) => n.cluster))], textStyle: { fontSize: 11 } },
-      series: [
-        {
-          type: 'graph',
-          layout: 'force',
-          roam: true,
-          draggable: true,
-          data,
-          links,
-          large: nodes.length > 200,
-          progressive: nodes.length > 200 ? 400 : 0,
-          force: { repulsion: 220, edgeLength: [80, 200], gravity: 0.12 },
-          label: { show: true, position: 'bottom', fontSize: LABEL_FONT_SIZE },
-          lineStyle: { color: 'source' },
-          emphasis: { focus: 'adjacency', lineStyle: { width: 5 } },
-          categories: [...new Set(nodes.map((n) => n.cluster))].map((name) => ({ name, itemStyle: { color: clusterColor(name) } })),
-        },
-      ],
-    },
-    true,
-  )
+  inst.setOption(buildGlobalOption(graph.value, clusterFilter.value), true)
   inst.off('click')
   inst.on('click', (p: any) => {
     if (p.dataType === 'node' && p.data.book) void openIntraBook(p.data.book as GraphNode)
@@ -530,66 +371,7 @@ function renderGlobal() {
 function renderIntra() {
   const inst = ensureChart()
   if (!inst || !intra.value) return
-  const kp = intra.value
-  const chapters = new Map(kp.chapters.map((c) => [c.id, c]))
-  const nodes: KpNode[] = kp.nodes.filter((n) => levelFilter.value[n.level] ?? true)
-  const ids = new Set(nodes.map((n) => n.id))
-  const edges = kp.edges.filter((e) => ids.has(e.from) && ids.has(e.to))
-
-  const data = nodes.map((n) => {
-    const label = labelRichFormatter(n.title, LABEL_FONT_SIZE)
-    return {
-      id: n.id,
-      name: n.title,
-      value: n.importance,
-      symbolSize: 12 + n.importance * 3,
-      itemStyle: { color: LEVEL_COLOR[n.level] ?? '#909399' },
-      level: n.level,
-      kp: n,
-      label: { formatter: label.formatter, rich: label.rich },
-    }
-  })
-  const links = edges.map((e) => ({
-    source: String(e.from),
-    target: String(e.to),
-    value: e.strength,
-    lineStyle: { width: 1.5 + e.strength / 40, color: kpEdgeColor(), curveness: 0.1 },
-    symbol: ['none', 'arrow'],
-  }))
-
-  inst.setOption(
-    {
-      tooltip: {
-        trigger: 'item',
-        formatter: (p: any) => {
-          if (p.dataType === 'edge') return `${p.data.source} → ${p.data.target}`
-          const n: KpNode = p.data.kp
-          const ch = n.chapter_id ? chapters.get(n.chapter_id) : null
-          const pos = n.para_pos ? `第 ${n.para_pos} 段` : ''
-          const summary = renderTooltipHtml(truncate(n.summary || '（无摘要）', 180), true)
-          return `<b>${renderTooltipHtml(n.title, true)}</b><br/>层级：${n.level}｜重要度：${n.importance}<br/>出处：${ch ? `第 ${ch.index} 章${pos ? ' · ' + pos : ''}` : '—'}<br/>${summary}<br/>点击跳转阅读原文`
-        },
-      },
-      legend: { top: 4, data: ['章节级', '重要段落', '用户标记'], textStyle: { fontSize: 11 } },
-      series: [
-        {
-          type: 'graph',
-          layout: 'force',
-          roam: true,
-          draggable: true,
-          data,
-          links,
-          large: nodes.length > 200,
-          progressive: nodes.length > 200 ? 400 : 0,
-          force: { repulsion: 160, edgeLength: [60, 140], gravity: 0.08 },
-          label: { show: true, position: 'bottom', fontSize: LABEL_FONT_SIZE },
-          lineStyle: { color: 'source' },
-          emphasis: { focus: 'adjacency', lineStyle: { width: 4 } },
-        },
-      ],
-    },
-    true,
-  )
+  inst.setOption(buildIntraOption(intra.value, levelFilter.value), true)
   inst.off('click')
   inst.on('click', (p: any) => {
     if (p.dataType === 'node' && p.data.kp) void openKpDetail(p.data.kp as KpNode)
@@ -640,6 +422,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  taskAbort.abort()
   window.removeEventListener('resize', resize)
   chart?.dispose()
   chart = null
@@ -655,26 +438,6 @@ onBeforeUnmount(() => {
 .title-ico { font-size: 20px; }
 .head-sub { color: var(--text-secondary); font-size: 12px; margin: 0; }
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* 统计卡片 */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.stat-grid-small { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
-.stat-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
-.stat-ico { font-size: 20px; }
-.stat-body { display: flex; flex-direction: column; line-height: 1.25; }
-.stat-body b { font-size: 19px; color: var(--sc, var(--primary-color)); }
-.stat-body span { font-size: 12px; color: var(--text-secondary); }
-.stat-card.mini { justify-content: flex-start; padding: 8px 14px; }
-.stat-card.mini b { font-size: 17px; }
-
-/* 筛选栏 */
-.filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 0 12px; }
-.filter-label { color: var(--text-secondary); font-size: 13px; flex-shrink: 0; }
-.cluster-tags { display: flex; gap: 6px; flex-wrap: wrap; max-height: 76px; overflow-y: auto; }
-.count-badge { margin-left: 5px; font-size: 11px; opacity: .7; background: var(--panel-bg); border-radius: 999px; padding: 0 6px; }
-.level-tags { display: flex; gap: 6px; flex-wrap: wrap; }
-.empty-tip { color: var(--text-secondary); font-size: 13px; margin-left: auto; }
-.count-tip { color: var(--text-secondary); font-size: 12px; margin-left: auto; }
 
 /* 图表画布 */
 .graph-canvas { position: relative; flex: 1; min-height: 420px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--reading-bg); background-image: radial-gradient(var(--border-color) 1px, transparent 1px); background-size: 22px 22px; box-shadow: 0 2px 10px rgba(0, 0, 0, .04); overflow: hidden; }

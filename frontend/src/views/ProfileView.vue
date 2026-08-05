@@ -111,17 +111,36 @@
             <h3>冷画像</h3>
             <p>L3 · 长期偏好</p>
           </div>
-          <el-tag size="small" effect="plain">{{ prefs.length }} 项偏好</el-tag>
+          <el-button v-if="!coldEditing" size="small" type="primary" plain @click="openColdEdit">?? ??</el-button>
         </header>
         <div class="layer-body">
-          <div class="sub-head"><span>🏷️ 领域偏好</span><span class="sub-count">{{ prefs.length }}</span></div>
-          <div v-if="prefs.length" class="tag-cloud">
-            <el-tag v-for="[k, v] in prefs" :key="k" size="small" :type="tagTypeOf(v)">{{ k }} ×{{ v }}</el-tag>
-          </div>
-          <p v-else class="empty">暂无（跨 3 本后沉淀）</p>
-          <div class="sub-head"><span>🧭 长期兴趣</span></div>
-          <div v-if="interests.length" class="chip-flow">{{ interests.join(' · ') }}</div>
-          <p v-else class="empty">—</p>
+          <template v-if="!coldEditing">
+            <div class="sub-head"><span>🏷️ 领域偏好</span><span class="sub-count">{{ prefs.length }}</span></div>
+            <div v-if="prefs.length" class="tag-cloud">
+              <el-tag v-for="[k, v] in prefs" :key="k" size="small" :type="tagTypeOf(v)">{{ k }} ×{{ v }}</el-tag>
+            </div>
+            <p v-else class="empty">暂无（跨 3 本后沉淀）</p>
+            <div class="sub-head"><span>🧭 长期兴趣</span></div>
+            <div v-if="interests.length" class="chip-flow">{{ interests.join(' · ') }}</div>
+            <p v-else class="empty">—</p>
+          </template>
+          <template v-else>
+            <div class="sub-head"><span>🏷️ 领域偏好（分数 1~10）</span></div>
+            <div v-for="(row, i) in coldForm.domains" :key="i" class="cold-edit-row">
+              <el-input v-model="row.name" size="small" placeholder="领域名（汉字/英文）" />
+              <el-input-number v-model="row.score" :min="1" :max="10" size="small" />
+              <el-button size="small" text type="danger" @click="removeColdDomain(i)">删除</el-button>
+            </div>
+            <el-button size="small" text type="primary" @click="addColdDomain">+ 添加领域</el-button>
+            <div class="sub-head"><span>🧭 长期兴趣 / 专业领域</span></div>
+            <el-select v-model="coldForm.interests" multiple filterable allow-create default-first-option size="small" placeholder="输入后回车添加" style="width: 100%">
+              <el-option v-for="it in coldForm.interests" :key="it" :label="it" :value="it" />
+            </el-select>
+            <div class="cold-edit-actions">
+              <el-button size="small" type="primary" :loading="savingCold" @click="saveColdEdit">保存</el-button>
+              <el-button size="small" @click="coldEditing = false">取消</el-button>
+            </div>
+          </template>
         </div>
       </article>
     </section>
@@ -218,7 +237,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getProfile, getRecommendations, getThresholds, learnProfileThresholds, resetProfile, saveThresholds } from '@/api/profile'
+import { getProfile, getRecommendations, getThresholds, learnProfileThresholds, resetProfile, saveColdProfile, saveThresholds } from '@/api/profile'
 import type { ProfileData, ProfileThresholds, RecommendationsData } from '@/types'
 
 const profiles = ref<ProfileData>({ cold: {}, warm: {}, hot: {} })
@@ -228,6 +247,9 @@ const thresholds = ref<ProfileThresholds | null>(null)
 const thresholdForm = ref({ warm_threshold: 3, related_strength: 60, review_days: 1 })
 const savingThresholds = ref(false)
 const learningThresholds = ref(false)
+const coldEditing = ref(false)
+const savingCold = ref(false)
+const coldForm = ref<{ domains: { name: string; score: number }[]; interests: string[] }>({ domains: [], interests: [] })
 
 const weakConcepts = computed(() => rec.value?.weak_concepts || [])
 const recentBooks = computed(() => (profiles.value.warm?.recent_books as any[] || []))
@@ -265,14 +287,57 @@ function tagTypeOf(count: number): 'danger' | 'warning' | 'info' {
 }
 
 async function refresh() {
-  const [profile, recs, ths] = await Promise.all([getProfile(), getRecommendations(), getThresholds()])
-  profiles.value = profile
-  rec.value = recs
-  thresholds.value = ths
-  thresholdForm.value = {
-    warm_threshold: ths.warm_threshold,
-    related_strength: ths.related_strength,
-    review_days: ths.review_days,
+  const [profileR, recsR, thsR] = await Promise.allSettled([getProfile(), getRecommendations(), getThresholds()])
+  if (profileR.status === 'fulfilled') {
+    profiles.value = profileR.value
+  } else {
+    ElMessage.warning(`画像加载失败：${(profileR.reason as Error)?.message ?? '未知错误'}`)
+  }
+  if (recsR.status === 'fulfilled') rec.value = recsR.value
+  if (thsR.status === 'fulfilled') {
+    thresholds.value = thsR.value
+    thresholdForm.value = {
+      warm_threshold: thsR.value.warm_threshold,
+      related_strength: thsR.value.related_strength,
+      review_days: thsR.value.review_days,
+    }
+  }
+}
+
+function openColdEdit() {
+  const raw = (profiles.value.cold?.domain_preferences as Record<string, number> | undefined) || {}
+  coldForm.value = {
+    domains: Object.entries(raw).map(([name, score]) => ({ name, score })),
+    interests: [...((profiles.value.cold?.long_term_interests as string[] | undefined) || [])],
+  }
+  coldEditing.value = true
+}
+
+function addColdDomain() {
+  coldForm.value.domains.push({ name: '', score: 1 })
+}
+
+function removeColdDomain(i: number) {
+  coldForm.value.domains.splice(i, 1)
+}
+
+async function saveColdEdit() {
+  savingCold.value = true
+  try {
+    const payload: Record<string, number> = {}
+    for (const d of coldForm.value.domains) {
+      if (d.name.trim()) payload[d.name.trim()] = d.score
+    }
+    profiles.value.cold = await saveColdProfile({
+      domain_preferences: payload,
+      long_term_interests: coldForm.value.interests,
+    })
+    coldEditing.value = false
+    ElMessage.success('冷画像已保存')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    savingCold.value = false
   }
 }
 
@@ -418,5 +483,8 @@ onMounted(refresh)
 .rec-stat .c5 { color: #909399; }
 .rec-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
 .rec-col { min-width: 0; }
+.cold-edit-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cold-edit-row .el-input { flex: 1; }
+.cold-edit-actions { display: flex; gap: 8px; margin-top: 12px; }
 .rhythm { padding: 10px 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; font-size: 13px; line-height: 1.7; margin-top: 12px; }
 </style>

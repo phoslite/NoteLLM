@@ -79,6 +79,25 @@ export interface BookAssetView {
   version: number
 }
 
+/** 资产页列表用的批量摘要（审查 A-6：GET /books/assets 一次返回全部书籍资产状态）。 */
+/** 全书搜索命中（FTS5，GET /books/search）：章节级结果，供书架搜索下拉展示。 */
+export interface SearchHit {
+  book_id: number
+  title: string
+  chapter_id: number
+  chapter_index: number | null
+  chapter_title: string
+  snippet: string
+}
+
+export interface BookAssetBrief {
+  version: number
+  has_rag: boolean
+  has_skill: boolean
+  rag_summary: string
+  merged_count: number
+}
+
 /** 后台任务（决策 35）：任务中心/轮询共用结构。 */
 export interface TaskItem {
   id: string

@@ -5,6 +5,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
+    ai_chat as ai_chat_routes,
+)
+from app.api.routes import (
     annotations,
     assets,
     bookmarks,
@@ -20,7 +23,9 @@ from app.api.routes import (
     tasks,
     vision,
 )
-from app.api.routes import settings as settings_routes
+from app.api.routes import (
+    settings as settings_routes,
+)
 from app.core.config import settings
 from app.core.database import SessionLocal, init_db
 from app.services.media_service import migrate_all_books
@@ -61,6 +66,7 @@ app.include_router(mindmap.router)
 app.include_router(vision.router)
 app.include_router(graph.router)
 app.include_router(profile.router)
+app.include_router(ai_chat_routes.router)
 app.include_router(settings_routes.router)
 
 

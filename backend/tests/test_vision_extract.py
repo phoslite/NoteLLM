@@ -213,6 +213,49 @@ def test_build_messages_page_context():
     assert "页缓存" in user and "【第 1 页】" in user
 
 
+def test_extract_image_attachment_unconfigured_returns_none(client):
+    """决策 36：未配置视觉模型时附件提取返回 None（调用方降级纯文本，不报错）。"""
+    from app.core.database import SessionLocal
+    from app.services.vision_extract import extract_image_attachment
+    db = SessionLocal()
+    try:
+        assert extract_image_attachment(db, "data:image/png;base64,AAAA") is None
+    finally:
+        db.close()
+
+
+def test_extract_image_attachment_caches_result(client, monkeypatch, tmp_path):
+    """决策 36：附件视觉提取按内容 hash 缓存，二次命中不重复调用多模态 API。"""
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.services import vision_extract
+    db = SessionLocal()
+    try:
+        uri = "data:image/png;base64,QUJD"
+        calls = {"n": 0}
+
+        class FakeVision:
+            def __init__(self, **kw):
+                pass
+            def chat(self, messages):
+                calls["n"] += 1
+                return "图片内容：Krein–Milman 定理 $\\overline{\\operatorname{conv}}(\\operatorname{ext}(K))$"
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        monkeypatch.setattr(vision_extract, "vision_configured", lambda db: True)
+        monkeypatch.setattr(vision_extract, "LLMClient", FakeVision)
+        text = vision_extract.extract_image_attachment(db, uri, hint="正文插图")
+        assert "Krein" in text and calls["n"] == 1
+        # 命中缓存：不再调用视觉 API
+        text2 = vision_extract.extract_image_attachment(db, uri)
+        assert text2 == text and calls["n"] == 1
+        # 不同图片内容 hash 不同 → 重新提取
+        vision_extract.extract_image_attachment(db, "data:image/png;base64,QUJDQQ==")
+        assert calls["n"] == 2
+    finally:
+        db.close()
+
+
 def test_extract_page_citations():
     out = extract_citations("见【第 5 页】与【第2章 第3段】。")
     assert out == [{"chapter": 5, "para": "页"}, {"chapter": 2, "para": "3"}]

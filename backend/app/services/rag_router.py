@@ -9,22 +9,38 @@
 降级：LLM 未配置 / 调用失败 / 输出无法解析 → 规则化候选（当前书 + 暖画像相关 top3 +
 谱系关联 top2 + 关键词检索，即决策 34 定义的降级方案）。
 会话缓存：按 session_id + chapter_id 缓存挑选结果（TTL 可配，0=不缓存）。
+
+决策 37（主页全局 AI 对话）：`select_global_knowledge` 无当前书/章节，从全库目录挑选
+（LLM 全局提示词 → 规则降级：摘要/内容关键词相关 top3 书 + 全局 Skill 相关性 top N）；
+缓存键 `global:{session_id}`。
 """
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.ai.factory import build_selector_client
 from app.ai.parsing import parse_llm_json
-from app.ai.prompts.rag_select import SYSTEM_PROMPT, build_user_prompt
+from app.ai.prompts.rag_select import (
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_GLOBAL,
+    build_global_user_prompt,
+    build_user_prompt,
+)
 from app.core.config import settings
 from app.models.book import Book, Folder
-from app.models.graph import BookRelation
-from app.repositories.assets import get_asset, load_skills, read_asset_content, retrieve_rag_chunks
+from app.repositories.assets import (
+    get_asset,
+    list_assets_by_books,
+    load_all_skills,
+    load_skills,
+    read_asset_content,
+    retrieve_rag_chunks,
+)
+from app.repositories.graph import list_active_relations
 from app.services.profile_service import get_all_profiles
 
 # 候选目录与注入控制
@@ -46,13 +62,17 @@ class SelectionResult:
 
 # 会话挑选缓存：{cache_key: (expire_ts, payload)}；进程内（重启后重新挑选，可接受）
 _SESSION_CACHE: dict[str, tuple[float, dict]] = {}
+_SESSION_CACHE_MAX = 200  # 容量上限（审查问题 10）：写时清扫过期 + 淘汰最旧
 _SESSION_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------- 候选目录
 
-def _book_domain(db: Session, book: Book) -> str:
-    """领域分组：用户 tag 优先（首个 tag），其次文件夹名，其次聚类领域，最后「未分类」。"""
+def _book_domain(book: Book, folder_names: dict[int, str]) -> str:
+    """领域分组：用户 tag 优先（首个 tag），其次文件夹名，其次聚类领域，最后「未分类」。
+
+    审查 A-7：folder 名一次性批量加载传入，消除逐书查询。
+    """
     try:
         tags = json.loads(book.tags_json or "[]")
     except (TypeError, ValueError):
@@ -60,9 +80,9 @@ def _book_domain(db: Session, book: Book) -> str:
     if tags:
         return str(tags[0])
     if book.folder_id:
-        folder = db.get(Folder, book.folder_id)
-        if folder and folder.name:
-            return folder.name
+        name = folder_names.get(book.folder_id)
+        if name:
+            return name
     return book.cluster_name or _UNCATEGORIZED
 
 
@@ -75,22 +95,26 @@ def build_catalog(db: Session, current_book_id: int) -> tuple[str, dict[int, dic
 
     书项 = {book_id, title, domain, summary, skill_names}；仅包含有 RAG/Skill 资产的书。
     """
-    books = db.query(Book).all()
+    books = db.query(Book).order_by(Book.id).all()
+    # 审查 A-7：资产与文件夹名一次性批量加载，目录构建从 5N-6N 次查询降为常数次
+    assets_map = list_assets_by_books(db)
+    folder_names = {f.id: f.name for f in db.query(Folder).all()}
     index: dict[int, dict] = {}
     groups: dict[str, list[dict]] = {}
     for b in books:
         if len(index) >= CATALOG_MAX_ENTRIES:
             break
-        if not _has_assets(db, b.id):
+        assets = assets_map.get(b.id)
+        if not assets:
             continue
-        rag = read_asset_content(db, b.id, "rag") or {}
-        skill = read_asset_content(db, b.id, "skill") or {}
+        rag = assets.get("rag") or {}
+        skill = assets.get("skill") or {}
         summary = str(rag.get("summary") or "")[:CATALOG_SUMMARY_CHARS]
         skill_names = [str(s.get("name") or "") for s in (skill.get("skills") or []) if s.get("name")]
         item = {
             "book_id": b.id,
             "title": b.title or "",
-            "domain": _book_domain(db, b),
+            "domain": _book_domain(b, folder_names),
             "summary": summary,
             "skill_names": skill_names[:CATALOG_SKILL_NAMES],
         }
@@ -240,15 +264,12 @@ def _select_fallback(db: Session, book: Book, question: str) -> SelectionResult:
         if isinstance(bid, int) and bid not in book_ids and _has_assets(db, bid):
             book_ids.append(bid)
     if len(book_ids) < settings.rag_select_max_books:
-        rels = (
-            db.query(BookRelation)
-            .filter(
-                or_(BookRelation.book_a_id == book.id, BookRelation.book_b_id == book.id),
-                BookRelation.user_feedback != "忽略",
-            )
-            .order_by(BookRelation.strength.desc())
-            .limit(settings.rag_select_max_books - len(book_ids))
-            .all()
+        # 走仓储未忽略关联（user_feedback IS NULL 视为未忽略，见 v1.17 修复）；
+        # 直查回归于决策 34 落地（v1.63），此处改用 repositories/graph.py::list_active_relations
+        rels = list_active_relations(
+            db,
+            book_id=book.id,
+            limit=settings.rag_select_max_books - len(book_ids),
         )
         for rel in rels:
             other = rel.book_b_id if rel.book_a_id == book.id else rel.book_a_id
@@ -295,6 +316,15 @@ def _cache_put(key: str, payload: dict) -> None:
         return
     with _SESSION_LOCK:
         _SESSION_CACHE[key] = (time.time() + ttl_min * 60, payload)
+        if len(_SESSION_CACHE) > _SESSION_CACHE_MAX:
+            # 写时清扫：先删过期，仍超限则淘汰最旧条目（字典保持插入序）
+            now = time.time()
+            for k in [k for k, (exp, _) in _SESSION_CACHE.items() if exp <= now]:
+                del _SESSION_CACHE[k]
+            overflow = len(_SESSION_CACHE) - _SESSION_CACHE_MAX
+            if overflow > 0:
+                for k in list(_SESSION_CACHE)[:overflow]:
+                    del _SESSION_CACHE[k]
 
 
 def clear_session_cache(session_id: str | None = None) -> int:
@@ -309,6 +339,136 @@ def clear_session_cache(session_id: str | None = None) -> int:
             removed = len(_SESSION_CACHE)
             _SESSION_CACHE.clear()
     return removed
+
+
+def clear_global_selection_cache(client_session_id: str) -> int:
+    """删除主页全局会话的挑选缓存（决策 37，键 `global:{client_session_id}`）。"""
+    key = f"global:{client_session_id}"
+    with _SESSION_LOCK:
+        if key in _SESSION_CACHE:
+            del _SESSION_CACHE[key]
+            return 1
+    return 0
+
+
+# ---------------------------------------------------------------- 全局对话挑选（决策 37）
+
+def _profile_lines(profiles: dict) -> list[str]:
+    """画像 → 挑选器可读文本行（冷画像偏好/水平/风格 + 暖画像近期书/相关领域）。"""
+    cold = profiles.get("cold") or {}
+    warm = profiles.get("warm") or {}
+    lines = []
+    if cold.get("domain_preferences"):
+        lines.append("冷画像·领域偏好：" + str(dict(cold["domain_preferences"]))[:200])
+    if cold.get("knowledge_level"):
+        lines.append(f"冷画像·知识水平：{cold.get('knowledge_level')}")
+    if cold.get("language_style"):
+        lines.append(f"冷画像·语言风格：{cold.get('language_style')}")
+    if cold.get("long_term_interests"):
+        lines.append("冷画像·长期兴趣：" + "、".join(str(i) for i in cold["long_term_interests"][:10]))
+    recent = warm.get("recent_books") or []
+    if recent:
+        lines.append(
+            "暖画像·近期书：" + "；".join(f"《{r.get('title')}》{str(r.get('summary') or '')[:80]}" for r in recent[-3:])
+        )
+    related = warm.get("related_books") or []
+    if related:
+        lines.append("暖画像·相关领域书：" + "、".join(str(r.get("title")) for r in related[:5]))
+    return lines
+
+
+def _select_llm_global(db: Session, question: str, profiles: dict) -> SelectionResult | None:
+    """全局对话 LLM 挑选（决策 37）：无当前书/章节，从全库目录挑选；失败返回 None。"""
+    catalog_text, index = build_catalog(db, 0)
+    if not index:
+        return None
+    try:
+        client = build_selector_client(db)
+        if not (client.api_key or "").strip():
+            return None
+        user = build_global_user_prompt(question, catalog_text, "\n".join(_profile_lines(profiles)))
+        system = SYSTEM_PROMPT_GLOBAL.format(
+            max_books=settings.rag_select_max_books, max_skills=settings.rag_select_max_skills
+        )
+        reply = client.chat([{"role": "system", "content": system}, {"role": "user", "content": user}])
+        data = parse_llm_json(reply)
+    except Exception:  # noqa: BLE001 挑选失败/超时/解析失败 → 降级规则方案
+        return None
+    book_ids: list[int] = []
+    for b in data.get("selected_books") or []:
+        if not isinstance(b, dict):
+            continue
+        bid = b.get("book_id")
+        if isinstance(bid, int) and bid in index and bid not in book_ids:
+            book_ids.append(bid)
+    book_ids = book_ids[: settings.rag_select_max_books]
+    skill_refs: list[dict] = []
+    for st in data.get("selected_skills") or []:
+        if not isinstance(st, dict):
+            continue
+        bid, name = st.get("book_id"), st.get("name")
+        if isinstance(bid, int) and bid in index and name and {"book_id": bid, "name": str(name)} not in skill_refs:
+            skill_refs.append({"book_id": bid, "name": str(name)})
+    reasons = str(data.get("reasons") or "")
+    return SelectionResult(
+        source="llm", book_ids=book_ids, skill_refs=skill_refs[: settings.rag_select_max_skills], reasons=reasons
+    )
+
+
+def _global_query_tokens(text: str) -> set[str]:
+    """全局降级检索 token：中文二元组 + 英文词（与 assets.retrieve_rag_chunks 同款切分）。"""
+    return set(re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_]*", text or ""))
+
+
+def _select_fallback_global(db: Session, question: str) -> SelectionResult:
+    """全局对话规则降级（决策 37）：摘要/内容关键词相关 top3 书 + 全局 Skill 相关性 top N。"""
+    assets_map = list_assets_by_books(db)
+    tokens = _global_query_tokens(question)
+    scored: list[tuple[int, int]] = []
+    for bid, kinds in assets_map.items():
+        content = kinds.get("rag") or {}
+        summary = str(content.get("summary") or "")
+        if not summary and not content.get("chunks"):
+            continue
+        score = sum(1 for t in tokens if t in summary)
+        scored.append((score, bid))
+    scored.sort(key=lambda x: -x[0])
+    book_ids = [bid for _, bid in scored[: settings.rag_select_max_books]]
+    skill_refs: list[dict] = []
+    for st in load_all_skills(db, task_text=question, top_n=settings.rag_select_max_skills):
+        if len(skill_refs) >= settings.rag_select_max_skills:
+            break
+        ref = {"book_id": st.get("book_id"), "name": str(st.get("name") or "")}
+        if ref["name"] and ref not in skill_refs:
+            skill_refs.append(ref)
+    return SelectionResult(source="fallback", book_ids=book_ids, skill_refs=skill_refs)
+
+
+def select_global_knowledge(
+    db: Session,
+    question: str,
+    session_id: str | None = None,
+) -> dict:
+    """决策 37 主入口：全局对话知识挑选 → 返回注入内容 dict（同 select_knowledge 结构）。
+
+    缓存键 `global:{session_id}`（无 chapter 维度）；LLM 挑选失败/未开启 → 规则降级。
+    """
+    key = None
+    if session_id:
+        key = f"global:{session_id}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return {**cached, "source": "cache"}
+    profiles = get_all_profiles(db)
+    result: SelectionResult | None = None
+    if settings.ai_rag_select_enabled:
+        result = _select_llm_global(db, question, profiles)
+    if result is None:
+        result = _select_fallback_global(db, question)
+    payload = _selection_payload(result, db, question)
+    if key:
+        _cache_put(key, payload)
+    return payload
 
 
 # ---------------------------------------------------------------- 主入口

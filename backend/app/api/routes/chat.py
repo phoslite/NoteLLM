@@ -7,17 +7,15 @@ from sqlalchemy.orm import Session
 from app.ai.factory import is_configured
 from app.api.deps import require_book
 from app.core.database import get_db
-from app.repositories.chat import persist_chat
 from app.schemas.common import ok
 from app.schemas.serializers import chat_message_to_dict
 from app.services.chat_service import (
     build_mode_cache_key,
     clear_history,
     list_history,
-    mode_cache_hit,
     prepare_chat_job,
+    replay_cached_chat,
     resolve_chat_chapter,
-    sse_event,
     stream_chat,
 )
 
@@ -61,23 +59,10 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
     cache_key_val = build_mode_cache_key(
         db, book, chapter, question, body.selection or "", body.mode, body.session_id
     )
-    hit = mode_cache_hit(db, book.id, body.mode or "", cache_key_val)
-    if hit is not None:
-        answer = (hit["answer"] or "").replace('\\"', '"')  # 清洗转义引号（与流式路径一致）
-        try:
-            persist_chat(
-                db, book.id, chapter.id, body.selection or "", question, answer, body.mode
-            )
-        except Exception:  # noqa: BLE001 历史落库失败不影响回放
-            pass
-        end_event = sse_event({
-            "type": "end",
-            "text": answer,
-            "citations": hit.get("citations") or [],
-            "cached": True,
-        })
+    replay = replay_cached_chat(db, book, chapter, question, body.selection or "", body.mode, cache_key_val)
+    if replay is not None:
         return StreamingResponse(
-            iter([end_event]),
+            iter([replay]),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

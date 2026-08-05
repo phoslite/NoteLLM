@@ -10,6 +10,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.pytest_tmp*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -31,7 +32,6 @@ data/
 *.db-wal
 *.db-shm
 *.log
-demo/logs/
 
 # ---- 编辑器 / 系统 ----
 .idea/
@@ -40,8 +40,10 @@ demo/logs/
 Thumbs.db
 
 # ---- 临时/杂项文件 ----
-5\}
 01-home-shelf.png
+_fep*
+_fix_*.py
+*.tmp
 
 # ---- 过程性文档（本地保留，不入库） ----
 docs/审查报告/
@@ -53,3 +55,6 @@ docs/性能优化路径.md
 .codex-edge-test/
 .codex-edge-test2/
 .qoder/
+
+# ---- 本地实验目录（仅本地保留，不推 GitHub） ----
+demo/

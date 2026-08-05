@@ -17,18 +17,25 @@ from app.ai.prompts.chat import build_system_prompt, build_user_prompt
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories import books as book_repo
-from app.repositories.chat import clear_messages, list_messages, persist_chat, recent_history_texts
+from app.repositories.chat import (
+    clear_messages,
+    global_session_id,
+    list_messages,
+    persist_chat,
+    recent_history_texts,
+)
 from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.ai_context import (
     build_page_context_block,
-    page_image_data_uri,
     paragraph_numbered,
 )
 from app.services.citations import extract_citations
+from app.services.html_util import chapter_plain_text
 from app.services.llm_cache import cache_key, chapter_fingerprint, get_llm_cache, set_llm_cache
+from app.services.media_service import markdown_image_data_uris
 from app.services.profile_service import get_all_profiles
-from app.services.rag_router import select_knowledge
-from app.services.vision_extract import ensure_window_caches
+from app.services.rag_router import select_global_knowledge, select_knowledge
+from app.services.vision_extract import ensure_window_caches, extract_image_attachment
 
 
 def build_messages(
@@ -39,25 +46,25 @@ def build_messages(
     rag_block: str,
     skills: list[dict],
     enable_body_send: bool,
-    page_image: str | None = None,
-    crop_image: str | None = None,
+    crop_text: str | None = None,
     crop_label: str = "",
     page_context: str | None = None,
     page_mode: bool = False,
     mode: str | None = None,
     history: list[dict] | None = None,
     profiles: dict | None = None,
+    media_texts: list[str] | None = None,
 ) -> list[dict]:
     """构建 LLM messages；隐私开关关闭时不发送正文、页缓存与 RAG 片段（Skill 仍注入）。
 
     - rag_block：跨书检索片段块（决策 34，出处【《书名》第X章 第Y段】），由调用方组装；
       PDF 页模式下与页缓存文本一同注入（页模式 RAG 注入已定稿）。
     - page_context：PDF 按页阅读时注入 `[P-1,P,P+1]` 窗口的页缓存文本（出处「第 X 页」）。
-    - page_image：页缓存不可用时的回退——附加当前页原图（chat 模式，需模型支持视觉输入）。
-    - crop_image：涂鸦划线区域裁剪图（data URI，chat 模式）；划线提问时用 crop_label 说明范围。
-    - responses 模式由客户端降级为纯文本。
+    - crop_text：划线裁剪图经视觉模型提取的文本（决策 36）；划线提问时用 crop_label 说明范围。
+    - media_texts：Markdown 内嵌插图经视觉模型提取的文本列表（决策 36）。
+    - 决策 36：主模型只收文本——所有图片附件由视觉模型提取为文本（带缓存），不再直发 image_url。
     """
-    context_text = paragraph_numbered(chapter.content_text or "") if enable_body_send else ""
+    context_text = paragraph_numbered(chapter_plain_text(getattr(book, "format", None), chapter.content_text or "")) if enable_body_send else ""
     user = build_user_prompt(
         book.title,
         chapter.index,
@@ -78,17 +85,16 @@ def build_messages(
     ]
     if history:
         messages.extend(history)
-    images = [img for img in (page_image, crop_image) if img]
-    if images and enable_body_send:
-        content: list[dict] = [{"type": "text", "text": user}]
-        if crop_label:
-            content.append({"type": "text", "text": f"（用户划线的区域说明：{crop_label}）"})
-        for img in images:
-            # SiliconFlow 多模态文档：image_url 参数 url（支持 base64 data URI）+ detail（auto/low/high）
-            content.append({"type": "image_url", "image_url": {"url": img, "detail": "high"}})
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user})
+    if enable_body_send:
+        extra_blocks: list[str] = []
+        if crop_text:
+            label = f"（用户划线的区域说明：{crop_label}）" if crop_label else ""
+            extra_blocks.append(f"【用户划线区域图片内容（视觉提取）】\n{crop_text}{label}")
+        for i, t in enumerate(media_texts or [], 1):
+            extra_blocks.append(f"【正文插图 {i} 内容（视觉提取）】\n{t}")
+        if extra_blocks:
+            user += "\n\n" + "\n\n".join(extra_blocks)
+    messages.append({"role": "user", "content": user})
     return messages
 
 
@@ -127,26 +133,23 @@ def prepare_chat_job(
 
     - 跨书注入（决策 34）：LLM 自主挑选相关书与 Skill（会话内缓存按 session_id），
       降级回退规则方案；隐私关闭时只注入 Skill、不注入 chunks。
-    - PDF 按页阅读且隐私开启：优先注入 [P-1,P,P+1] 窗口页缓存；未配置多模态/提取失败回退页图附件。
-    - crop_image：涂鸦划线区域裁剪图（chat 模式，需模型支持视觉输入）。
+    - PDF 按页阅读且隐私开启：优先注入 [P-1,P,P+1] 窗口页缓存（决策 36：未配置视觉/提取失败
+      不再回退直发页图，主模型只收文本）。
+    - crop_image：划线裁剪图经视觉模型提取文本后注入（send_page 开启时）。
     """
     overrides = load_ai_overrides(db)
     enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
     send_page = overrides.get("ai_send_page_image", settings.ai_send_page_image)
     page_mode = chapter.page_index is not None
     page_context = None
-    page_image = None
-    if page_mode and enable_body:
-        if vision_configured(db):
-            try:
-                window = ensure_window_caches(db, book, chapter.page_index)
-                page_context = build_page_context_block(window, enable_body)
-            except Exception:  # noqa: BLE001 提取失败回退页图附件
-                page_context = None
-        if page_context is None:
-            page_image = page_image_data_uri(book, chapter, enable_body and send_page)
-    else:
-        page_image = page_image_data_uri(book, chapter, enable_body and send_page)
+    # 决策 36：主模型只收文本——PDF 页模式优先注入 [P-1,P,P+1] 窗口页缓存文本
+    # （视觉模型已提取并缓存，命中不重复调用）；未配置视觉/提取失败时不再回退直发页图。
+    if page_mode and enable_body and vision_configured(db):
+        try:
+            window = ensure_window_caches(db, book, chapter.page_index)
+            page_context = build_page_context_block(window, enable_body)
+        except Exception:  # noqa: BLE001 提取失败仅降级为文本
+            page_context = None
     knowledge = select_knowledge(
         db, book, chapter, question, selection, mode, session_id
     )
@@ -157,6 +160,29 @@ def prepare_chat_job(
     history = None
     if enable_body:
         history = recent_history_texts(db, book.id, mode)
+    # 决策 36：附件统一走视觉模型提取文本——划线裁剪图 / Markdown 插图（send_page 开启时）
+    crop_text = None
+    if enable_body and send_page and crop_image:
+        try:
+            crop_text = extract_image_attachment(
+                db, crop_image, hint="用户划线的区域截图，请完整转录其中的文字与公式"
+            )
+        except Exception:  # noqa: BLE001 提取失败降级纯文本
+            crop_text = None
+    media_texts = None
+    if enable_body and send_page and not page_mode and book.format in ("md", "txt", "epub"):
+        try:
+            uris = markdown_image_data_uris(book, chapter.content_text or "")
+            media_texts = [
+                t
+                for t in (
+                    extract_image_attachment(db, u, hint="正文插图，请完整描述其中的内容") for u in uris
+                )
+                if t
+            ] or None
+        except Exception:  # noqa: BLE001 单图失败不中断
+            media_texts = None
+
     messages = build_messages(
         book,
         chapter,
@@ -165,15 +191,27 @@ def prepare_chat_job(
         rag_block,
         skills,
         enable_body,
-        page_image,
-        crop_image if (enable_body and crop_image) else None,
+        crop_text,
         crop_label,
         page_context,
         page_mode,
         mode,
         history,
         profiles,
+        media_texts=media_texts,
     )
+    # 发送前断言（审查 2-3）：隐私开启时正文不得携带「未发送」占位文案，占位符泄漏直接拦截
+    if enable_body:
+        user_content = messages[-1].get("content")
+        leaked = isinstance(user_content, str) and "（正文未发送" in user_content
+        if isinstance(user_content, list):
+            leaked = leaked or any(
+                isinstance(part, dict) and part.get("type") == "text"
+                and "（正文未发送" in str(part.get("text", ""))
+                for part in user_content
+            )
+        if leaked:
+            raise RuntimeError("内部错误：正文占位符泄漏到 AI 请求，已拦截发送")
     return {
         "client": build_client(db),
         "messages": messages,
@@ -186,6 +224,82 @@ def prepare_chat_job(
             "stream_key": stream_key,
         },
     }
+
+
+def build_global_messages(
+    question: str,
+    rag_block: str,
+    skills: list[dict],
+    enable_body_send: bool,
+    history: list[dict] | None = None,
+    profiles: dict | None = None,
+) -> list[dict]:
+    """主页全局 AI 对话 messages（决策 37）：画像 + 跨书片段 + 全局 Skill，无书籍/章节上下文。
+
+    - system：全局助手角色（技能列表 + 三层画像，复用 build_system_prompt）；
+    - 隐私开启时把跨书检索片段块附加在问题后（出处【《书名》第X章 第Y段】）；
+    - history：global 会话最近轮次（10 轮 / 8k 字符预算）。
+    """
+    messages: list[dict] = [
+        {"role": "system", "content": build_system_prompt(skills, page_mode=False, mode=None, profiles=profiles)}
+    ]
+    if history:
+        messages.extend(history)
+    user = question
+    if enable_body_send and rag_block:
+        user = f"{question}\n\n【知识库检索片段（跨书，出处已标注，引用时保留原出处）】\n{rag_block}"
+    messages.append({"role": "user", "content": user})
+    return messages
+
+
+def prepare_global_job(
+    db: Session,
+    question: str,
+    session_id: str | None = None,
+    stream_key: str | None = None,
+) -> dict:
+    """组装主页全局 AI 对话任务（决策 37）：不绑定书籍/章节。
+
+    - 注入：冷/暖画像 + 全局 Skill（load_all_skills 按任务相关性 top8）+ 跨书 RAG
+      （select_global_knowledge：LLM 全库挑选 → 规则降级，会话缓存 `global:{session_id}`）；
+    - 隐私开关（ai_enable_body_send）关闭时仅注入 Skill，不注入 chunks 与画像（同决策 34）；
+    - 历史：global 会话最近 10 轮 / 8k 字符预算。
+    """
+    overrides = load_ai_overrides(db)
+    enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
+    profiles = get_all_profiles(db) if enable_body else None
+    knowledge = select_global_knowledge(db, question, session_id)
+    rag_chunks = knowledge["chunks"] if enable_body else []
+    skills = knowledge["skills"]
+    rag_block = _cross_book_rag_block(rag_chunks) if rag_chunks else ""
+    history = None
+    gsid = global_session_id(session_id) if session_id else None
+    if enable_body and gsid:
+        history = recent_history_texts(db, None, session_id=gsid)
+    messages = build_global_messages(question, rag_block, skills, enable_body, history, profiles)
+    return {
+        "client": build_client(db),
+        "messages": messages,
+        "persist": {
+            "book_id": None,
+            "chapter_id": None,
+            "selection": "",
+            "question": question,
+            "mode": None,
+            "stream_key": stream_key,
+            "session_id": gsid,
+        },
+    }
+
+
+def list_global_history(db: Session, session_id: str) -> list:
+    """主页全局 AI 对话历史（决策 37，按 `global:{session_id}` 读取）。"""
+    return list_messages(db, None, session_id=global_session_id(session_id))
+
+
+def clear_global_history(db: Session, session_id: str) -> None:
+    """清空主页全局 AI 对话历史（决策 37）。"""
+    clear_messages(db, None, session_id=global_session_id(session_id))
 
 
 CACHEABLE_MODES = ("解读", "概论", "思考逻辑")
@@ -233,6 +347,37 @@ STREAM_PERSIST_INTERVAL_S = 1.5  # 方案2：流式中滚动落库节流（前�
 def sse_event(event: dict) -> str:
     """SSE data 事件行（chat 路由与流式生成器共用）。"""
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def replay_cached_chat(
+    db: Session,
+    book,
+    chapter,
+    question: str,
+    selection: str,
+    mode: str | None,
+    cache_key_val: str | None,
+) -> str | None:
+    """预设模式缓存回放（审查 P0-4）：命中时清洗答案、落库历史并返回 SSE end 事件；未命中返回 None。
+
+    路由只负责把事件包成 StreamingResponse；持久化与清洗编排收敛在本层。
+    """
+    if cache_key_val is None:
+        return None
+    hit = mode_cache_hit(db, book.id, mode or "", cache_key_val)
+    if hit is None:
+        return None
+    answer = _sanitize_answer(hit.get("answer") or "")
+    try:
+        persist_chat(db, book.id, chapter.id, selection or "", question, answer, mode)
+    except Exception:  # noqa: BLE001 历史落库失败不影响回放
+        pass
+    return sse_event({
+        "type": "end",
+        "text": answer,
+        "citations": hit.get("citations") or [],
+        "cached": True,
+    })
 
 
 def list_history(db: Session, book_id: int, mode: str | None = None) -> list:
@@ -287,6 +432,7 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                             mode=job["persist"].get("mode"),
                             answer=full,
                             stream_key=stream_key,
+                            session_id=job["persist"].get("session_id"),
                         )
                     finally:
                         db.close()
@@ -295,6 +441,9 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                 last_persist_at = time.monotonic()
     except LLMError as exc:
         yield sse_event({"type": "error", "message": str(exc)})
+        return
+    except Exception as exc:  # noqa: BLE001 审查 C-问题9：流中途非 LLMError 异常也发 error 事件，不再静默断流
+        yield sse_event({"type": "error", "message": f"流式输出中断: {exc}"})
         return
     yield sse_event({"type": "end", "text": full, "citations": extract_citations(full), "cached": False})
     # 历史落库使用独立会话，避免请求级会话在流式期间被关闭
@@ -310,6 +459,7 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                 mode=job["persist"].get("mode"),
                 answer=full,
                 stream_key=stream_key,
+                session_id=job["persist"].get("session_id"),
             )
             if cache:
                 set_llm_cache(db, cache["book_id"], cache["kind"], cache["key"], {

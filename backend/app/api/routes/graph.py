@@ -4,24 +4,21 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
-from app.core.database import SessionLocal, get_db
-from app.models.book import Book
+from app.core.database import get_db
 from app.models.graph import BookRelation
+from app.repositories.graph import count_books, count_relations
 from app.schemas.common import ok
-from app.services.graph.cross_book import (
-    compute_cross_book_graph,
-    global_graph_payload,
-    rebuild_all_graph,
-)
+from app.services.graph.cross_book import global_graph_payload
 from app.services.graph.cross_book import knowledge_appears_in as cross_book_knowledge_appears_in
-from app.services.graph.intra_book import build_intra_book_graph, intra_graph_payload
-from app.services.graph_sync import (
-    link_domain_terms,
-    link_graph_assets,
-    link_relation_stubs,
-    sync_assets_for_relations,
+from app.services.graph.intra_book import intra_graph_payload
+from app.services.graph.tasks import (
+    build_intra_task,
+    lazy_global_build,
+    rebuild_graph_task,
+    sync_assets_task,
 )
-from app.tasks import find_active, submit, update_progress
+from app.services.graph_sync import apply_relation_feedback
+from app.tasks import find_active, submit
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -29,35 +26,6 @@ router = APIRouter(prefix="/api/graph", tags=["graph"])
 class FeedbackIn(BaseModel):
     action: str  # 确认 / 忽略 / 修改
     strength: float | None = None  # 修改时传入 0~100
-
-
-def _lazy_global_build() -> dict:
-    """懒构建后台任务：跨书关联计算（含 LLM 打分）+ 本地联动存根，独立会话执行。"""
-    with SessionLocal() as session:
-        update_progress(20, "计算跨书关联")
-        compute_cross_book_graph(session)
-        update_progress(80, "补本地联动存根")
-        link_graph_assets(session)
-        update_progress(100, "图谱构建完成")
-    return {"built": True}
-
-
-def _build_intra_task(book_id: int) -> dict:
-    """单书知识图谱构建后台任务：独立会话；书不存在返回错误而非 HTTP 异常。"""
-    with SessionLocal() as session:
-        book = session.get(Book, book_id)
-        if not book:
-            return {"error": "书籍不存在"}
-        update_progress(10, "构建书内知识图谱")
-        result = build_intra_book_graph(session, book)
-        update_progress(100, "构建完成")
-        return result
-
-
-def _rebuild_graph_task() -> dict:
-    """全量重建后台任务：书内图 20% / 跨书 50% / 联动 30% 进度权重（决策 35）。"""
-    with SessionLocal() as session:
-        return rebuild_all_graph(session, on_progress=lambda p, s: update_progress(p, s))
 
 
 def _submit_graph_task(task_type: str, name: str, fn, related_id: int | None = None) -> str:
@@ -76,8 +44,8 @@ def get_global_graph(db: Session = Depends(get_db)):
     {building: true, task_id}，前端轮询任务完成后重新拉取。
     """
 
-    if db.query(BookRelation).count() == 0 and db.query(Book).count() > 0:
-        task_id = _submit_graph_task("text", "graph-global-build", _lazy_global_build)
+    if count_relations(db) == 0 and count_books(db) > 0:
+        task_id = _submit_graph_task("text", "graph-global-build", lazy_global_build)
         return ok({"building": True, "task_id": task_id}, "图谱构建中，稍后自动刷新")
     return ok(global_graph_payload(db))
 
@@ -87,7 +55,7 @@ def get_intra_book_graph(book_id: int, db: Session = Depends(get_db)):
     """书内知识图谱：章节级/重要段落级/用户标记级知识点与关系（懒构建，后台化）。"""
     book = require_book(db, book_id)
     if not book.graph_built:
-        task_id = _submit_graph_task("text", "graph-intra-build", lambda: _build_intra_task(book_id), related_id=book_id)
+        task_id = _submit_graph_task("text", "graph-intra-build", lambda: build_intra_task(book_id), related_id=book_id)
         return ok({"building": True, "task_id": task_id}, "书内图谱构建中，稍后自动刷新")
     return ok(intra_graph_payload(db, book))
 
@@ -95,7 +63,7 @@ def get_intra_book_graph(book_id: int, db: Session = Depends(get_db)):
 @router.post("/rebuild")
 def rebuild_graph(db: Session = Depends(get_db)):
     """重建全部图谱（跨书关联 + 全部书内知识图谱），并补本地联动存根（后台任务）。"""
-    task_id = _submit_graph_task("text", "graph-rebuild", _rebuild_graph_task)
+    task_id = _submit_graph_task("text", "graph-rebuild", rebuild_graph_task)
     return ok({"task_id": task_id}, "已提交图谱重建任务")
 
 
@@ -107,17 +75,6 @@ def knowledge_appears_in(kp_id: int, db: Session = Depends(get_db)):
     if not data:
         raise HTTPException(status_code=404, detail="知识点不存在")
     return ok(data)
-
-
-def _sync_assets_task() -> dict:
-    """图谱资产联动后台任务：本地存根 + LLM 增量增改，独立会话执行。"""
-    with SessionLocal() as session:
-        update_progress(20, "补本地联动存根")
-        merged = sync_assets_for_relations(session)
-        update_progress(70, "RAG 术语补水")
-        terms = link_domain_terms(session)
-        update_progress(100, "联动完成")
-        return {**merged, "domain_terms": terms}
 
 
 @router.post("/sync")
@@ -132,7 +89,7 @@ def sync_graph_assets(db: Session = Depends(get_db)):
     task_id = _submit_graph_task(
         "text",
         "graph-sync",
-        lambda: _sync_assets_task(),
+        lambda: sync_assets_task(),
     )
     return ok({"task_id": task_id}, "已提交图谱资产联动任务")
 
@@ -141,7 +98,7 @@ def sync_graph_assets(db: Session = Depends(get_db)):
 def rebuild_book_graph(book_id: int, db: Session = Depends(get_db)):
     """重建单书内部知识图谱（后台任务）。"""
     require_book(db, book_id)
-    task_id = _submit_graph_task("text", "graph-book-rebuild", lambda: _build_intra_task(book_id), related_id=book_id)
+    task_id = _submit_graph_task("text", "graph-book-rebuild", lambda: build_intra_task(book_id), related_id=book_id)
     return ok({"task_id": task_id}, "已提交本书知识图谱重建任务")
 
 
@@ -151,22 +108,8 @@ def relation_feedback(relation_id: int, body: FeedbackIn, db: Session = Depends(
     rel = db.get(BookRelation, relation_id)
     if not rel:
         raise HTTPException(status_code=404, detail="关联不存在")
-    if body.action == "确认":
-        rel.user_feedback = "确认"
-    elif body.action == "忽略":
-        rel.user_feedback = "忽略"
-    elif body.action == "修改":
-        if body.strength is None:
-            raise HTTPException(status_code=400, detail="修改强度需传入 strength")
-        rel.user_feedback = "修改"
-        rel.strength = max(0.0, min(100.0, float(body.strength)))
-    else:
-        raise HTTPException(status_code=400, detail="action 仅支持 确认/忽略/修改")
-    db.commit()
-    if body.action in ("确认", "修改"):
-
-        try:
-            link_relation_stubs(db, rel)
-        except Exception:
-            db.rollback()
+    try:
+        apply_relation_feedback(db, rel, body.action, body.strength)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({"id": rel.id, "user_feedback": rel.user_feedback, "strength": rel.strength})

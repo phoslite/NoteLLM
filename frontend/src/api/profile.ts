@@ -11,6 +11,14 @@ export function resetProfile() {
   return post<null>('/profile/reset')
 }
 
+/** 手动编辑冷画像（方案 A：仅冷画像可编辑）。 */
+export function saveColdProfile(payload: {
+  domain_preferences?: Record<string, number>
+  long_term_interests?: string[]
+}) {
+  return patch<ProfileData['cold']>('/profile/cold', payload)
+}
+
 /** 读取阅读建议（习惯统计 / 薄弱概念 / 复习提醒 / 阅读节奏）。 */
 export function getRecommendations() {
   return get<RecommendationsData>('/profile/recommendations')

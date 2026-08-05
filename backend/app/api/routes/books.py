@@ -1,14 +1,10 @@
 """书籍 CRUD 与导入。"""
 
-import hashlib
-import uuid
-
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.repositories import books as repo
 from app.repositories.reading import book_reading_summary, books_reading_summary
@@ -17,9 +13,9 @@ from app.schemas.serializers import book_to_dict, chapter_to_dict
 from app.services.book_pages import get_or_render_page
 from app.services.books_service import clean_tags
 from app.services.books_service import delete_book as delete_book_service
-from app.services.import_service import import_book_file  # 两段式导入（分块流式写盘 + 后台处理）
-from app.services.media_service import book_cover_file
+from app.services.media_service import PLACEHOLDER_SVG, book_cover_file, resolve_book_media
 from app.services.search_service import search_books as search_books_service
+from app.services.upload_service import import_uploaded_book, stream_upload_to_temp
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -71,27 +67,13 @@ async def upload_book(
     耗时处理（PDF 页渲染/全文索引/跨书图谱增量/视觉预提取）在 import-background
     任务中执行，前端任务中心展示进度；任务失败不阻塞书籍上架。
     """
-    upload_dir = settings.data_dir / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    tmp = upload_dir / f"{uuid.uuid4().hex}.upload"
-    hasher = hashlib.sha256()
     try:
-        with open(tmp, "wb") as out:
-            while chunk := await file.read(1024 * 1024):
-                hasher.update(chunk)
-                out.write(chunk)
-        book, task_id = import_book_file(
-            db,
-            tmp,
-            file.filename or "untitled",
-            title=title,
-            author=author,
-            content_hash=hasher.hexdigest(),
+        tmp, content_hash = await stream_upload_to_temp(file)
+        book, task_id = import_uploaded_book(
+            db, tmp, file.filename or "untitled", title=title, author=author, content_hash=content_hash
         )
     except ValueError as exc:
         return fail(400, str(exc))
-    finally:
-        tmp.unlink(missing_ok=True)  # 已 move 进书籍目录则自动忽略
     return ok({**_book_out(db, book), "task_id": task_id}, "已提交导入任务")
 
 
@@ -102,6 +84,17 @@ def search_books_api(q: str = "", limit: int = 30, db: Session = Depends(get_db)
     if not keyword:
         return ok([])
     return ok(search_books_service(db, keyword, min(limit, 100)))
+
+
+@router.get("/assets")
+def books_assets_brief(db: Session = Depends(get_db)):
+    """审查 A-6：批量返回全部书籍资产摘要（资产页列表用，消除逐书请求 N+1）。
+
+    注意：必须定义在 /books/{book_id} 之前，否则会被 int 参数路由截获。
+    """
+    from app.repositories.assets import list_asset_briefs
+
+    return ok(list_asset_briefs(db))
 
 
 @router.get("/{book_id}")
@@ -162,3 +155,16 @@ def get_book_page(book_id: int, page_index: int, db: Session = Depends(get_db)):
     if not path:
         raise HTTPException(status_code=404, detail="页面图片不存在")
     return FileResponse(path, headers={"Cache-Control": "private, max-age=600"})
+
+
+@router.get("/{book_id}/media/{filename}")
+def get_book_media(book_id: int, filename: str, db: Session = Depends(get_db)):
+    """Markdown 内嵌本地图片（决策 31）：白名单扩展名 + 防越越；缺失返回占位 SVG。"""
+    book = repo.get_book(db, book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+    path = resolve_book_media(book, filename)
+    if not path:
+        return Response(content=PLACEHOLDER_SVG, media_type="image/svg+xml")
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+

@@ -35,13 +35,13 @@ def _sync_tasks(monkeypatch):
     统一替换为 tasks.submit_sync（同一套落库/配额/进度逻辑），
     保证任务立即可见且不污染后续测试。
     """
-    # 注：books.py 不直接引用 submit（两段式经 import_service 提交），无需 patch。
+    # 注：books.py 不直接引用 submit（两段式经 import_service 提交），无需 patch；
+    # settings 路由的连接测试经 settings_service.submit 提交（审查 P0-3 下沉后）。
     from app.api.routes import graph as graph_route
-    from app.api.routes import settings as settings_route
-    from app.services import import_service
+    from app.services import import_service, settings_service
     from app.tasks import submit_sync
 
-    for _mod in (graph_route, settings_route, import_service):
+    for _mod in (graph_route, settings_service, import_service):
         monkeypatch.setattr(_mod, "submit", submit_sync)
 
 

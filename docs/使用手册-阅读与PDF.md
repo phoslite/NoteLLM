@@ -218,6 +218,11 @@
 3. 书架卡片三段式（已阅读 x/y 章 / 最新章节 / 进度条），百分比 = x/y×100。
 4. 回归：`pytest`（17 项）+ `pnpm build` + 阅读页冒烟。
 
+### 3.13 路由瘦身服务（审查 D 组，2026-08-05）
+
+- `backend/app/services/reading_service.py`：`save_book_progress(db, book_id, chapter_id, ...)`——进度保存编排（章节不存在抛 `LookupError`，路由映射 404；原 reading 路由内联逻辑下沉）。
+- `backend/app/services/annotation_service.py`：`read_page_annotations(book, page_index)` / `save_page_annotations(book, page_index, elements)`（元素上限 `MAX_ELEMENTS=2000`）——页批注（划线/涂鸦/文本）读写收敛；`annotations_path(book, page_index)` 定位批注 JSON 文件。修改：文件格式/上限调整在此层，annotations 路由只做参数校验与序列化。
+
 ## 5. PDF 封面 / 扫描版按页阅读 / LLM 页图附件（M4 补充）
 
 > 需求 v1.9 起已改为「**PDF 统一按页处理（含文本型）**」：文本型 PDF 不再直接抽取正文（数学符号会乱码），统一按页切章、原图阅读、多模态视觉提取（见需求 3.2/3.4.11）。本节描述当前代码实现（扫描版识别 + 按页读图），待统一处理实现后更新。
@@ -306,7 +311,7 @@
 
 - **链路**：PDF 页图（含文本型，文本抽取数学符号会乱码）→ 多模态 LLM 逐页提取完整页面信息（Markdown 文本，含公式/表格/图注描述）→ 缓存 `data/books/<书目录>/page_text/page_XXX.md` → 文本大模型基于缓存解读（引用出处「第 X 页」）。
 - **触发时机**：手动导入 PDF（含文本型）作为知识库时**批量预提取**；阅读时不预提取，**用户在当前页对 AI 提问**时按需提取（窗口 `[P-1,P,P+1]`，第 1 页/末页裁剪，仅补缺失页，需求 9.1 决策 22）。
-- **缓存命中**：`page_XXX.md` 存在且非空即命中，不再调用多模态 API；缓存缺失回退「当前页原图附件」或提示先提取。
+- **缓存命中**：`page_XXX.md` 存在且非空即命中，不再调用多模态 API；缓存缺失且未配置多模态提取时仅**纯文本降级**（章节文本 / 提示先触发提取），**不再回退直发页图附件**（决策 36）。
 - **预期落点**：后端 `app/ai/vision_client.py` + 任务模块提取任务 + 页图相关 API（提取/重建/读取页缓存）；前端设置页多模态配置（base_url/api_key/model 独立）与阅读页「提取本页 / 重建本书页缓存」入口。
 - **依赖与约束**：多模态 API **独立配置**（`vision_base_url / vision_api_key / vision_model`，无需额度管理，需求 9.1 决策 23）；受「发送书籍内容至模型」隐私开关约束（关闭不提取、不发送）；随书删除清理页缓存。
 
@@ -324,8 +329,8 @@
   - 前端：`PageDoodleCanvas.vue`（canvas 叠加层，坐标 0~1 归一化；笔刷/高亮/橡皮/文本，颜色/线宽可调；`undoStack` 上限 5 会话内撤销；橡皮命中擦除笔画/文本；划线点击弹出「💬 批注 / 🤖 就此划线提问」）；`DoodleToolbar.vue` 工具栏；ReaderView `pageMode` 下集成，切页自动保存上一页并加载当前页。
   - 存储格式：元素数组——`stroke`（tool/color/line_width/points[[x,y],...]/可选 `note`+`note_meta`）、`text`（text/color/font_size/x/y）；仅保存最终元素，不持久化历史版本。
   - **划线批注**：选中划线 → 弹窗编辑 `note`（Markdown/LaTeX），随元素保存。
-  - **划线区域提问**：选中划线 → 按归一化 bbox 裁剪原图页（`cropDataUrl`，JPEG data URI）→ 复用 `POST /api/books/{id}/chat` 的 `crop_image`/`crop_label` 字段（受隐私开关约束）→ 流式回答进入 AI 面板。
-- **chat 扩展**：`ChatIn` 新增 `crop_image`（划线区域裁剪图）与 `crop_label`（区域说明）；`chat_service.build_messages` 支持整页图 + 划线图多图片消息（chat 模式）。
+  - **划线区域提问**：选中划线 → 按归一化 bbox 裁剪原图页（`cropDataUrl`，JPEG data URI）→ 复用 `POST /api/books/{id}/chat` 的 `crop_image`/`crop_label` 字段（受隐私开关约束）→ 后端在「发送页图」开启时经 `vision_extract.extract_image_attachment` 把裁剪图提取为文本后注入（内容寻址缓存，决策 36）→ 流式回答进入 AI 面板。
+- **chat 扩展**：`ChatIn` 新增 `crop_image`（划线区域裁剪图）与 `crop_label`（区域说明）；`chat_service.build_messages` **不再直发图片**——划线裁剪图与正文插图经视觉模型提取为文本后注入（决策 36）。
 
 
 ## 8. M6 阅读体验补全：位置书签 + PDF 页图涂鸦（第 8 轮任务产出）
@@ -363,7 +368,7 @@
 | `app/api/routes/annotations.py` | `GET /api/books/{id}/annotations?page_index=N` 读取、`PUT /api/books/{id}/annotations`（`{page_index, elements}`）整页覆盖保存；上限 `MAX_ELEMENTS=2000` |
 | `app/services/books_service.py` | `_remove_book_files` 清理 `annotations/` 目录（旧布局分支） |
 | `app/api/routes/chat.py` | `ChatIn` 新增 `crop_image`（划线区域 data URI）/ `crop_label`（区域说明）；组装 `build_messages` |
-| `app/services/chat_service.py` | `build_messages` 支持整页图 + 划线图多图片消息（chat 模式，受隐私开关约束） |
+| `app/services/chat_service.py` | `build_messages` 不再直发图片——划线裁剪图/正文插图经 `extract_image_attachment` 视觉提取为文本后注入（决策 36，受隐私开关约束） |
 
 - 存储：`data/books/<书目录>/annotations/page_XXX.json`（元素数组）；`stroke` 含 `tool/color/line_width/points/note/note_meta`，`text` 含 `text/color/font_size/x/y`；坐标 0~1 归一化。
 - 修改：如需历史版本，把「会话内撤销栈」升级为「每页版本快照列表」存储到同一 JSON 的 `history` 字段并调整 `undo`。
@@ -414,14 +419,14 @@
 | `render_pdf_pages(path, out_dir, max_width=0, quality=90)` | 渲染全部页为 `page_XXX.jpg` | 路径/目录 | 页数 |
 | `pdf_page_target_width / jpeg_width` | 目标像素宽度（原图）/ 已渲染页图宽度（低清升级判断） | — | int |
 
-**如何使用**：导入 PDF 时 `import_service.import_book` 自动渲染全部页到 `<书目录>/pages/`，并把本地抽取文本写入 `<书目录>/local_text/page_XXX.txt`；阅读页按「第 N 页」章节展示原图。
+**如何使用**：导入 PDF 时 `import_service.import_book_file` 自动渲染全部页到 `<书目录>/pages/`，并把本地抽取文本写入 `<书目录>/local_text/page_XXX.txt`；阅读页按「第 N 页」章节展示原图。
 **如何修改**：调整页图渲染质量/倍率改 `PAGE_AUTO_ZOOM_MIN/MAX` 或 `render_pdf_page` 的 `quality/zoom`；旧版文本型 PDF 书籍仍按旧行为展示，删除后重新导入即可升级为按页模式。
 
 ### 9.2 多模态视觉配置
 
 - 配置项（`.env` 或设置页，独立于文本 AI，无需额度管理）：`vision_base_url / vision_api_key / vision_model / vision_timeout / vision_verify_ssl / vision_max_tokens` + 精细参数 `vision_temperature / vision_top_p / vision_frequency_penalty / vision_presence_penalty / vision_enable_thinking / vision_thinking_budget`（`backend/app/core/config.py`）。默认模板指向 SiliconFlow：`https://api.siliconflow.cn/v1` + `Qwen/Qwen2.5-VL-72B-Instruct`（可用 `deepseek-ai/DeepSeek-OCR` 等），`vision_max_tokens=4096`。
 - **接口约束（按 SiliconFlow 文档）**：视觉客户端**强制 `mode="chat"`**（SiliconFlow 等仅支持 `POST /chat/completions`，`responses` 模式会 404）；`LLMClient` chat 分支按设置写入 `max_tokens / temperature / top_p / frequency_penalty / presence_penalty`，以及 SiliconFlow 推理模型专用的 `enable_thinking / thinking_budget`（`VISION_ENABLE_THINKING / VISION_THINKING_BUDGET`；Qwen 等非推理模型勿开）；页图 `image_url` 固定带 `"detail": "high"` 保证识别精度。
-- **请求格式（按 SiliconFlow 多模态文档 api-docs.siliconflow.cn/docs/userguide/capabilities/multimodal-vision）**：多模态模型统一走 `POST /chat/completions`，`messages[].content` 为 parts 列表（文本 + 图片部件）；图片部件 `{"type":"image_url","image_url":{"url":..., "detail":"high"}}`，`url` 支持 base64 data URI（`data:image/jpeg;base64,...`），`detail` 取 `auto/low/high`。页提取（`vision_extract._extract_page_text`）、页图附件与划线区域裁剪图（`chat_service.build_messages`，前端裁剪图由 `canvas.toDataURL('image/jpeg', 0.85)` 生成）统一该格式。
+- **请求格式（按 SiliconFlow 多模态文档 api-docs.siliconflow.cn/docs/userguide/capabilities/multimodal-vision）**：多模态模型统一走 `POST /chat/completions`，`messages[].content` 为 parts 列表（文本 + 图片部件）；图片部件 `{"type":"image_url","image_url":{"url":..., "detail":"high"}}`，`url` 支持 base64 data URI（`data:image/jpeg;base64,...`），`detail` 取 `auto/low/high`。页提取（`vision_extract._extract_page_text`）统一该格式；对话链路附件（划线裁剪图/正文插图）**不再直发图片**，在「发送页图」开启时经 `extract_image_attachment` 视觉提取为文本后注入（决策 36；前端裁剪图由 `canvas.toDataURL('image/jpeg', 0.85)` 生成）。
 - **配置优先级**：设置页保存的值（DB `settings` 表）优先于 `.env`；`.env` 仅在对应项未在设置页保存时生效。当前正式库已把原有设置页覆盖项迁移进 `backend/.env` 并清除 DB 覆盖，`.env` 为唯一配置源（改 `.env` 后需重启后端）。
 - 后端：`repositories.settings.vision_client_kwargs(db)` 返回 LLMClient 构造参数（未覆盖项取 .env，不回退到文本 AI 配置）；`vision_configured(db)` 判断是否可用；设置视图/保存/测试走 `api/routes/settings.py`（`GET/PATCH /api/settings/ai`、`POST /api/settings/ai/test-vision`）。
 - 前端：`SettingsView.vue`「多模态视觉接入（M7）」卡片（Base URL/API Key/模型/超时/校验 SSL/生成上限/温度/Top P/频率惩罚/存在惩罚/思考模式开关/思维链上限 + 测试视觉连接）；`types.ts` `AiSettings` 扩展 `vision_*` 字段（含精细参数）。
@@ -433,6 +438,7 @@
 | `page_text_path(book, page_index)` | 页缓存文件路径 `<书目录>/page_text/page_XXX.md` | 调整目录名改 `PAGE_TEXT_DIR` |
 | `read_page_cache(book, page_index)` | 读缓存；缺失/空返回 None | 缓存命中判定唯一入口 |
 | `ensure_page_cache(db, book, page_index, force=False)` | 单页提取：命中（非空且非 force）直接返回，否则调用多模态 LLM 提取并落盘；隐私开关关闭抛 ValueError | 修改提取提示词改 `EXTRACT_SYSTEM`；切换视觉模型改配置 |
+| `extract_image_attachment(db, image_uri, hint="")` | 附件（划线裁剪图/正文插图）视觉提取为文本：命中内容寻址缓存 `data/cache/attachment_text/`（sha256 前 32 位）直接返回；未配置视觉模型（`vision_configured`）或提取空/异常返回 None 且不落盘 | 缓存目录改 `ATTACHMENT_TEXT_DIR`；提取提示词改 `ATTACHMENT_SYSTEM`（LaTeX 硬性规则）；触发开关=`ai_send_page_image`（决策 36） |
 | `ensure_window_caches(db, book, page_index, force=False)` | `[P-1,P,P+1]`（首/末页裁剪）增量缓存，返回 {页号: 文本} | 窗口大小改 `start/end` 计算 |
 | `rebuild_book_caches(db, book, force=False, progress=None)` | 全书重建/补齐；返回 {total, extracted, cached, failed, errors} | 单页失败不中断 |
 | `extract_book_pages_task(book_id, force=False)` | 后台任务入口（独立会话） | 供导入预提取与重建路由调用；**M9 读完归档全书提取将复用该入口**（归档时先全书补齐页缓存，再以缓存全文调 `generate_rag_skill` 总结） |

@@ -225,9 +225,12 @@ export function labelRichFormatter(
   raw: string,
   fontSize = LABEL_FONT_SIZE,
   maxChars = MAX_TEXT_CHARS,
-): { formatter: string; rich: Record<string, unknown> } {
+): {
+  formatter: string
+  rich: Record<string, { backgroundColor: { image: string }; width: number; height: number }>
+} {
   const segs = splitLabelSegments(raw, fontSize)
-  const rich: Record<string, unknown> = {}
+  const rich: Record<string, { backgroundColor: { image: string }; width: number; height: number }> = {}
   const parts: string[] = []
   let imgIdx = 0
   let textBuf = ''

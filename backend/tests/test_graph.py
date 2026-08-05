@@ -234,6 +234,30 @@ def test_auto_cluster_domain_is_professional_term(client):
     assert result[b] in {"概率", "率论", "数理", "统计"}
 
 
+def test_assign_clusters_persist_false_readonly(client):
+    """审查问题 7：assign_clusters(persist=False) 只读链路不写库。"""
+    from app.core.database import SessionLocal
+    from app.models.book import Book
+    from app.services.graph import assign_clusters
+
+    a = _import_md(client, "只读聚类书.md", "# 第一章 概率论\n\n概率与随机变量内容。\n")
+    db = SessionLocal()
+    try:
+        book = db.get(Book, a)
+        book.classify_source = None
+        book.cluster_name = None
+        db.commit()
+        result = assign_clusters(db, persist=False)
+        db.refresh(book)
+        assert result.get(a)
+        assert book.classify_source is None  # 只读不落盘
+        assign_clusters(db)  # 默认 persist=True 才写库
+        db.refresh(book)
+        assert book.classify_source in ("tag", "folder", "pre", "post")
+    finally:
+        db.close()
+
+
 def _write_lexicon(path, user_lines=(), cached_lines=()):
     """写入专业术语词库（用户区 + 系统缓存区），并让 graph_service 指向该文件。"""
     from app.services.graph import lexicon as graph_service
@@ -346,5 +370,20 @@ def test_cache_domain_term_appends_dedup_and_skips_generic(tmp_path):
         assert graph_service.cache_domain_term("测度论") is True
         content = missing.read_text(encoding="utf-8")
         assert "测度论" in content
+    finally:
+        _restore_lexicon(original)
+
+def test_cache_domain_term_atomic_write_no_tmp_residue(tmp_path):
+    """审查 C-问题8：词库写入走临时文件原子替换，不残留 .tmp。"""
+    from app.services.graph import lexicon as graph_service
+
+    path = tmp_path / "lexicon_atomic.txt"
+    original = _write_lexicon(path, user_lines=[], cached_lines=[])
+    try:
+        assert graph_service.cache_domain_term("测度论") is True
+        text = path.read_text(encoding="utf-8")
+        assert "测度论" in text
+        leftover = list(tmp_path.glob("*.tmp"))
+        assert leftover == [], "原子替换不应残留 .tmp 临时文件"
     finally:
         _restore_lexicon(original)
