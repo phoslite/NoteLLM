@@ -15,6 +15,7 @@
   python demo/clustering_demo.py --no-fuse  # 跳过 LLM 降分演示
 """
 import argparse
+import json
 import math
 from collections import Counter, defaultdict
 
@@ -82,6 +83,82 @@ def greedy_clusters() -> list[list[int]]:
     return groups
 
 
+# ---------------------------------------------------------------- 同义词归一化（改进方案 §2.1 术语层，demo 验证）
+# 与 backend/domain_terms.txt 用户区预置的规范词一致；正式版解析上线前仅 demo 使用。
+SYNONYM_GROUPS: list[tuple[str, list[str]]] = [
+    ("数学分析", ["微积分", "分析学"]),
+    ("实变函数", ["实变函数论"]),
+    ("复变函数", ["复分析"]),
+    ("泛函分析", ["函数分析"]),
+    ("变分法", ["变分学", "变分"]),
+    ("测度论", ["测度与积分"]),
+    ("勒贝格积分", ["勒贝格测度"]),
+    ("概率论", ["概率"]),
+    ("数理统计", ["统计推断"]),
+    ("线性代数", ["高等代数", "矩阵论"]),
+    ("抽象代数", ["近世代数"]),
+    ("拓扑学", ["点集拓扑"]),
+    ("微分几何", ["黎曼几何"]),
+    ("微分流形", ["流形"]),
+    ("常微分方程", ["ode"]),
+    ("偏微分方程", ["pde", "数学物理方程"]),
+    ("数值分析", ["计算方法", "数值方法"]),
+    ("最优化", ["优化理论", "数学规划"]),
+    ("数论", ["初等数论"]),
+    ("组合数学", ["组合学"]),
+    ("傅里叶分析", ["傅里叶变换", "傅氏变换", "fourier transform"]),
+    ("统计物理", ["统计力学"]),
+    ("电动力学", ["电磁场理论"]),
+    ("计算机视觉", ["机器视觉"]),
+    ("自然语言处理", ["nlp"]),
+    ("机器学习", ["统计学习"]),
+    ("神经网络", ["人工神经网络", "ann"]),
+    ("数据结构", ["数据结构与算法"]),
+    ("操作系统", ["os"]),
+    ("数据库", ["数据库系统", "数据库原理"]),
+    ("编译原理", ["编译技术", "编译器设计"]),
+    ("分布式系统", ["分布式计算"]),
+    ("金融数学", ["数理金融"]),
+    ("计量经济学", ["经济计量学"]),
+    ("经济学", ["经济理论"]),
+    ("微观经济学", ["价格理论"]),
+    ("宏观经济学", ["总体经济学"]),
+    ("密码学", ["密码编码学"]),
+    ("因果推断", ["因果分析"]),
+    ("固定收益", ["固定收益证券", "固收"]),
+    ("资产定价", ["定价理论"]),
+]
+_ALIAS_TO_CANONICAL = {a: c for c, aliases in SYNONYM_GROUPS for a in aliases}
+
+
+def canonical_terms(term_freq: dict) -> dict:
+    """同义词归一化（§2.1 归一注入点，demo 模拟版）：
+    1. 别名整词折叠到规范词（频数求和），如「变分」→「变分法」；
+    2. 长词优先——仅当规范词/别名**整词出现在关键词表**（模拟词库术语命中文本）时，
+       其内部子串 token 权重 ×0.3（如「傅里叶变换」命中时「傅里」「里叶」不再独立计分），
+       避免误伤未出现长词时独立存在的短术语（如「拓扑」「概率」）。"""
+    out: dict[str, float] = {}
+    appeared: set[str] = set()  # 关键词表中整词出现的规范词/别名（长词命中信号）
+    for t in term_freq:
+        low = t.lower()
+        if low in _ALIAS_TO_CANONICAL:
+            appeared.add(_ALIAS_TO_CANONICAL[low])
+        else:
+            for c, aliases in SYNONYM_GROUPS:
+                if c == low or any(a == low for a in aliases):
+                    appeared.add(c)
+                    break
+    for t, v in term_freq.items():
+        low = t.lower()
+        if low in _ALIAS_TO_CANONICAL:
+            c = _ALIAS_TO_CANONICAL[low]
+            out[c] = out.get(c, 0.0) + v
+            continue
+        suppressed = any(c in t for c in appeared)  # 长词内部子串 → 抑制
+        out[t] = v * 0.3 if suppressed else v
+    return out
+
+
 # B. 改进：IDF 加权余弦 + tau_cluster 建边 + 连通分量
 def idf_cosine() -> list[list[float]]:
     idf = _idf()
@@ -147,7 +224,15 @@ def label_propagation(sim: list[list[float]], tau: float = 0.10,
 
 
 # ---------------------------------------------------------------- 命名（简化版 §2.4）
-_GENERIC = {"函数", "分析", "空间", "线性", "连续"}  # 泛化词，命名时剔除
+# 泛化词表对齐正式版 lexicon._GENERIC_DOMAIN_TERMS 核心词（真实库 D1：定理/动机/演化等
+# 学术元词高 df 会把多数书误吸进一簇；命名与 IDF 抑制共用同一概念）。
+_GENERIC = {
+    "函数", "分析", "空间", "线性", "连续", "定理", "定义", "证明", "引理", "推论",
+    "方法", "理论", "概念", "性质", "结论", "例子", "公式", "假设", "条件",
+    "问题", "结果", "意义", "作用", "方式", "过程", "方面", "部分", "情况",
+    "笔记", "习题", "答案", "详解", "教程", "讲义", "目录", "前言", "附录",
+    "动机", "演化", "核心", "工具", "本质", "体系",
+}  # 命名时剔除
 
 
 def cluster_name(members: list[int]) -> str:
@@ -186,15 +271,36 @@ def llm_fuse_demo() -> None:
 
 
 # ---------------------------------------------------------------- main
+def _load_input(path: str | None) -> tuple[int, str]:
+    """加载语料：默认内置示例库；--input 为 JSON [{title, keywords}]（真实库导出见 export_real_corpus.py）。"""
+    global BOOKS, TITLES, KEYWORDS, N
+    if not path:
+        return N, "内置示例库（复现 D1：函数/分析/空间高 df 泛化词误吸）"
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        data = data.get("books") or []
+    rows = [(b["title"], dict(b.get("keywords") or {})) for b in data if b.get("title")]
+    BOOKS, TITLES, KEYWORDS = rows, [t for t, _ in rows], [kw for _, kw in rows]
+    N = len(BOOKS)
+    return N, f"实际语料 {path}（{N} 本）"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="聚类改进方案验证 demo")
     parser.add_argument("--algo", choices=["all", "greedy", "cc", "lpa"], default="all")
     parser.add_argument("--tau", type=float, default=0.10, help="聚类图边门槛（默认 0.10）")
+    parser.add_argument("--input", default=None, help="实际语料 JSON [{title, keywords}]")
+    parser.add_argument("--no-synonyms", action="store_true", help="关闭同义词归一化（对照）")
     parser.add_argument("--no-fuse", action="store_true", help="跳过 LLM 降分演示")
     args = parser.parse_args()
 
+    count, desc = _load_input(args.input)
+    global KEYWORDS
+    if not args.no_synonyms:
+        KEYWORDS = [canonical_terms(kw) for kw in KEYWORDS]
     sim = idf_cosine()
-    print(f"示例库 {N} 本书，高 df 泛化词：函数/分析/空间（复现 D1 误吸场景）")
+    print(f"语料 {count} 本（{desc}）；同义词归一化={'开' if not args.no_synonyms else '关'}")
     if args.algo in ("all", "greedy"):
         show(greedy_clusters(), "A 现行：min 伪余弦 + 贪心吸收")
     if args.algo in ("all", "cc"):
