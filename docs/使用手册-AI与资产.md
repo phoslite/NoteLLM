@@ -146,7 +146,7 @@ python demo/chat_demo.py                                          # 交互式多
 | `page_chunks(page_texts)` | PDF 页缓存 → RAG 片段列表（`chapter_index`=页号、`para_pos`=页），供 PDF 归档资产使用；片段粒度/页标题格式在此调整 |
 | `_build_page_input(page_texts)` | PDF 页缓存 → LLM 输入正文（隐私开关关闭仅页标题；超 `SEND_BUDGET` 截断）；页文本拼接格式在此调整 |
 | `generate_rag_skill(db, book_id, *, page_texts=None)` | 总结并落库，返回 `{book_id, version, rag, skill}`；未配置 `AI_API_KEY` 或 AI 返回非 JSON 时报错并透出。`page_texts` 传 PDF 页缓存时以页文本为正文与 RAG 片段（出处「第 X 页」）；成功后触发 `post_classify_book`；页输入分支看 `page_chunks`/`_build_page_input` |
-| `archive_book_task(book_id)` | **M9 读完归档后台任务**：PDF 先 `rebuild_book_caches` 视觉通读全书补齐页缓存（命中不重复调用），再以缓存全文总结 RAG/Skill；随后 `set_all_chapters_read_flag(True)` 标记读完；归档成功后如需写入暖/冷画像在此追加 |
+| `archive_book_task(book_id)` | **M9 读完归档后台任务**：PDF **仅从未建立缓存的页视觉提取**（`rebuild_book_caches` force=False 跳过已缓存页；并发分支完成后重新 attach book 供收尾使用），再以全书缓存总结 RAG/Skill；随后 `set_all_chapters_read_flag(True)` 标记读完；成功后触发三层画像迁移与 post-classify |
 
 - 修改：切块阈值 `CHUNK_CHARS`、发送上限 `SEND_BUDGET`；模型/接口切换在 `backend/.env`；提示词调整在 `app/ai/prompts/`。
 
@@ -156,7 +156,7 @@ python demo/chat_demo.py                                          # 交互式多
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/books/{id}/summarize` | 提交总结任务，返回 `{task_id}`（后台执行） |
-| POST | `/api/books/{id}/archive` | 读完归档（M9）：PDF 先视觉通读全书并缓存 → 文本模型总结 RAG/Skill → 标记读完；返回 `{task_id}`（轮询 `/api/tasks/{task_id}`） |
+| POST | `/api/books/{id}/archive` | 读完归档（M9）：PDF 仅对未缓存页执行视觉提取（已缓存页复用，不重复调用）→ 文本模型总结 RAG/Skill → 标记读完；返回 `{task_id}`（轮询 `/api/tasks/{task_id}`） |
 | GET | `/api/tasks/{task_id}` | 轮询任务状态 `{status, result, error}` |
 | GET | `/api/books/{id}/asset` | 读取 RAG/Skill 资产（含各自 version 与更新时间） |
 | GET | `/api/books/assets` | **批量资产摘要（v1.104 审查 A-6）**：一次返回全部书籍 `{book_id: {version, has_rag, has_skill, rag_summary, merged_count}}`，资产页列表不再逐书请求；定义于 `routes/books.py`（须在 `/{book_id}` 前注册） |

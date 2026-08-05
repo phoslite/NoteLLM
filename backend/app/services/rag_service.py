@@ -57,8 +57,9 @@ def _collect_new_material(db: Session, book) -> str:
 def archive_book_task(book_id: int) -> dict:
     """M9 读完归档任务：PDF 先视觉通读全书并缓存 → 文本模型总结 RAG/Skill → 标记读完。
 
-    - PDF：隐私开启时调用 rebuild_book_caches 补全缺失页缓存（命中不重复调用），
-      再以全书页缓存为输入总结（出处「第 X 页」）；视觉未配置/全部失败时回退章节标题弱总结。
+    - PDF：**仅从未建立缓存的页开始视觉提取**（已缓存页直接复用，不重复调用多模态 API；
+      force=False 由 _cache_one 命中跳过），再以全书页缓存为输入总结（出处「第 X 页」）；
+      视觉未配置/全部失败时回退章节标题弱总结。
     - 非 PDF：直接按章节正文总结。
     - 成功后章节全部标记已读、书籍状态=读完，并触发 post-classify（两阶段分类 §9）。
     """
@@ -71,16 +72,19 @@ def archive_book_task(book_id: int) -> dict:
         page_stats: dict | None = None
         page_texts: dict[int, str] | None = None
         if book.format == "pdf" and book.page_count:
-            # 权重（决策 35）：视觉通读 60 / 文本总结 40
-            update_progress(5, "视觉通读全书")
+            # 权重（决策 35）：视觉通读 60 / 文本总结 40；只从未缓存页开始提取（已缓存页跳过）
+            update_progress(5, "补齐缺失页缓存")
 
             def _on_page_progress(done: int, total: int) -> None:
                 update_progress(5 + 55 * max(0, min(total, done)) // max(1, total), f"视觉提取 {done}/{total} 页")
 
-            page_stats = rebuild_book_caches(db, book, progress=_on_page_progress)  # 视觉通读：补全缺失页
+            page_stats = rebuild_book_caches(db, book, progress=_on_page_progress)  # force=False：跳过已缓存页
             texts = {i: read_page_cache(book, i) for i in range(1, book.page_count + 1)}
             page_texts = {k: v for k, v in texts.items() if v} or None
-            update_progress(60, "视觉通读完成")
+            update_progress(
+                60,
+                f"视觉通读完成：提取 {page_stats['extracted']} · 复用缓存 {page_stats['cached']} · 失败 {page_stats['failed']}",
+            )
         update_progress(65, "文本模型总结 RAG/Skill")
         result = generate_rag_skill(db, book_id, page_texts=page_texts)
         update_progress(95, "归档收尾")

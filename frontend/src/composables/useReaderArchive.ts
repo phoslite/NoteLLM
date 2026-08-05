@@ -24,7 +24,7 @@ export function useReaderArchive(opts: {
     if (!book.value) return
     try {
       await ElMessageBox.confirm(
-        '将整本书归档：标记读完，并总结为 RAG/Skill 资产（PDF 书籍会先用视觉模型通读全书并缓存）。继续？',
+        '将整本书归档：标记读完，并总结为 RAG/Skill 资产（PDF 书籍仅对未建立缓存的页面执行视觉提取，已缓存页直接复用）。继续？',
         '归档并总结',
         { type: 'info', confirmButtonText: '归档' },
       )

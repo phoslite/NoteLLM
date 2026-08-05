@@ -440,8 +440,8 @@
 | `ensure_page_cache(db, book, page_index, force=False)` | 单页提取：命中（非空且非 force）直接返回，否则调用多模态 LLM 提取并落盘；隐私开关关闭抛 ValueError | 修改提取提示词改 `EXTRACT_SYSTEM`；切换视觉模型改配置 |
 | `extract_image_attachment(db, image_uri, hint="")` | 附件（划线裁剪图/正文插图）视觉提取为文本：命中内容寻址缓存 `data/cache/attachment_text/`（sha256 前 32 位）直接返回；未配置视觉模型（`vision_configured`）或提取空/异常返回 None 且不落盘 | 缓存目录改 `ATTACHMENT_TEXT_DIR`；提取提示词改 `ATTACHMENT_SYSTEM`（LaTeX 硬性规则）；触发开关=`ai_send_page_image`（决策 36） |
 | `ensure_window_caches(db, book, page_index, force=False)` | `[P-1,P,P+1]`（首/末页裁剪）增量缓存，返回 {页号: 文本} | 窗口大小改 `start/end` 计算 |
-| `rebuild_book_caches(db, book, force=False, progress=None)` | 全书重建/补齐；返回 {total, extracted, cached, failed, errors} | 单页失败不中断 |
-| `extract_book_pages_task(book_id, force=False)` | 后台任务入口（独立会话） | 供导入预提取与重建路由调用；**M9 读完归档全书提取将复用该入口**（归档时先全书补齐页缓存，再以缓存全文调 `generate_rag_skill` 总结） |
+| `rebuild_book_caches(db, book, force=False, progress=None)` | 全书重建/补齐；返回 {total, extracted, cached, failed, errors} | force=False 跳过已缓存页（归档默认）；并发模式完成后重新 attach book |
+| `extract_book_pages_task(book_id, force=False)` | 后台任务入口（独立会话） | 供导入预提取与重建路由调用；**M9 读完归档只从未缓存页提取**（`archive_book_task` 内 force=False 调用，已缓存页直接复用，再以全书缓存调 `generate_rag_skill` 总结） |
 
 ### 9.4 页缓存 API（`backend/app/api/routes/vision.py`，prefix `/api/books`）
 

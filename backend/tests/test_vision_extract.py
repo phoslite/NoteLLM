@@ -6,6 +6,7 @@ import pymupdf
 import pytest
 
 from app.core.database import SessionLocal
+from app.models.book import Book
 from app.repositories import books as book_repo
 from app.services import vision_extract
 from app.services.ai_context import build_page_context_block
@@ -70,6 +71,33 @@ def test_extract_page_writes_cache_and_reuses(monkeypatch, client, tmp_path):
         # force 强制重提取
         vision_extract.ensure_page_cache(db, book, 2, force=True)
         assert len(calls) == 2
+    finally:
+        db.close()
+
+
+def test_rebuild_concurrent_reattaches_book(monkeypatch, client, tmp_path):
+    """回归：并发 rebuild_book_caches expunge 后须重新 attach，归档收尾可继续使用 book。
+
+    修复前 book 被 expunge 且未 re-attach，归档任务在 95% 归档收尾
+    set_all_chapters_read_flag 时报 not persistent within this Session。
+    """
+
+    pdf = tmp_path / "scan.pdf"
+    _make_pdf(pdf, pages=3)
+    data = _import(client, pdf, "scan.pdf")
+    monkeypatch.setattr(vision_extract, "LLMClient", FakeVision)
+    monkeypatch.setattr("app.core.config.settings.vision_concurrency", 2, raising=False)
+    db = SessionLocal()
+    try:
+        book = _book(db, data["id"])
+        stats = vision_extract.rebuild_book_caches(db, book)
+        assert stats["extracted"] == 3 and stats["cached"] == 0
+        # 修复断言：expunge 后 book 已重新 attach（identity map 同一实例）
+        assert db.get(Book, book.id) is book
+        book.status = "读完"
+        db.commit()  # 不抛 Instance not persistent
+        db.refresh(book)
+        assert book.status == "读完"
     finally:
         db.close()
 

@@ -205,29 +205,33 @@ def rebuild_book_caches(
                 progress(i, total)
         return stats
 
-    # 并发：detach book（只读已加载属性），worker 各自独立会话
+    # 并发：detach book（只读已加载属性），worker 各自独立会话；
+    # 完成后重新 attach，保证调用方（如归档任务）返回后仍可继续使用 book（修复归档 95% 跨 Session 失败）。
     db.expunge(book)
-    lock = threading.Lock()
-    done = 0
+    try:
+        lock = threading.Lock()
+        done = 0
 
-    def _worker_one(page_index: int) -> tuple[str, str | None]:
-        with SessionLocal() as session:
-            return _cache_one(session, book, page_index, force)
+        def _worker_one(page_index: int) -> tuple[str, str | None]:
+            with SessionLocal() as session:
+                return _cache_one(session, book, page_index, force)
 
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vision-cache") as pool:
-        for outcome, err in pool.map(_worker_one, range(1, total + 1)):
-            with lock:
-                if outcome == "extracted":
-                    stats["extracted"] += 1
-                elif outcome == "failed":
-                    stats["failed"] += 1
-                    if err:
-                        stats["errors"].append(err)
-                else:
-                    stats["cached"] += 1
-                done += 1
-                if progress is not None:
-                    progress(done, total)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vision-cache") as pool:
+            for outcome, err in pool.map(_worker_one, range(1, total + 1)):
+                with lock:
+                    if outcome == "extracted":
+                        stats["extracted"] += 1
+                    elif outcome == "failed":
+                        stats["failed"] += 1
+                        if err:
+                            stats["errors"].append(err)
+                    else:
+                        stats["cached"] += 1
+                    done += 1
+                    if progress is not None:
+                        progress(done, total)
+    finally:
+        db.add(book)  # 重新 attach 到调用方 Session
     return stats
 
 
