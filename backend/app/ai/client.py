@@ -139,13 +139,18 @@ class LLMClient:
             raise LLMError(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
-            if isinstance(reason, OSError) and reason.errno == 10013:
+            # Windows 下 errno 被映射为 POSIX 值（WinError 10013 → errno 13/EACCES），
+            # 真实错误码在 winerror：两者都判断，否则友好提示永远不命中（修复 2026-08-05）。
+            errno_val = getattr(reason, "errno", None)
+            winerror_val = getattr(reason, "winerror", None)
+            if winerror_val == 10013 or errno_val == 10013:
                 raise LLMError(
                     f"网络连接被拦截（WinError 10013），无法访问 {url}。"
                     "请检查：1) 防火墙/安全软件是否放行本程序；2) 是否开启了代理/VPN；"
-                    "3) 用浏览器能否打开该 API 地址。"
+                    "3) 用浏览器能否打开该 API 地址；4) 若程序由受限/沙盒环境启动"
+                    "（如 Codex/IDE 内置终端），请用普通终端或 start.bat 重启后端。"
                 ) from exc
-            raise LLMError(f"网络错误: {exc}") from exc
+            raise LLMError(f"网络错误: {exc}（errno={errno_val}, winerror={winerror_val}）") from exc
         return resp
 
     @staticmethod
