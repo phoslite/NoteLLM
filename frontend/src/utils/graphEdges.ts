@@ -41,6 +41,16 @@ export function linkEndpoints(e: { book_a: number; book_b: number; direction: st
   return { source: String(e.book_a), target: String(e.book_b), directed: false }
 }
 
+/** 关联方向展示文案（详情弹窗/提示框用）：复用 linkEndpoints，避免多套端点判定。 */
+export function edgeDirLabel(
+  edge: { book_a: number; book_b: number; direction: string; from_book: number | null },
+  nodeMap: Map<number, { id: number; title: string }>,
+): string {
+  const { source, target, directed } = linkEndpoints(edge)
+  if (!directed) return '双向关联'
+  return `${nodeMap.get(Number(source))?.title ?? source} → ${nodeMap.get(Number(target))?.title ?? target}`
+}
+
 /** 每本书「关系最密切」的边集合（用于加粗/红色强调）。 */
 export function bestEdgeSet(edges: { id: number; book_a: number; book_b: number; strength: number }[]): Set<number> {
   const best: Record<number, number> = {}

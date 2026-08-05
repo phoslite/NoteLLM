@@ -6,53 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.ai.client import LLMClient, LLMError
 from app.core.database import get_db
 from app.repositories.settings import (
-    CLIENT_KWARG_KEYS,
-    VISION_CLIENT_KWARG_KEYS,
     ai_settings_view,
-    client_kwargs,
     reload_ai_overrides_from_env,
     save_ai_overrides,
-    vision_client_kwargs,
 )
 from app.schemas.common import ok
-from app.tasks import submit
+from app.services.settings_service import submit_connect_test, to_store
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
-
-# 前端字段名 → 仓储键名（ai_*）
-FIELD_TO_KEY: dict[str, str] = {
-    "base_url": "ai_base_url",
-    "api_key": "ai_api_key",
-    "model": "ai_model",
-    "mode": "ai_mode",
-    "timeout": "ai_timeout",
-    "verify_ssl": "ai_verify_ssl",
-    "enable_body_send": "ai_enable_body_send",
-    "send_page_image": "ai_send_page_image",
-    "temperature": "ai_temperature",
-    "max_tokens": "ai_max_tokens",
-    "thinking_type": "ai_thinking_type",
-    "reasoning_effort": "ai_reasoning_effort",
-    "top_p": "ai_top_p",
-    "frequency_penalty": "ai_frequency_penalty",
-    "presence_penalty": "ai_presence_penalty",
-    "stop": "ai_stop",
-    "vision_base_url": "vision_base_url",
-    "vision_api_key": "vision_api_key",
-    "vision_model": "vision_model",
-    "vision_timeout": "vision_timeout",
-    "vision_verify_ssl": "vision_verify_ssl",
-    "vision_max_tokens": "vision_max_tokens",
-    "vision_temperature": "vision_temperature",
-    "vision_top_p": "vision_top_p",
-    "vision_frequency_penalty": "vision_frequency_penalty",
-    "vision_presence_penalty": "vision_presence_penalty",
-    "vision_enable_thinking": "vision_enable_thinking",
-    "vision_thinking_budget": "vision_thinking_budget",
-}
 
 
 class AiSettingsIn(BaseModel):
@@ -86,12 +49,6 @@ class AiSettingsIn(BaseModel):
     vision_thinking_budget: int | None = None
 
 
-def _to_store(body: AiSettingsIn | None) -> dict:
-    if body is None:
-        return {}
-    return {FIELD_TO_KEY[k]: v for k, v in body.model_dump().items() if v is not None}
-
-
 @router.get("/ai")
 def get_ai_settings(db: Session = Depends(get_db)):
     """读取当前 AI 配置（API Key 掩码后返回）。"""
@@ -101,33 +58,17 @@ def get_ai_settings(db: Session = Depends(get_db)):
 @router.patch("/ai")
 def put_ai_settings(body: AiSettingsIn, db: Session = Depends(get_db)):
     """保存 AI 配置（空值忽略，保留旧值）；返回掩码后的最新视图。"""
-    view = save_ai_overrides(db, _to_store(body))
+    view = save_ai_overrides(db, to_store(body))
     return ok(view, "已保存")
-
-
-def _run_connect_test(kwargs: dict, *, kind: str = "text") -> dict:
-    """连接测试任务函数：发起一次最小对话，返回 {ok, message}；异常不外抛。"""
-    try:
-        client = LLMClient(**kwargs, kind=kind)
-        reply = client.chat([{"role": "user", "content": "ping"}])
-    except LLMError as exc:
-        return {"ok": False, "message": str(exc)}
-    except Exception as exc:  # noqa: BLE001 兜底：未知异常也按失败返回
-        return {"ok": False, "message": f"未知错误: {exc}"}
-    return {"ok": True, "message": "连接成功，回复：" + (reply or "")[:50]}
 
 
 @router.post("/ai/test")
 def test_ai_settings(body: AiSettingsIn | None = None, db: Session = Depends(get_db)):
     """用当前配置（可带临时覆盖）发起一次最小对话验证连通性（后台任务，返回 task_id）。"""
-    kwargs = client_kwargs(db)
-    if body:
-        for key, value in _to_store(body).items():
-            if key in CLIENT_KWARG_KEYS:
-                kwargs[CLIENT_KWARG_KEYS[key]] = value
-    if not kwargs.get("api_key"):
-        raise HTTPException(status_code=400, detail="请先配置 AI Base URL 与 API Key")
-    task_id = submit("text", "test-text-connection", lambda: _run_connect_test(kwargs))
+    try:
+        task_id = submit_connect_test(db, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({"task_id": task_id}, "已提交连接测试")
 
 
@@ -147,12 +88,8 @@ def reload_env_ai_settings(db: Session = Depends(get_db)):
 @router.post("/ai/test-vision")
 def test_vision_settings(body: AiSettingsIn | None = None, db: Session = Depends(get_db)):
     """用多模态视觉配置发起一次最小请求（文本 ping），验证连通性与鉴权。"""
-    kwargs = vision_client_kwargs(db)
-    if body:
-        for key, value in _to_store(body).items():
-            if key in VISION_CLIENT_KWARG_KEYS:
-                kwargs[VISION_CLIENT_KWARG_KEYS[key]] = value
-    if not kwargs.get("api_key") or not kwargs.get("base_url") or not kwargs.get("model"):
-        raise HTTPException(status_code=400, detail="请先配置多模态 Base URL、API Key 与模型")
-    task_id = submit("vision", "test-vision-connection", lambda: _run_connect_test(kwargs, kind="vision"))
+    try:
+        task_id = submit_connect_test(db, body, vision=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({"task_id": task_id}, "已提交视觉连接测试")

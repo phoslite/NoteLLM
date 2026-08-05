@@ -1,14 +1,10 @@
 """书籍 CRUD 与导入。"""
 
-import hashlib
-import uuid
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.repositories import books as repo
 from app.repositories.reading import book_reading_summary, books_reading_summary
@@ -17,9 +13,9 @@ from app.schemas.serializers import book_to_dict, chapter_to_dict
 from app.services.book_pages import get_or_render_page
 from app.services.books_service import clean_tags
 from app.services.books_service import delete_book as delete_book_service
-from app.services.import_service import import_book_file  # 两段式导入（分块流式写盘 + 后台处理）
 from app.services.media_service import PLACEHOLDER_SVG, book_cover_file, resolve_book_media
 from app.services.search_service import search_books as search_books_service
+from app.services.upload_service import import_uploaded_book, stream_upload_to_temp
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -71,31 +67,13 @@ async def upload_book(
     耗时处理（PDF 页渲染/全文索引/跨书图谱增量/视觉预提取）在 import-background
     任务中执行，前端任务中心展示进度；任务失败不阻塞书籍上架。
     """
-    upload_dir = settings.data_dir / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    tmp = upload_dir / f"{uuid.uuid4().hex}.upload"
-    hasher = hashlib.sha256()
     try:
-        with open(tmp, "wb") as out:
-            total = 0
-            while chunk := await file.read(1024 * 1024):
-                total += len(chunk)
-                if total > settings.max_upload_bytes:  # 审查 C-问题13：分块写入时即拦截超大文件
-                    raise HTTPException(status_code=413, detail=f"文件超过大小上限 {settings.max_upload_bytes // (1024 * 1024)}MB")
-                hasher.update(chunk)
-                out.write(chunk)
-        book, task_id = import_book_file(
-            db,
-            tmp,
-            file.filename or "untitled",
-            title=title,
-            author=author,
-            content_hash=hasher.hexdigest(),
+        tmp, content_hash = await stream_upload_to_temp(file)
+        book, task_id = import_uploaded_book(
+            db, tmp, file.filename or "untitled", title=title, author=author, content_hash=content_hash
         )
     except ValueError as exc:
         return fail(400, str(exc))
-    finally:
-        tmp.unlink(missing_ok=True)  # 已 move 进书籍目录则自动忽略
     return ok({**_book_out(db, book), "task_id": task_id}, "已提交导入任务")
 
 

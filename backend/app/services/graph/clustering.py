@@ -10,15 +10,18 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.time import utcnow
-from app.models.asset import BookAsset
 from app.models.book import Book, Folder
 from app.repositories.assets import get_asset, read_asset_content
 from app.repositories.books import book_tags
+from app.repositories.graph import (
+    asset_classify_versions,
+    list_books,
+    list_folders_by_ids,
+)
 from app.services.graph.keywords import book_keywords, sanitize_cluster_name
 from app.services.graph.lexicon import (
     _GENERIC_DOMAIN_TERMS,
@@ -72,7 +75,7 @@ def _cluster_signatures(db: Session, books: list[Book]) -> tuple[dict[int, str],
     folder_ids = {b.folder_id for b in books if b.folder_id}
     names: dict[int, str] = {}
     if folder_ids:
-        rows = db.query(Folder).filter(Folder.id.in_(folder_ids)).all()
+        rows = list_folders_by_ids(db, folder_ids)
         names = {f.id: sanitize_cluster_name(f.name) for f in rows}
     sigs: dict[int, str] = {}
     folder_names: dict[int, str] = {}
@@ -94,16 +97,8 @@ def _cluster_signatures(db: Session, books: list[Book]) -> tuple[dict[int, str],
     return sigs, folder_names
 
 def _classify_version_map(db: Session, book_ids: list[int]) -> dict[int, int]:
-    """批量取书籍当前资产版本（懒校验 post-classify 是否失效用）。"""
-    if not book_ids:
-        return {}
-    rows = (
-        db.query(BookAsset.book_id, func.max(BookAsset.version))
-        .filter(BookAsset.book_id.in_(book_ids))
-        .group_by(BookAsset.book_id)
-        .all()
-    )
-    return dict(rows)
+    """批量取书籍当前资产版本（懒校验 post-classify 是否失效用，查询下沉仓储）。"""
+    return asset_classify_versions(db, book_ids)
 
 def _write_classify(db: Session, book: Book, name: str, source: str, version: int) -> None:
     """落盘聚类归属（§9.5 两阶段分类）：聚类名统一清洗，值未变化不写库。"""
@@ -294,7 +289,7 @@ def assign_clusters(db: Session, books: list[Book] | None = None, persist: bool 
     同一批书（内容/tag/文件夹/资产版本均未变）重复打开谱系图直接命中，不再全量重算；
     任一书变化（增删改/归档）→ 群体签名变化 → 自动失效重算。
     """
-    books = books or db.query(Book).order_by(Book.id).all()
+    books = books or list_books(db)
     sigs: dict[int, str] = {}
     folder_names: dict[int, str] = {}
     if books:

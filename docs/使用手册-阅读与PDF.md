@@ -218,6 +218,11 @@
 3. 书架卡片三段式（已阅读 x/y 章 / 最新章节 / 进度条），百分比 = x/y×100。
 4. 回归：`pytest`（17 项）+ `pnpm build` + 阅读页冒烟。
 
+### 3.13 路由瘦身服务（审查 D 组，2026-08-05）
+
+- `backend/app/services/reading_service.py`：`save_book_progress(db, book_id, chapter_id, ...)`——进度保存编排（章节不存在抛 `LookupError`，路由映射 404；原 reading 路由内联逻辑下沉）。
+- `backend/app/services/annotation_service.py`：`read_page_annotations(book, page_index)` / `save_page_annotations(book, page_index, elements)`（元素上限 `MAX_ELEMENTS=2000`）——页批注（划线/涂鸦/文本）读写收敛；`annotations_path(book, page_index)` 定位批注 JSON 文件。修改：文件格式/上限调整在此层，annotations 路由只做参数校验与序列化。
+
 ## 5. PDF 封面 / 扫描版按页阅读 / LLM 页图附件（M4 补充）
 
 > 需求 v1.9 起已改为「**PDF 统一按页处理（含文本型）**」：文本型 PDF 不再直接抽取正文（数学符号会乱码），统一按页切章、原图阅读、多模态视觉提取（见需求 3.2/3.4.11）。本节描述当前代码实现（扫描版识别 + 按页读图），待统一处理实现后更新。

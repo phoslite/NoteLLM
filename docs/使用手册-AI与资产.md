@@ -215,6 +215,7 @@ python demo/chat_demo.py                                          # 交互式多
 | `build_messages(book, chapter, question, selection, rag_chunks, skills, enable_body_send)` | 组装 system/user messages；隐私开关关闭时不发正文 |
 | `persist_chat(db, book_id, chapter_id, selection, question, answer)` | 写入一条 user + 一条 assistant 历史 |
 | `stream_chat(job)` | SSE 事件生成器（start/delta/end/error + 落库兜底） |
+| `replay_cached_chat(db, book, chapter, question, selection, mode, cache_key_val)` | LLM 结果缓存命中回放（`cached=true`，审查 P0-4 下沉；chat 路由只做流式包装） |
 | `build_client(db)` | 按运行时配置构建 LLMClient（.env + 设置页覆盖） |
 | `is_configured(db)` | 是否已配置 API Key |
 

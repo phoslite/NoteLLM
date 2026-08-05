@@ -7,6 +7,7 @@ from app.api.deps import require_book
 from app.core.database import SessionLocal, get_db
 from app.models.book import Book
 from app.models.graph import BookRelation
+from app.repositories.graph import count_books, count_relations
 from app.schemas.common import ok
 from app.services.graph.cross_book import (
     compute_cross_book_graph,
@@ -16,9 +17,9 @@ from app.services.graph.cross_book import (
 from app.services.graph.cross_book import knowledge_appears_in as cross_book_knowledge_appears_in
 from app.services.graph.intra_book import build_intra_book_graph, intra_graph_payload
 from app.services.graph_sync import (
+    apply_relation_feedback,
     link_domain_terms,
     link_graph_assets,
-    link_relation_stubs,
     sync_assets_for_relations,
 )
 from app.tasks import find_active, submit, update_progress
@@ -76,7 +77,7 @@ def get_global_graph(db: Session = Depends(get_db)):
     {building: true, task_id}，前端轮询任务完成后重新拉取。
     """
 
-    if db.query(BookRelation).count() == 0 and db.query(Book).count() > 0:
+    if count_relations(db) == 0 and count_books(db) > 0:
         task_id = _submit_graph_task("text", "graph-global-build", _lazy_global_build)
         return ok({"building": True, "task_id": task_id}, "图谱构建中，稍后自动刷新")
     return ok(global_graph_payload(db))
@@ -151,22 +152,8 @@ def relation_feedback(relation_id: int, body: FeedbackIn, db: Session = Depends(
     rel = db.get(BookRelation, relation_id)
     if not rel:
         raise HTTPException(status_code=404, detail="关联不存在")
-    if body.action == "确认":
-        rel.user_feedback = "确认"
-    elif body.action == "忽略":
-        rel.user_feedback = "忽略"
-    elif body.action == "修改":
-        if body.strength is None:
-            raise HTTPException(status_code=400, detail="修改强度需传入 strength")
-        rel.user_feedback = "修改"
-        rel.strength = max(0.0, min(100.0, float(body.strength)))
-    else:
-        raise HTTPException(status_code=400, detail="action 仅支持 确认/忽略/修改")
-    db.commit()
-    if body.action in ("确认", "修改"):
-
-        try:
-            link_relation_stubs(db, rel)
-        except Exception:
-            db.rollback()
+    try:
+        apply_relation_feedback(db, rel, body.action, body.strength)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({"id": rel.id, "user_feedback": rel.user_feedback, "strength": rel.strength})

@@ -8,7 +8,6 @@
 """
 import json
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.ai.factory import build_client, is_configured
@@ -18,6 +17,7 @@ from app.core.time import utcnow
 from app.models.book import Book
 from app.models.graph import BookRelation
 from app.repositories.assets import read_asset_content, save_asset_content, upsert_asset
+from app.repositories.graph import list_active_relations, list_books
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import extract_keywords
 from app.services.graph.lexicon import generic_domain_terms
@@ -66,7 +66,7 @@ def rag_book_input(db: Session, book: Book, budget: int = 3000) -> str:
 def link_domain_terms(db: Session) -> int:
     """RAG 术语补水：为有 RAG 资产的书籍补 domain_terms（书名 + key_points 术语，跳过泛化词）。"""
     updated = 0
-    for book in db.query(Book).all():
+    for book in list_books(db):
         rag = read_asset_content(db, book.id, "rag")
         if not rag:
             continue
@@ -130,9 +130,7 @@ def link_relation_stubs(db: Session, rel: BookRelation) -> int:
 def link_graph_assets(db: Session) -> dict:
     """本地联动（自动执行，无需 AI）：强度达标且未忽略的关联补存根 + RAG 术语补水。"""
     stubs = 0
-    for rel in db.query(BookRelation).filter(
-        or_(BookRelation.user_feedback.is_(None), BookRelation.user_feedback != "忽略")
-    ).all():
+    for rel in list_active_relations(db):
         stubs += link_relation_stubs(db, rel)
     return {"stubs": stubs, "domain_terms": link_domain_terms(db)}
 
@@ -173,6 +171,32 @@ def _llm_link_update(db: Session, book: Book, other: Book, rel: BookRelation, re
         db.rollback()
 
 
+def apply_relation_feedback(
+    db: Session, rel, action: str, strength: float | None = None
+) -> None:
+    """人工反馈业务（审查 P0-2）：确认/忽略/修改强度回写；确认/修改联动补 RAG 存根。
+
+    action 非法抛 ValueError（路由转 400）；成功提交后补联动存根（失败回滚不阻塞反馈）。
+    """
+    if action == "确认":
+        rel.user_feedback = "确认"
+    elif action == "忽略":
+        rel.user_feedback = "忽略"
+    elif action == "修改":
+        if strength is None:
+            raise ValueError("修改强度需传入 strength")
+        rel.user_feedback = "修改"
+        rel.strength = max(0.0, min(100.0, float(strength)))
+    else:
+        raise ValueError("action 仅支持 确认/忽略/修改")
+    db.commit()
+    if action in ("确认", "修改"):
+        try:
+            link_relation_stubs(db, rel)
+        except Exception:
+            db.rollback()
+
+
 def sync_assets_for_relations(
     db: Session, relation_ids: list[int] | None = None, *, use_llm: bool | None = None
 ) -> dict:
@@ -182,15 +206,11 @@ def sync_assets_for_relations(
     - use_llm 未指定时：已配置 AI 才走 LLM（POST /api/graph/sync 显式调用）；
     - 返回 {"stubs": 新增存根数, "llm_updated": LLM 更新书数}。
     """
-    query = db.query(BookRelation).filter(
-        or_(BookRelation.user_feedback.is_(None), BookRelation.user_feedback != "忽略")
-    )
-    if relation_ids is not None:
-        query = query.filter(BookRelation.id.in_(relation_ids))
+    relations = list_active_relations(db, relation_ids)
     llm_enabled = is_configured(db) if use_llm is None else (use_llm and is_configured(db))
     stubs = 0
     llm_updated = 0
-    for rel in query.all():
+    for rel in relations:
         stubs += link_relation_stubs(db, rel)
         if not llm_enabled or rel.strength < LINK_MIN_STRENGTH:
             continue

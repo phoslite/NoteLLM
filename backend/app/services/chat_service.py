@@ -256,6 +256,37 @@ def sse_event(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+def replay_cached_chat(
+    db: Session,
+    book,
+    chapter,
+    question: str,
+    selection: str,
+    mode: str | None,
+    cache_key_val: str | None,
+) -> str | None:
+    """预设模式缓存回放（审查 P0-4）：命中时清洗答案、落库历史并返回 SSE end 事件；未命中返回 None。
+
+    路由只负责把事件包成 StreamingResponse；持久化与清洗编排收敛在本层。
+    """
+    if cache_key_val is None:
+        return None
+    hit = mode_cache_hit(db, book.id, mode or "", cache_key_val)
+    if hit is None:
+        return None
+    answer = _sanitize_answer(hit.get("answer") or "")
+    try:
+        persist_chat(db, book.id, chapter.id, selection or "", question, answer, mode)
+    except Exception:  # noqa: BLE001 历史落库失败不影响回放
+        pass
+    return sse_event({
+        "type": "end",
+        "text": answer,
+        "citations": hit.get("citations") or [],
+        "cached": True,
+    })
+
+
 def list_history(db: Session, book_id: int, mode: str | None = None) -> list:
     """读取本书指定会话的对话历史（按时间正序）。"""
     return list_messages(db, book_id, mode)
