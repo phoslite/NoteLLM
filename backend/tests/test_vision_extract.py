@@ -75,6 +75,34 @@ def test_extract_page_writes_cache_and_reuses(monkeypatch, client, tmp_path):
         db.close()
 
 
+def test_extract_page_renders_missing_image(monkeypatch, client, tmp_path):
+    """回归：页图缺失时按需补渲染（导入后台渲染中断/遗漏自愈），再走视觉提取。"""
+
+    pdf = tmp_path / "scan.pdf"
+    _make_pdf(pdf, pages=1)
+    data = _import(client, pdf, "scan.pdf")
+    calls: list[int] = []
+
+    class CountingVision(FakeVision):
+        def chat(self, messages):
+            calls.append(0)
+            return super().chat(messages)
+
+    monkeypatch.setattr(vision_extract, "LLMClient", CountingVision)
+    db = SessionLocal()
+    try:
+        book = _book(db, data["id"])
+        img = vision_extract.page_image_path(book, 1)
+        assert img.exists(), "导入后台应已渲染页图"
+        img.unlink()  # 模拟渲染中断/页图缺失
+        text = vision_extract.ensure_page_cache(db, book, 1)
+        assert "第 1 页内容" in text
+        assert img.exists(), "缺失页图应被补渲染"
+        assert len(calls) == 1
+    finally:
+        db.close()
+
+
 def test_rebuild_concurrent_reattaches_book(monkeypatch, client, tmp_path):
     """回归：并发 rebuild_book_caches expunge 后须重新 attach，归档收尾可继续使用 book。
 

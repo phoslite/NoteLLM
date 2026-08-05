@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.ai.client import LLMClient
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.parsers.pdf import render_pdf_page
 from app.repositories import books as book_repo
 from app.repositories.settings import load_ai_overrides, vision_client_kwargs, vision_configured
 from app.services.media_service import page_image_path
@@ -48,7 +49,13 @@ def _extract_page_text(client: LLMClient, book, page_index: int) -> str:
     """调用多模态 LLM 提取单页完整信息，返回 Markdown 文本。"""
     path = page_image_path(book, page_index)
     if not path.exists():
-        raise FileNotFoundError(f"页图缺失: {path}")
+        # 页图缺失自愈：导入后台渲染中断/遗漏时按需补渲染（归档/阅读提问依赖页图），再提取
+        try:
+            render_pdf_page(book.file_path, page_index, path)
+        except Exception as exc:  # noqa: BLE001 补渲染失败按页图缺失处理（单页失败不中断整体）
+            raise FileNotFoundError(f"页图缺失且补渲染失败: {path}（{exc}）") from exc
+        if not path.exists():
+            raise FileNotFoundError(f"页图缺失: {path}")
     b64 = base64.b64encode(path.read_bytes()).decode("ascii")
     uri = f"data:image/jpeg;base64,{b64}"
     messages = [
