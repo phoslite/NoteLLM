@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
-from app.core.database import SessionLocal, get_db
+from app.core.database import get_db
 from app.repositories.assets import (
     delete_asset,
     delete_asset_item,
@@ -12,19 +12,11 @@ from app.repositories.assets import (
 )
 from app.schemas.common import ok
 from app.schemas.serializers import asset_to_dict
-from app.services.rag_service import archive_book_task, generate_rag_skill
+from app.services.graph.tasks import run_summarize_task
+from app.services.rag_service import archive_book_task
 from app.tasks import find_active, submit
 
 router = APIRouter(prefix="/api", tags=["assets"])
-
-
-def _run_summarize_task(book_id: int) -> dict:
-    """后台总结任务：独立会话 + finally 关闭（审查 A-1：会话泄漏修复）。"""
-    db = SessionLocal()
-    try:
-        return generate_rag_skill(db, book_id=book_id)
-    finally:
-        db.close()
 
 
 @router.post("/books/{book_id}/summarize")
@@ -35,7 +27,7 @@ def summarize_book(book_id: int, db: Session = Depends(get_db)):
     if existing:  # 审查 C-问题4：幂等防护，防双击重复提交互相覆盖资产
         return ok({"task_id": existing}, "已有进行中的总结任务，直接复用")
     task_id = submit(
-        "text", "rag-skill-summarize", lambda: _run_summarize_task(book_id=book_id)
+        "text", "rag-skill-summarize", lambda: run_summarize_task(book_id=book_id)
     )
     return ok({"task_id": task_id}, "已提交总结任务")
 

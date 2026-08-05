@@ -27,6 +27,14 @@ def list_books_by_ids(db: Session, book_ids: list[int]) -> list[Book]:
     return db.query(Book).filter(Book.id.in_(list(book_ids))).all()
 
 
+def list_post_classified_books(db: Session, exclude_book_id: int | None = None) -> list[Book]:
+    """已 post-classify 且有簇名的书（簇合并/重命名与 post 归类共用；可排除指定书）。"""
+    query = db.query(Book).filter(Book.classify_source == "post", Book.cluster_name.isnot(None))
+    if exclude_book_id is not None:
+        query = query.filter(Book.id != exclude_book_id)
+    return query.all()
+
+
 def count_books(db: Session) -> int:
     """书籍总数（懒构建判定用）。"""
     return db.query(Book).count()
@@ -37,13 +45,29 @@ def list_relations(db: Session) -> list[BookRelation]:
     return db.query(BookRelation).order_by(BookRelation.id).all()
 
 
-def list_active_relations(db: Session, relation_ids: list[int] | None = None) -> list[BookRelation]:
-    """未忽略的书籍关联（联动存根 / LLM 联动共用）；relation_ids 为空时返回全部。"""
+def list_active_relations(
+    db: Session,
+    relation_ids: list[int] | None = None,
+    *,
+    book_id: int | None = None,
+    limit: int | None = None,
+) -> list[BookRelation]:
+    """未忽略的书籍关联（联动存根 / LLM 联动共用）；relation_ids 为空时返回全部。
+
+    book_id 非空时仅返回与该书相关的关联（按 strength 降序，谱系关联降级挑选用）；
+    limit 非空时截断数量。
+    """
     query = db.query(BookRelation).filter(
         or_(BookRelation.user_feedback.is_(None), BookRelation.user_feedback != "忽略")
     )
     if relation_ids is not None:
         query = query.filter(BookRelation.id.in_(relation_ids))
+    if book_id is not None:
+        query = query.filter(
+            or_(BookRelation.book_a_id == book_id, BookRelation.book_b_id == book_id)
+        ).order_by(BookRelation.strength.desc())
+    if limit is not None:
+        query = query.limit(limit)
     return query.all()
 
 

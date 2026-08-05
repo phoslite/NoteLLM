@@ -20,7 +20,6 @@ import threading
 import time
 from dataclasses import dataclass
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.ai.factory import build_selector_client
@@ -33,7 +32,6 @@ from app.ai.prompts.rag_select import (
 )
 from app.core.config import settings
 from app.models.book import Book, Folder
-from app.models.graph import BookRelation
 from app.repositories.assets import (
     get_asset,
     list_assets_by_books,
@@ -42,6 +40,7 @@ from app.repositories.assets import (
     read_asset_content,
     retrieve_rag_chunks,
 )
+from app.repositories.graph import list_active_relations
 from app.services.profile_service import get_all_profiles
 
 # 候选目录与注入控制
@@ -265,15 +264,12 @@ def _select_fallback(db: Session, book: Book, question: str) -> SelectionResult:
         if isinstance(bid, int) and bid not in book_ids and _has_assets(db, bid):
             book_ids.append(bid)
     if len(book_ids) < settings.rag_select_max_books:
-        rels = (
-            db.query(BookRelation)
-            .filter(
-                or_(BookRelation.book_a_id == book.id, BookRelation.book_b_id == book.id),
-                BookRelation.user_feedback != "忽略",
-            )
-            .order_by(BookRelation.strength.desc())
-            .limit(settings.rag_select_max_books - len(book_ids))
-            .all()
+        # 走仓储未忽略关联（user_feedback IS NULL 视为未忽略，见 v1.17 修复）；
+        # 直查回归于决策 34 落地（v1.63），此处改用 repositories/graph.py::list_active_relations
+        rels = list_active_relations(
+            db,
+            book_id=book.id,
+            limit=settings.rag_select_max_books - len(book_ids),
         )
         for rel in rels:
             other = rel.book_b_id if rel.book_a_id == book.id else rel.book_a_id

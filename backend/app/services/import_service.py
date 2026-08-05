@@ -32,7 +32,7 @@ _FORMAT_MAP = {".md": "md", ".markdown": "md", ".txt": "txt", ".pdf": "pdf", ".e
 
 
 def _upload_dir() -> Path:
-    """分块流式上传的暂存目录（路由与字节兼容入口共用）。"""
+    """分块流式上传的暂存目录。"""
     d = settings.data_dir / "uploads"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -45,22 +45,6 @@ def _sha256_file(path: Path) -> str:
         while chunk := f.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def import_book(
-    db: Session,
-    file_bytes: bytes,
-    filename: str,
-    title: str | None = None,
-    author: str | None = None,
-) -> tuple[Book, str]:
-    """兼容入口（测试/小文件）：字节整读 → 暂存文件 → 走 import_book_file 同一落盘路径。"""
-    src = _upload_dir() / f"{uuid.uuid4().hex}.upload"
-    src.write_bytes(file_bytes)
-    try:
-        return import_book_file(db, src, filename, title=title, author=author)
-    finally:
-        src.unlink(missing_ok=True)
 
 
 def import_book_file(

@@ -172,6 +172,43 @@ def test_selector_failure_falls_back_to_rules(client, monkeypatch):
         clear_session_cache()
 
 
+def test_fallback_keeps_null_feedback_relations(client, monkeypatch):
+    """回归（审查 P0）：_select_fallback 的 user_feedback != "忽略" 漏 NULL 处理——
+    user_feedback IS NULL 的边（默认绝大多数）应视为未忽略并纳入谱系关联候选。"""
+    from app.models.graph import BookRelation
+
+    _configure(client)
+    db = SessionLocal()
+    try:
+        a = _upload(client, "当前书")
+        b = _upload(client, "关联书B")
+        c = _upload(client, "忽略书C")
+        for bid in (a, b, c):
+            _add_rag_skill(db, bid, rag_summary="摘要", skill_name="技巧")
+        # 默认 NULL 反馈（多数边）与显式「忽略」各一条
+        db.add_all([
+            BookRelation(book_a_id=min(a, b), book_b_id=max(a, b), strength=90.0,
+                         direction="无", relation_type="概念共现", reasons_json="[]", user_feedback=None),
+            BookRelation(book_a_id=min(a, c), book_b_id=max(a, c), strength=95.0,
+                         direction="无", relation_type="概念共现", reasons_json="[]", user_feedback="忽略"),
+        ])
+        db.commit()
+
+        def fail_chat(self, messages):
+            raise LLMError("模拟挑选失败")
+
+        monkeypatch.setattr(LLMClient, "chat", fail_chat)
+        chapter = db.query(Chapter).filter_by(book_id=a).first()
+        out = select_knowledge(db, db.get(Book, a), chapter, "问题")
+        assert out["source"] == "fallback"
+        # NULL 反馈边未被过滤：B 入选；「忽略」边被排除：C 不入选
+        assert b in out["selection"]["book_ids"]
+        assert c not in out["selection"]["book_ids"]
+    finally:
+        db.close()
+        clear_session_cache()
+
+
 def test_session_cache_cap_sweeps_oldest(client, monkeypatch):
     """审查问题 10：会话缓存超限时写时清扫最旧。"""
     monkeypatch.setattr("app.services.rag_router._SESSION_CACHE_MAX", 2)

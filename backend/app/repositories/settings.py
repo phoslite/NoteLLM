@@ -1,4 +1,4 @@
-﻿"""运行时设置仓储：AI 配置等存 Setting 表（key/value），可覆盖 .env 默认值。
+"""运行时设置仓储：AI 配置等存 Setting 表（key/value），可覆盖 .env 默认值。
 
 约定（技术栈规范 §3.4）：API Key 禁止硬编码、禁止写日志、前端不回显明文。
 """
@@ -78,14 +78,6 @@ _FLOAT_KEYS = {
 def get_setting(db: Session, key: str, default: str | None = None) -> str | None:
     row = db.get(Setting, key)
     return row.value if row else default
-
-
-def delete_setting(db: Session, key: str) -> None:
-    """删除单条运行时覆盖（不存在时静默）。"""
-    row = db.get(Setting, key)
-    if row:
-        db.delete(row)
-        db.commit()
 
 
 def set_setting(db: Session, key: str, value: str) -> None:

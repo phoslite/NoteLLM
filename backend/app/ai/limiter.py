@@ -27,7 +27,3 @@ def get_limiter(kind: str) -> threading.Semaphore | None:
         return _limiters[key]
 
 
-def reset_limiters() -> None:
-    """清空限流器缓存（测试用：并发配置变化后重建）。"""
-    with _lock:
-        _limiters.clear()

@@ -419,7 +419,7 @@
 | `render_pdf_pages(path, out_dir, max_width=0, quality=90)` | 渲染全部页为 `page_XXX.jpg` | 路径/目录 | 页数 |
 | `pdf_page_target_width / jpeg_width` | 目标像素宽度（原图）/ 已渲染页图宽度（低清升级判断） | — | int |
 
-**如何使用**：导入 PDF 时 `import_service.import_book` 自动渲染全部页到 `<书目录>/pages/`，并把本地抽取文本写入 `<书目录>/local_text/page_XXX.txt`；阅读页按「第 N 页」章节展示原图。
+**如何使用**：导入 PDF 时 `import_service.import_book_file` 自动渲染全部页到 `<书目录>/pages/`，并把本地抽取文本写入 `<书目录>/local_text/page_XXX.txt`；阅读页按「第 N 页」章节展示原图。
 **如何修改**：调整页图渲染质量/倍率改 `PAGE_AUTO_ZOOM_MIN/MAX` 或 `render_pdf_page` 的 `quality/zoom`；旧版文本型 PDF 书籍仍按旧行为展示，删除后重新导入即可升级为按页模式。
 
 ### 9.2 多模态视觉配置

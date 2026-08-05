@@ -21,6 +21,7 @@ from app.repositories.graph import (
     asset_classify_versions,
     list_books,
     list_folders_by_ids,
+    list_post_classified_books,
 )
 from app.services.graph.keywords import book_keywords, sanitize_cluster_name
 from app.services.graph.lexicon import (
@@ -139,11 +140,7 @@ def post_classify_book(db: Session, book: Book) -> str:
         return book.cluster_name or ""
 
     others: list[tuple[Book, dict[str, float]]] = []
-    for ob in (
-        db.query(Book)
-        .filter(Book.id != book.id, Book.classify_source == "post", Book.cluster_name.isnot(None))
-        .all()
-    ):
+    for ob in list_post_classified_books(db, exclude_book_id=book.id):
         content = read_asset_content(db, ob.id, "rag")
         if content:
             others.append((ob, _posterior_keywords(content)))
@@ -195,11 +192,7 @@ def merge_and_rename_clusters(db: Session) -> dict:
     - 重命名：簇名取簇内出现于最多书的后验术语（众数），冲突时跳过。
     - 只处理 classify_source=post 的书；tag/文件夹硬约束不受影响。
     """
-    books = (
-        db.query(Book)
-        .filter(Book.classify_source == "post", Book.cluster_name.isnot(None))
-        .all()
-    )
+    books = list_post_classified_books(db)
     if not books:
         return {"merged": 0, "renamed": 0}
     by_book: dict[int, dict] = {}

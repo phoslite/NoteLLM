@@ -1,4 +1,4 @@
-﻿"""书签数据访问层：位置书签（全格式）CRUD。"""
+"""书签数据访问层：位置书签（全格式）CRUD。"""
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,10 +10,6 @@ def list_bookmarks(db: Session, book_id: int) -> list[Bookmark]:
     return list(
         db.scalars(select(Bookmark).where(Bookmark.book_id == book_id).order_by(Bookmark.created_at.desc(), Bookmark.id.desc()))
     )
-
-
-def get_bookmark(db: Session, bookmark_id: int) -> Bookmark | None:
-    return db.get(Bookmark, bookmark_id)
 
 
 def create_bookmark(
