@@ -38,3 +38,12 @@ demo/logs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ---- 临时/杂项文件 ----
+5\}
+01-home-shelf.png
+
+# ---- AI 编辑器 / 浏览器测试残留 ----
+.codex-edge-test/
+.codex-edge-test2/
+.qoder/

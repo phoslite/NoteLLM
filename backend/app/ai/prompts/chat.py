@@ -3,6 +3,24 @@
 约定：回答必须基于提供的书籍内容；引用原文须标注【第X章 第Y段】出处；
 数学符号只能使用 LaTeX 或 Markdown，禁止输出 Unicode 数学字符。
 """
+
+
+def body_fallback_text(context_text: str, enable_body_send: bool, page_mode: bool) -> str:
+    """正文为空时的占位文案（修复：扫描件在隐私开启时不得误导为「未发送」）。
+
+    - 隐私关闭（enable_body_send=False）：保留原占位，告知模型正文按隐私设置未发送；
+    - 隐私开启但正文本身为空：扫描版 PDF 按页阅读（page_mode）说明正文以页缓存/页图为准，
+      其余情况说明当前章节暂无正文，避免模型误判隐私被关闭。
+    """
+    if context_text:
+        return context_text
+    if not enable_body_send:
+        return "（正文未发送，遵循隐私设置）"
+    if page_mode:
+        return "（本书为扫描版 PDF，正文以页面图片或页缓存文本为准）"
+    return "（当前章节暂无正文）"
+
+
 # 数学表达硬性规则（需求：AI 输出涉及数学符号只能用 LaTeX/Markdown，禁 Unicode）
 MATH_RULE = (
     "数学符号与公式必须使用 LaTeX 或 Markdown 表达：行内公式用 $...$，独立成块的公式用 $$...$$；"
@@ -145,15 +163,21 @@ def build_user_prompt(
     selection: str,
     question: str,
     page_context: str | None = None,
+    enable_body_send: bool = True,
+    page_mode: bool = False,
 ) -> str:
-    """构造用户侧输入：书籍/章节元信息 + 当前章节正文或 PDF 页窗口缓存 + RAG 片段 + 选中内容 + 问题。"""
+    """构造用户侧输入：书籍/章节元信息 + 当前章节正文或 PDF 页窗口缓存 + RAG 片段 + 选中内容 + 问题。
+
+    enable_body_send/page_mode 仅用于正文为空时的占位文案（见 ai_context.body_fallback_text）：
+    区分「隐私关闭」与「扫描件按页阅读正文为空」，避免误导模型。
+    """
     parts = [f"书籍：《{book_title}》", f"当前章节：第{chapter_index}章 {chapter_title}", ""]
     if page_context:
         parts.append("【当前页及相邻页内容（页缓存）】")
         parts.append(page_context)
     else:
         parts.append("【当前章节正文】")
-        parts.append(context_text or "（正文未发送，遵循隐私设置）")
+        parts.append(body_fallback_text(context_text, enable_body_send, page_mode))
     if rag_block:
         parts.append("\n【检索到的相关片段（含出处）】")
         parts.append(rag_block)

@@ -6,23 +6,22 @@
       type="button"
       class="mini-btn"
       :class="{ active: modelValue === t.key }"
+      :title="t.key === 'pen' ? '✏ 笔刷' : t.key === 'highlight' ? '🖍 高亮' : t.key === 'eraser' ? '🧽 橡皮' : '🔤 文本'"
       @click="emit('update:modelValue', t.key)"
     >
       {{ t.label }}
     </button>
     <span class="sep" />
-    <label class="ctl">
-      颜色
+    <label class="ctl" title="颜色">
       <input v-model="color" type="color" class="color-input" />
     </label>
-    <label class="ctl">
-      线宽
+    <label class="ctl" title="线宽">
       <input v-model.number="lineWidth" type="range" min="1" max="12" step="1" class="range-input" />
       <span class="val">{{ lineWidth }}</span>
     </label>
     <span class="sep" />
-    <button type="button" class="mini-btn" :disabled="!canUndo" @click="undo">↩ 撤销</button>
-    <button type="button" class="mini-btn danger" @click="clearAll">🗑 清除本页</button>
+    <button type="button" class="mini-btn" :disabled="!canUndo" title="撤销上一步" @click="undo">↩ 撤销</button>
+    <button type="button" class="mini-btn danger" title="清除本页全部涂鸦" @click="clearAll">🗑 清除</button>
   </div>
 </template>
 
@@ -46,10 +45,10 @@ const emit = defineEmits<{
 }>()
 
 const tools: { key: DoodleTool; label: string }[] = [
-  { key: 'pen', label: '✏ 笔刷' },
-  { key: 'highlight', label: '🖍 高亮' },
-  { key: 'eraser', label: '🧽 橡皮' },
-  { key: 'text', label: '🔤 文本' },
+  { key: 'pen', label: '笔刷' },
+  { key: 'highlight', label: '高亮' },
+  { key: 'eraser', label: '橡皮' },
+  { key: 'text', label: '文本' },
 ]
 
 const color = ref('#e74c3c')
@@ -76,9 +75,11 @@ async function clearAll() {
 .doodle-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 4px 8px;
+  gap: 3px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 6px;
   border: 1px solid var(--border-color, #dcdfe6);
   border-radius: 8px;
   background: #fff;
@@ -89,7 +90,7 @@ async function clearAll() {
   background: #fff;
   color: var(--text-color, #303133);
   font-size: 12px;
-  padding: 3px 6px;
+  padding: 1px 5px;
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
@@ -98,9 +99,10 @@ async function clearAll() {
 .mini-btn.active { border-color: var(--primary-color, #409eff); color: var(--primary-color, #409eff); background: rgba(64, 158, 255, 0.08); }
 .mini-btn.danger:hover { border-color: #f56c6c; color: #f56c6c; }
 .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.sep { width: 1px; height: 18px; background: var(--border-color, #dcdfe6); }
-.ctl { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary, #909399); }
-.color-input { width: 26px; height: 20px; padding: 0; border: none; background: none; cursor: pointer; }
-.range-input { width: 56px; }
-.val { min-width: 14px; text-align: center; }
+.sep { width: 1px; height: 12px; background: var(--border-color, #dcdfe6); }
+.ctl { display: inline-flex; align-items: center; gap: 3px; color: var(--text-secondary, #909399); }
+.color-input { width: 22px; height: 18px; padding: 0; border: none; background: none; cursor: pointer; }
+.range-input { width: 36px; }
+.val { min-width: 12px; text-align: center; }
+.doodle-toolbar::-webkit-scrollbar { display: none; }
 </style>

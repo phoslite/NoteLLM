@@ -35,6 +35,8 @@ class ChatIn(BaseModel):
     mode: str | None = None
     # 会话标识（决策 34）：同会话内复用 LLM 挑选结果；前端每次进入对话会话生成
     session_id: str | None = None
+    # 方案2 流式滚动落库键：前端生成并随请求下发，流中增量持久化后按此键轮询历史
+    stream_key: str | None = None
 
 
 @router.post("/{book_id}/chat")
@@ -61,15 +63,16 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
     )
     hit = mode_cache_hit(db, book.id, body.mode or "", cache_key_val)
     if hit is not None:
+        answer = (hit["answer"] or "").replace('\\"', '"')  # 清洗转义引号（与流式路径一致）
         try:
             persist_chat(
-                db, book.id, chapter.id, body.selection or "", question, hit["answer"], body.mode
+                db, book.id, chapter.id, body.selection or "", question, answer, body.mode
             )
         except Exception:  # noqa: BLE001 历史落库失败不影响回放
             pass
         end_event = sse_event({
             "type": "end",
-            "text": hit["answer"],
+            "text": answer,
             "citations": hit.get("citations") or [],
             "cached": True,
         })
@@ -79,7 +82,7 @@ def chat_stream(book_id: int, body: ChatIn, db: Session = Depends(get_db)):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     job = prepare_chat_job(
-        db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or "", body.mode, body.session_id
+        db, book, chapter, question, body.selection or "", body.crop_image, body.crop_label or "", body.mode, body.session_id, body.stream_key
     )
     cache_meta = {"book_id": book.id, "kind": body.mode, "key": cache_key_val} if cache_key_val else None
     return StreamingResponse(

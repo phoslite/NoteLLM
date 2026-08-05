@@ -16,6 +16,17 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
  * 避免 markdown-it 把数学内容里的 * _ < > 等当成 Markdown 语法（如 $V^*$ 被解析成 <em>），
  * 渲染后再把占位符还原为公式文本（HTML 转义），交给 KaTeX auto-render 处理。
  */
+/**
+ * 还原 LLM 常见的引号写法：\" → "，并把 **"X"** 调整为 "**X**"（引号移到加粗标记外侧）。
+ * markdown-it 按 CommonMark 规则：** 紧贴标点（如 " '）后接非标点时无法开闭强调，
+ * 例如 **"算法先于理论"**的历史 不会渲染加粗；调整后保留引号原意且加粗生效。
+ */
+function normalizeQuotes(src: string): string {
+  return src
+    .replace(/\\"/g, '"')
+    .replace(/(\*{2,})[ \t]*(["'])([^"'\n]*?)\2[ \t]*(\*{2,})/g, '$2$1$3$4$2')
+}
+
 function protectMath(src: string): { text: string; restore: (html: string) => string } {
   const stored = new Map<string, string>()
   const fences = src.match(/```[\s\S]*?```/g) ?? []
@@ -35,8 +46,9 @@ function protectMath(src: string): { text: string; restore: (html: string) => st
     // 转义块级定界符 \[...\]（避免内部 * _ 被 markdown-it 转义）
     seg = seg.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => protect('\\[' + inner.trim() + '\\]'))
     // 行内公式 $...$（内容不含 $/换行，前后不是 $ 或 \）
+    // 注：允许单字符公式（如 $p$），避免吞掉相邻 `**` 破坏加粗（如 **$p$-积分临界线**）
     seg = seg.replace(
-      /(^|[^$\n\\])\$([^\s$][^$\n]*?[^\s$])\$([^$\n\\]|$)/g,
+      /(^|[^$\n\\])\$([^\s$](?:[^$\n]*[^\s$])?)\$([^$\n\\]|$)/g,
       (_m: string, pre: string, inner: string, post: string) => pre + protect('$' + inner + '$') + post,
     )
     // 转义行内定界符 \\(...\\)（避免内部 * _ 被 markdown-it 转义）
@@ -59,7 +71,7 @@ function protectMath(src: string): { text: string; restore: (html: string) => st
 }
 
 const html = computed(() => {
-  const { text, restore } = protectMath(props.source ?? '')
+  const { text, restore } = protectMath(normalizeQuotes(props.source ?? ''))
   const rendered = props.inline ? md.renderInline(text) : md.render(text)
   return DOMPurify.sanitize(restore(rendered))
 })

@@ -318,3 +318,53 @@ class LLMClient:
         finally:
             if limiter:
                 limiter.release()
+
+    def stream_events(self, messages: list[dict]) -> Iterable[dict]:
+        """流式对话：逐块产出事件 dict（{\"kind\": \"thinking\" | \"delta\", \"text\": str}）。
+
+        与 stream() 的区别：thinking 模式下（如 DeepSeek enable_thinking）先输出
+        reasoning_content（思考过程）再输出 content。thinking 事件供前端展示「思考中」
+        实况，避免用户在思考阶段看到长时间空白（方案2 固定频率刷新配套）。
+        """
+        limiter = get_limiter(self.kind)
+        if limiter:
+            limiter.acquire()
+        try:
+            body = self._build_body(messages)
+            resp = self._request(body, stream=True)
+            with resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if self.mode == "anthropic":
+                        if obj.get("type") == "content_block_delta":
+                            d = obj.get("delta") or {}
+                            if d.get("type") == "thinking_delta" and d.get("thinking"):
+                                yield {"kind": "thinking", "text": d["thinking"]}
+                            elif d.get("type") == "text_delta" and d.get("text"):
+                                yield {"kind": "delta", "text": d["text"]}
+                        continue
+                    if self.mode == "responses":
+                        if obj.get("type") == "response.output_text.delta" and obj.get("delta"):
+                            yield {"kind": "delta", "text": obj["delta"]}
+                        elif obj.get("type") == "response.reasoning_summary_text.delta" and obj.get("delta"):
+                            yield {"kind": "thinking", "text": obj["delta"]}
+                        continue
+                    choices = obj.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta") or {}
+                        if delta.get("reasoning_content"):
+                            yield {"kind": "thinking", "text": delta["reasoning_content"]}
+                        elif delta.get("content"):
+                            yield {"kind": "delta", "text": delta["content"]}
+        finally:
+            if limiter:
+                limiter.release()

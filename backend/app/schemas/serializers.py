@@ -98,6 +98,7 @@ def note_to_dict(note: Note) -> dict:
 def chat_message_to_dict(msg: ChatMessage) -> dict:
     return {
         "id": msg.id,
+        "stream_key": msg.stream_key,
         "role": msg.role,
         "content": msg.content,
         "book_id": msg.ref_book_id,

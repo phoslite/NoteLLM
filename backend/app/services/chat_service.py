@@ -6,6 +6,7 @@
 - 调用 LLMClient.stream() 产出 SSE 事件流，结束后将对话写入 ChatMessage 历史。
 """
 import json
+import time
 from collections.abc import Iterator
 
 from sqlalchemy.orm import Session
@@ -66,6 +67,8 @@ def build_messages(
         selection or "",
         question,
         page_context=page_context,
+        enable_body_send=enable_body_send,
+        page_mode=page_mode,
     )
     messages: list[dict] = [
         {
@@ -118,6 +121,7 @@ def prepare_chat_job(
     crop_label: str = "",
     mode: str | None = None,
     session_id: str | None = None,
+    stream_key: str | None = None,
 ) -> dict:
     """组装一次对话请求任务：隐私/视觉覆盖、页缓存窗口或页图附件、跨书 RAG/Skill、messages、client。
 
@@ -179,6 +183,7 @@ def prepare_chat_job(
             "selection": selection,
             "question": question,
             "mode": mode,
+            "stream_key": stream_key,
         },
     }
 
@@ -222,6 +227,9 @@ def mode_cache_hit(db: Session, book_id: int, mode: str, key: str | None) -> dic
     return None
 
 
+STREAM_PERSIST_INTERVAL_S = 1.5  # 方案2：流式中滚动落库节流（前端固定频率轮询历史可见增量）
+
+
 def sse_event(event: dict) -> str:
     """SSE data 事件行（chat 路由与流式生成器共用）。"""
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -237,19 +245,54 @@ def clear_history(db: Session, book_id: int, mode: str | None = None) -> None:
     clear_messages(db, book_id, mode)
 
 
+def _sanitize_answer(text: str) -> str:
+    """清洗 LLM 输出的转义引号（\" → "）：转义引号紧贴 ** 会破坏 markdown 加粗解析
+    （如 **\"算法先于理论\"**），落库前统一还原，前端 MdRender 另有同款兜底。"""
+    return text.replace('\\"', '"')
+
+
 def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
-    """对话 SSE 事件生成器：data 行为 JSON 事件 {type: start/delta/end/error}。
+    """对话 SSE 事件生成器：data 行为 JSON 事件 {type: start/thinking/delta/end/error}。
 
     job 由路由预构建（含 client/messages/persist），确保 LLM 调用前的校验在请求作用域内完成。
     cache: {book_id, kind, key} 可选——流结束后把完整回答写入 LLM 缓存（预设模式复用，
     同 key 再次提问直接回放，见 chat 路由的 mode_cache_hit）。
+
+    方案2（固定频率刷新）：流中每 STREAM_PERSIST_INTERVAL_S 秒把已累积内容按 stream_key
+    幂等滚动落库，前端在 streaming 期间定时轮询历史即可看到增量；thinking 事件转发
+    模型思考过程（如 DeepSeek reasoning_content），避免思考阶段长时间空白。
     """
     yield sse_event({"type": "start"})
     full = ""
+    stream_key = job["persist"].get("stream_key")
+    last_persist_at = 0.0
     try:
-        for delta in job["client"].stream(job["messages"]):
-            full += delta
-            yield sse_event({"type": "delta", "text": delta})
+        for ev in job["client"].stream_events(job["messages"]):
+            if ev["kind"] == "thinking":
+                yield sse_event({"type": "thinking", "text": ev["text"]})
+                continue
+            chunk = _sanitize_answer(ev["text"])
+            full += chunk
+            yield sse_event({"type": "delta", "text": chunk})
+            if stream_key and time.monotonic() - last_persist_at >= STREAM_PERSIST_INTERVAL_S:
+                try:
+                    db = SessionLocal()
+                    try:
+                        persist_chat(
+                            db,
+                            book_id=job["persist"]["book_id"],
+                            chapter_id=job["persist"]["chapter_id"],
+                            selection=job["persist"]["selection"],
+                            question=job["persist"]["question"],
+                            mode=job["persist"].get("mode"),
+                            answer=full,
+                            stream_key=stream_key,
+                        )
+                    finally:
+                        db.close()
+                except Exception:  # noqa: BLE001 滚动落库失败不影响流式输出
+                    pass
+                last_persist_at = time.monotonic()
     except LLMError as exc:
         yield sse_event({"type": "error", "message": str(exc)})
         return
@@ -266,6 +309,7 @@ def stream_chat(job: dict, cache: dict | None = None) -> Iterator[str]:
                 question=job["persist"]["question"],
                 mode=job["persist"].get("mode"),
                 answer=full,
+                stream_key=stream_key,
             )
             if cache:
                 set_llm_cache(db, cache["book_id"], cache["kind"], cache["key"], {

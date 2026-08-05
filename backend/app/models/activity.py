@@ -55,6 +55,8 @@ class ChatMessage(Base):
     session_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(20))  # user/assistant
     content: Mapped[str] = mapped_column(Text, default="")
+    # 流式滚动落库键（方案2）：流中每 ~1.5s 增量持久化，前端固定频率轮询历史读取；流结束复用同一行
+    stream_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ref_book_id: Mapped[int | None] = mapped_column(ForeignKey("books.id"), nullable=True, index=True)
     ref_chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id"), nullable=True, index=True)
     ref_para_pos: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 出处标注

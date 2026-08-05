@@ -124,27 +124,53 @@ def persist_chat(
     question: str,
     answer: str,
     mode: str | None = None,
+    stream_key: str | None = None,
 ) -> None:
-    """写入一条用户消息与一条助手消息（按书 × 模式会话）。"""
-    db.add(
-        ChatMessage(
-            session_id=chat_session_id(book_id, mode),
-            role="user",
-            content=question,
-            ref_book_id=book_id,
-            ref_chapter_id=chapter_id,
-            ref_para_pos=selection or None,
+    """写入一条用户消息与一条助手消息（按书 × 模式会话）。
+
+    stream_key（方案2 流式滚动落库）：同一流多次调用按键幂等复用 user/assistant 两行——
+    首次调用插入，后续调用仅更新 assistant.content；流结束复用同一行写最终内容，
+    前端固定频率轮询历史即可看到进行中的回答，且不产生残留行。
+    """
+    session = chat_session_id(book_id, mode)
+    user_row: ChatMessage | None = None
+    assistant_row: ChatMessage | None = None
+    if stream_key:
+        user_row = db.scalar(
+            select(ChatMessage).where(
+                ChatMessage.stream_key == stream_key, ChatMessage.role == "user"
+            )
         )
-    )
-    db.add(
-        ChatMessage(
-            session_id=chat_session_id(book_id, mode),
-            role="assistant",
-            content=answer,
-            ref_book_id=book_id,
-            ref_chapter_id=chapter_id,
-            ref_para_pos=selection or None,
+        assistant_row = db.scalar(
+            select(ChatMessage).where(
+                ChatMessage.stream_key == stream_key, ChatMessage.role == "assistant"
+            )
         )
-    )
+    if user_row is None:
+        db.add(
+            ChatMessage(
+                session_id=session,
+                role="user",
+                content=question,
+                ref_book_id=book_id,
+                ref_chapter_id=chapter_id,
+                ref_para_pos=selection or None,
+                stream_key=stream_key,
+            )
+        )
+    if assistant_row is None:
+        db.add(
+            ChatMessage(
+                session_id=session,
+                role="assistant",
+                content=answer,
+                ref_book_id=book_id,
+                ref_chapter_id=chapter_id,
+                ref_para_pos=selection or None,
+                stream_key=stream_key,
+            )
+        )
+    else:
+        assistant_row.content = answer
     db.commit()
-    trim_history(db, chat_session_id(book_id, mode))  # 性能决策 1：只留最近 N 条（0=不限制）
+    trim_history(db, session)  # 性能决策 1：只留最近 N 条（0=不限制）

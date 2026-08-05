@@ -209,11 +209,11 @@ def test_mode_chat_second_call_served_from_cache(client, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_stream(self, messages):
+    def fake_stream_events(self, messages):
         calls["n"] += 1
-        yield "缓存回答：变分法研究泛函极值【第1章 第1段】。"
+        yield {"kind": "delta", "text": "缓存回答：变分法研究泛函极值【第1章 第1段】。"}
 
-    monkeypatch.setattr(LLMClient, "stream", fake_stream)
+    monkeypatch.setattr(LLMClient, "stream_events", fake_stream_events)
 
     def read_events(resp):
         return [json.loads(line[5:]) for line in resp.iter_lines() if (line or "").startswith("data:")]

@@ -1,4 +1,6 @@
 """M5 脑图生成：JSON 解析、Markdown 回退、接口与鉴权。"""
+from types import SimpleNamespace
+
 from app.services import mindmap_service
 
 
@@ -109,3 +111,29 @@ def test_mindmap_llm_error(client, monkeypatch):
     r = client.post(f"/api/books/{book_id}/mindmap", json={"chapter_id": ch})
     assert r.status_code == 502
     assert "模拟网络失败" in r.json()["detail"]
+
+
+def test_build_mindmap_messages_placeholder_scanned_book():
+    """脑图：扫描件（正文空）在隐私开启时不得注入「未发送」占位（审查报告 2-3 同源修复）。"""
+    book = SimpleNamespace(title="变分学讲义")
+    chapter = SimpleNamespace(index=1, title="第 1 页", content_text="", page_index=1)
+
+    # 隐私关闭：保留原占位
+    msgs = mindmap_service.build_mindmap_messages(
+        book, chapter, "", "", [], [], False, None, None
+    )
+    assert "正文未发送，遵循隐私设置" in msgs[-1]["content"]
+
+    # 隐私开启 + 扫描件按页阅读：扫描件说明，不得出现「未发送」
+    msgs = mindmap_service.build_mindmap_messages(
+        book, chapter, "", "", [], [], True, None, None
+    )
+    assert "未发送" not in msgs[-1]["content"]
+    assert "扫描版 PDF" in msgs[-1]["content"]
+
+    # 有页缓存时正常注入页缓存
+    msgs = mindmap_service.build_mindmap_messages(
+        book, chapter, "", "", [], [], True, None, "【第 1 页】变分法基本概念"
+    )
+    assert "页缓存" in msgs[-1]["content"]
+    assert "扫描版" not in msgs[-1]["content"]

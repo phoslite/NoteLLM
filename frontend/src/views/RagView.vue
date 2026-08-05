@@ -13,6 +13,7 @@ const books = ref<BookItem[]>([])
 const assets = ref<Record<number, BookAssetView>>({})
 const loading = ref(false)
 const pickedFile = ref<File | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 const title = ref('')
 const busy = ref(false)
 const busyId = ref<number | null>(null)
@@ -62,9 +63,25 @@ function openDetail(bookId: number) {
   router.push(`/rag/${bookId}`)
 }
 
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 function onPick(e: Event) {
   const input = e.target as HTMLInputElement
-  pickedFile.value = input.files?.[0] ?? null
+  const file = input.files?.[0] ?? null
+  pickedFile.value = file
+  input.value = ''
+  if (file && !title.value.trim()) {
+    title.value = file.name.replace(/\.(md|markdown|pdf|txt|epub)$/i, '')
+  }
+}
+
+function clearPick() {
+  pickedFile.value = null
+  if (fileInput.value) fileInput.value.value = ''
 }
 
 function onDrop(e: DragEvent) {
@@ -145,30 +162,32 @@ onMounted(refresh)
         <div class="upload-icon">📄</div>
         <div class="upload-info">
           <h3 class="card-title">外部资料 → RAG / Skill</h3>
-          <p class="card-desc">
-            上传 Markdown / PDF / TXT / EPUB 文件，AI 将自动把内容总结为可检索的 RAG 摘要与可复用的技能（Skill），
-            并在原资产上增量更新（version + 1）。
-          </p>
+          <p class="card-desc">选择或拖入文档，AI 自动总结为 RAG 摘要与可复用 Skill，重复上传在原资产上增量更新（version + 1）</p>
         </div>
       </div>
-      <label
-        class="upload-zone"
-        :class="{ active: pickedFile }"
-        @dragover.prevent
-        @drop.prevent="onDrop"
-      >
-        <input type="file" accept=".md,.markdown,.pdf,.txt,.epub" @change="onPick" />
-        <span class="zone-icon">{{ pickedFile ? '📎' : '📂' }}</span>
-        <span class="zone-main">
-          <span class="zone-hint">{{ pickedFile ? '已选择文件' : '点击选择文件，或将文件拖入此处' }}</span>
-          <span class="zone-file" :class="{ muted: !pickedFile }">
-            {{ pickedFile ? pickedFile.name : '支持 .md / .pdf / .txt / .epub' }}
+      <div class="upload-body">
+        <label
+          class="upload-zone"
+          :class="{ active: pickedFile, disabled: busy }"
+          @dragover.prevent
+          @drop.prevent="onDrop"
+        >
+          <input ref="fileInput" type="file" accept=".md,.markdown,.pdf,.txt,.epub" :disabled="busy" @change="onPick" />
+          <span class="zone-icon">{{ pickedFile ? '📎' : '📂' }}</span>
+          <span class="zone-main">
+            <span class="zone-hint">
+              {{ pickedFile ? `已选择：${pickedFile.name}` : '点击选择文件，或将文件拖入此处' }}
+            </span>
+            <span class="zone-file" :class="{ muted: !pickedFile }">
+              {{ pickedFile ? `${formatSize(pickedFile.size)} · 点击可更换` : '支持 .md / .pdf / .txt / .epub' }}
+            </span>
           </span>
-        </span>
-      </label>
-      <div class="upload-row">
-        <el-input v-model="title" placeholder="标题（可选）" style="width: 260px" />
-        <el-button type="primary" round :loading="busy" @click="startIngest">上传并总结</el-button>
+          <button v-if="pickedFile" type="button" class="zone-clear" title="清除选择" @click.prevent.stop="clearPick">✕</button>
+        </label>
+        <div class="upload-actions">
+          <el-input v-model="title" placeholder="标题（可选）" :disabled="busy" @keyup.enter="startIngest" />
+          <el-button type="primary" round :loading="busy" @click="startIngest">上传并总结</el-button>
+        </div>
       </div>
       <div v-if="busy" class="busy-tip">⏳ {{ taskMsg }}</div>
     </el-card>
@@ -276,40 +295,63 @@ onMounted(refresh)
   background: var(--bg-color);
 }
 .upload-card { border-radius: var(--radius-lg); }
-.upload-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.upload-card :deep(.el-card__body) { padding: 14px 18px; }
+.upload-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .upload-icon {
-  width: 52px; height: 52px; flex-shrink: 0; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center; font-size: 26px;
+  width: 42px; height: 42px; flex-shrink: 0; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center; font-size: 21px;
   background: var(--primary-soft);
 }
 .upload-info { flex: 1; min-width: 0; }
-.card-title { margin: 0 0 6px; font-size: 17px; }
-.card-desc { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+.card-title { margin: 0 0 3px; font-size: 15.5px; }
+.card-desc {
+  margin: 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.upload-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .upload-zone {
-  display: flex; align-items: center; gap: 14px;
-  padding: 14px 18px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px;
   border: 1.5px dashed var(--border-color);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--panel-bg);
   cursor: pointer;
   transition: border-color .15s, background .15s;
+  flex: 1 1 340px;
+  min-width: 0;
 }
 .upload-zone:hover {
   border-color: var(--primary-color);
   background: color-mix(in srgb, var(--primary-soft) 45%, var(--panel-bg));
 }
 .upload-zone.active { border-color: var(--success); }
+.upload-zone.disabled { opacity: .6; pointer-events: none; }
 .upload-zone input { display: none; }
-.zone-icon { font-size: 22px; flex-shrink: 0; }
-.zone-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.zone-hint { font-size: 12.5px; font-weight: 600; }
+.zone-icon { font-size: 20px; flex-shrink: 0; }
+.zone-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.zone-hint {
+  font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .zone-file {
-  font-size: 12px; color: var(--text-secondary);
+  font-size: 11.5px; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .zone-file.muted { opacity: .75; }
-.upload-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.busy-tip { margin-top: 10px; color: var(--primary-color); font-size: 13px; }
+.zone-clear {
+  flex-shrink: 0; width: 20px; height: 20px; border: none; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1; color: var(--text-secondary);
+  background: var(--border-color); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.zone-clear:hover { background: var(--danger); color: #fff; }
+.upload-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.upload-actions .el-input { width: 200px; }
+.busy-tip {
+  margin-top: 8px; color: var(--primary-color); font-size: 12.5px;
+  display: inline-block; padding: 3px 10px; border-radius: 999px; background: var(--primary-soft);
+}
 
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .card-head-title { font-size: 15px; font-weight: 700; }

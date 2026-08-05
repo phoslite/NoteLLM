@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.factory import build_client
 from app.ai.parsing import parse_llm_json
+from app.ai.prompts.chat import body_fallback_text
 from app.core.config import settings
 from app.repositories.assets import load_skills, retrieve_rag_chunks
 from app.repositories.chat import persist_chat
@@ -129,6 +130,7 @@ def build_mindmap_messages(
 ) -> list[dict]:
     """构建脑图生成 messages；隐私开关关闭时不发送正文与 RAG 片段；PDF 按页阅读优先注入页缓存。"""
     context_text, rag_block = build_context_block(chapter, rag_chunks, enable_body_send)
+    page_mode = getattr(chapter, "page_index", None) is not None
     if page_context:
         rag_block = ""
     user = f"书籍：《{book.title}》\n当前章节：第{chapter.index}章 {chapter.title}\n"
@@ -139,7 +141,7 @@ def build_mindmap_messages(
     if page_context:
         user += f"\n【当前页及相邻页内容（页缓存）】\n{page_context}\n"
     else:
-        user += f"\n【当前章节正文】\n{context_text or '（正文未发送，遵循隐私设置）'}\n"
+        user += f"\n【当前章节正文】\n{body_fallback_text(context_text, enable_body_send, page_mode)}\n"
     if rag_block and not page_context:
         user += f"\n【相关背景（RAG）】\n{rag_block}\n"
     user += "\n请按系统要求输出思维导图 JSON。"

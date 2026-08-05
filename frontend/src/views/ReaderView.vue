@@ -159,6 +159,18 @@ function insertMindmapAsNote() {
   void addNote('批注', `【思维导图：${label}】`, mindmapData.value.markdown)
 }
 
+/* ---------- AI 助手右侧折叠 ---------- */
+function loadChatCollapsed(): boolean {
+  try { return localStorage.getItem('reader.chatCollapsed') === '1' } catch { return false }
+}
+const chatCollapsed = ref(loadChatCollapsed())
+const chatUnread = ref(0)
+function toggleChatCollapsed() {
+  chatCollapsed.value = !chatCollapsed.value
+  try { localStorage.setItem('reader.chatCollapsed', chatCollapsed.value ? '1' : '0') } catch { /* 存储异常忽略 */ }
+  if (!chatCollapsed.value) chatUnread.value = 0
+}
+
 /* ---------- AI 助手 ---------- */
 const ai = useReaderAi({
   bookId,
@@ -168,6 +180,7 @@ const ai = useReaderAi({
   takeSelection,
   openMindmap,
   scrollChat: () => chatPanel.value?.scrollToBottom(),
+  onAssistantDone: () => { if (chatCollapsed.value) chatUnread.value += 1 },
 })
 const { chatMessages, chatMode, aiInput, streaming, streamError, currentChapterTitle, presetPrompt, switchMode, sendChat, abortChat, clearChat, copyChat, resetChat, askSelection } = ai
 
@@ -361,31 +374,50 @@ onBeforeUnmount(() => {
 
     <main class="reading-panel">
       <div class="reading-toolbar">
-        <div class="toolbar-info">
-          <template v-if="pageMode">
-            <span class="page-indicator">第 {{ currentChapter?.index ?? pageIndex ?? '-' }}/{{ totalCount }} 页</span>
-            <span class="page-zoombar">
-              <button type="button" class="mini-btn" :class="{ active: pageZoom === 'fit' }" @click="pageZoom = 'fit'">适配宽度</button>
-              <button type="button" class="mini-btn" :class="{ active: pageZoom === 1 }" @click="pageZoom = 1">原始大小</button>
-              <button type="button" class="mini-btn" :disabled="pageZoom !== 'fit' && pageZoom >= 3" @click="zoomBy(1.25)">＋</button>
-              <button type="button" class="mini-btn" :disabled="pageZoom !== 'fit' && pageZoom <= 0.5" @click="zoomBy(0.8)">－</button>
-              <span class="page-zoom-text">{{ pageZoomText }}</span>
-            </span>
-          </template>
-          <h2 v-else-if="currentChapter" class="chapter-heading">
-            <MdRender :source="currentChapter.title" inline />
-          </h2>
-          <h2 v-else class="chapter-heading">选择章节开始阅读</h2>
-          <el-button
-            v-if="pageMode && currentChapter"
-            class="read-status-btn"
-            size="small"
-            :type="currentChapter.read_flag ? 'success' : 'info'"
-            :plain="!currentChapter.read_flag"
-            @click="toggleChapterRead(currentChapter)"
-          >
-            {{ currentChapter.read_flag ? '✓ 本页已读' : '标记本页已读' }}
-          </el-button>
+        <div class="toolbar-row">
+          <div class="toolbar-left">
+            <template v-if="pageMode">
+              <span class="page-indicator">第 {{ currentChapter?.index ?? pageIndex ?? '-' }}/{{ totalCount }} 页</span>
+              <span class="page-zoombar">
+                <button type="button" class="mini-btn" title="适配宽度" :class="{ active: pageZoom === 'fit' }" @click="pageZoom = 'fit'">适配</button>
+                <button type="button" class="mini-btn" title="原始大小（1:1）" :class="{ active: pageZoom === 1 }" @click="pageZoom = 1">1:1</button>
+                <button type="button" class="mini-btn" :disabled="pageZoom !== 'fit' && pageZoom >= 3" @click="zoomBy(1.25)">＋</button>
+                <button type="button" class="mini-btn" :disabled="pageZoom !== 'fit' && pageZoom <= 0.5" @click="zoomBy(0.8)">－</button>
+                <span v-if="pageZoom !== 'fit'" class="page-zoom-text">{{ pageZoomText }}</span>
+              </span>
+            </template>
+            <h2 v-else-if="currentChapter" class="chapter-heading">
+              <MdRender :source="currentChapter.title" inline />
+            </h2>
+            <h2 v-else class="chapter-heading">选择章节开始阅读</h2>
+          </div>
+          <div class="toolbar-actions">
+            <el-button
+              v-if="pageMode && currentChapter"
+              class="read-status-btn"
+              size="small"
+              :type="currentChapter.read_flag ? 'success' : 'primary'"
+              :plain="!currentChapter.read_flag"
+              @click="toggleChapterRead(currentChapter)"
+            >
+              {{ currentChapter.read_flag ? '✓ 已读' : '标记已读' }}
+            </el-button>
+            <el-button size="small" @click="bookmarkDrawer = true">书签</el-button>
+            <el-badge :value="notes.length" :hidden="!notes.length" type="primary">
+              <el-button size="small" @click="notesDrawer = true">笔记</el-button>
+            </el-badge>
+            <el-button
+              size="small"
+              :type="book?.status === '读完' ? 'warning' : 'success'"
+              plain
+              @click="toggleFinished"
+            >
+              {{ book?.status === '读完' ? '标记在读' : '标记读完' }}
+            </el-button>
+            <el-button size="small" type="primary" plain :loading="archiving" @click="archiveAndSummarize">
+              归档
+            </el-button>
+          </div>
         </div>
         <div v-if="pageMode" class="toolbar-tools">
           <DoodleToolbar
@@ -397,28 +429,13 @@ onBeforeUnmount(() => {
             @update:color="doodleColor = $event"
             @update:line-width="doodleLineWidth = $event"
           />
-        </div>
-        <div class="toolbar-actions">
-          <span v-if="pageMode && pageCacheStatus" class="page-cache-status">
-            页缓存 {{ pageCacheStatus.cached }}/{{ pageCacheStatus.total }}
+          <span class="tool-tools-right">
+            <span v-if="pageCacheStatus" class="page-cache-status" title="已提取缓存页数 / 总页数">
+              页缓存 {{ pageCacheStatus.cached }}/{{ pageCacheStatus.total }}
+            </span>
+            <el-button size="small" title="重新提取当前页缓存" :loading="pageCacheBusy" @click="reExtractCurrentPage">重提</el-button>
+            <el-button size="small" title="重建全部页缓存" :loading="pageCacheBusy" @click="rebuildPageCache">重建</el-button>
           </span>
-          <el-button v-if="pageMode" size="small" :loading="pageCacheBusy" @click="reExtractCurrentPage">🔄 重提本页</el-button>
-          <el-button v-if="pageMode" size="small" :loading="pageCacheBusy" @click="rebuildPageCache">📄 重建页缓存</el-button>
-          <el-button size="small" @click="bookmarkDrawer = true">🔖 书签</el-button>
-          <el-badge :value="notes.length" :hidden="!notes.length" type="primary">
-            <el-button size="small" @click="notesDrawer = true">笔记</el-button>
-          </el-badge>
-          <el-button
-            size="small"
-            :type="book?.status === '读完' ? 'warning' : 'success'"
-            plain
-            @click="toggleFinished"
-          >
-            {{ book?.status === '读完' ? '标记为在读' : '标记读完' }}
-          </el-button>
-          <el-button size="small" type="primary" plain :loading="archiving" @click="archiveAndSummarize">
-            📥 归档并总结 RAG/Skill
-          </el-button>
         </div>
       </div>
       <div ref="scrollEl" class="reading-scroll" @scroll="onScroll">
@@ -499,12 +516,15 @@ onBeforeUnmount(() => {
       :stream-error="streamError"
       :context-title="currentChapterTitle"
       :chat-mode="chatMode"
+      :collapsed="chatCollapsed"
+      :unread="chatUnread"
       @mode-change="switchMode"
       @preset="presetPrompt"
       @send="sendChat"
       @abort="abortChat"
       @clear="clearChat"
       @copy="copyChat"
+      @toggle-collapse="toggleChatCollapsed"
     />
 
     <el-drawer v-model="notesDrawer" title="本书笔记" size="420px">
@@ -599,33 +619,29 @@ onBeforeUnmount(() => {
 .reading-toolbar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 36px 8px;
+  gap: 6px;
+  padding: 6px 16px;
   border-bottom: 1px solid var(--border-color);
 }
-.toolbar-info {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  flex-wrap: wrap;
+.toolbar-row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.toolbar-row::-webkit-scrollbar { display: none; }
+.toolbar-left { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; flex-shrink: 0; min-width: 0; }
+.toolbar-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
+.toolbar-actions .el-button { padding: 5px 8px; }
+.toolbar-tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.doodle-row { flex: 1; min-width: 0; }
+.toolbar-tools .el-button { height: 22px; padding: 2px 8px; }
+.tool-tools-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.chapter-heading {
+  margin: 0; font-size: 16px; line-height: 1.5;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.toolbar-info .read-status-btn { margin-left: auto; }
-.toolbar-tools {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.chapter-heading { margin: 0; font-size: 20px; }
-
-.toolbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.doodle-row { width: 100%; }
+.chapter-heading :deep(p), .chapter-heading :deep(span) { margin: 0; display: inline; }
 
 .reading-scroll { flex: 1; overflow-y: auto; padding: 18px 40px 48px; }
 .page-view { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .page-zoombar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.page-zoom-text { font-size: 12px; color: var(--text-secondary); min-width: 52px; text-align: center; }
+.page-zoom-text { font-size: 12px; color: var(--text-secondary); min-width: 34px; text-align: center; }
 .page-scroll { width: 100%; display: flex; justify-content: safe center; }
 .page-img { max-width: 100%; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12); border-radius: 4px; }
 .mini-btn.active { border-color: var(--primary-color); color: var(--primary-color); background: rgba(64, 158, 255, 0.08); }

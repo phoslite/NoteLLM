@@ -197,7 +197,7 @@ python demo/chat_demo.py                                          # 交互式多
 | DELETE | `/api/books/{id}/chat/messages` | 清空本书对话历史 |
 
 - SSE 事件序列：`{"type":"start"}` → N 个 `{"type":"delta","text":...}` → `{"type":"end","text":...,"citations":[{chapter,para}]}`；失败发 `{"type":"error","message":...}`。
-- 上下文组装：当前章节正文按段落编号【第N段】注入；RAG 资产片段（`retrieve_rag_chunks` 关键词检索、带出处）与 Skill 资产（`load_skills`）自动注入系统提示词；隐私开关（`ai_enable_body_send=false`）时不发送正文与片段。
+- 上下文组装：当前章节正文按段落编号【第N段】注入；RAG 资产片段（`retrieve_rag_chunks` 关键词检索、带出处）与 Skill 资产（`load_skills`）自动注入系统提示词；隐私开关（`ai_enable_body_send=false`）时不发送正文与片段。`r`n- 扫描件占位文案（v1.103）：正文为空时按原因分流——隐私关闭「（正文未发送，遵循隐私设置）」；扫描件按页阅读「（本书为扫描版 PDF，正文以页面图片或页缓存文本为准）」；普通书「（当前章节暂无正文）」（`ai/prompts/chat.py::body_fallback_text`，chat 与脑图共用；`build_user_prompt`/`build_messages` 增 `enable_body_send`/`page_mode` 透传）。
 - 引用出处：`extract_citations` 解析回答中 `【第X章 第Y段】` 格式标注，`end` 事件携带结构化列表供前端展示。
 - 历史落库：`end` 事件后写入 `ChatMessage`（独立会话，避免流式期间请求级会话被关闭）；失败不影响已输出的回答。
 

@@ -1,9 +1,15 @@
-import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
+import { computed, reactive, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { clearChatMessages, listChatMessages, streamChat } from '@/api/chat'
 import type { ChapterItem, ChatMessageItem } from '@/types'
 
-export type UiChatMsg = ChatMessageItem & { local?: boolean; citations?: { chapter: number; para: string }[]; cached?: boolean }
+export type UiChatMsg = ChatMessageItem & {
+  local?: boolean
+  citations?: { chapter: number; para: string }[]
+  cached?: boolean
+  /** 流式中模型的思考过程（DeepSeek reasoning_content 等，不落库）。 */
+  thinking?: string
+}
 
 export interface ReaderAi {
   chatMessages: Ref<UiChatMsg[]>
@@ -26,6 +32,10 @@ export interface ReaderAi {
 /** 渲染节流（手册 §18）：每 80ms 批量刷出一次；公式未闭合时最多等待 500ms 再强制刷出。 */
 const FLUSH_INTERVAL_MS = 80
 const MATH_MAX_WAIT_MS = 500
+/** 方案2：流式期间固定频率轮询历史（SSE 静默/丢失时自动补增量，无需刷新）。 */
+const POLL_INTERVAL_MS = 2000
+/** 思考过程渲染节流（thinking 事件可能高频小片）。 */
+const THINKING_FLUSH_MS = 150
 
 /** 检测缓冲区尾部是否有未闭合的 $$…$$ 或 $…$（避免流式中 KaTeX 闪错）。 */
 function hasUnclosedMath(text: string): boolean {
@@ -44,8 +54,10 @@ export function useReaderAi(opts: {
   openMindmap: (selection?: string) => void
   /** 流式输出时滚动聊天区到底部。 */
   scrollChat: () => void
+  /** 有新 AI 回复完成时回调（折叠期间未读角标）。 */
+  onAssistantDone?: () => void
 }): ReaderAi {
-  const { bookId, currentChapterId, currentChapter, scrollEl, takeSelection, openMindmap, scrollChat } = opts
+  const { bookId, currentChapterId, currentChapter, scrollEl, takeSelection, openMindmap, scrollChat, onAssistantDone } = opts
 
   const chatMessages = ref<UiChatMsg[]>([])
   const chatMode = ref('')
@@ -85,7 +97,15 @@ export function useReaderAi(opts: {
     try {
       const rows = await listChatMessages(bookId.value, mode)
       if (seq !== historySeq) return // 已切换模式，丢弃过期响应
-      chatMessages.value = rows
+      const current = chatMessages.value
+      if (!current.length) {
+        chatMessages.value = rows
+        return
+      }
+      // 合并而非整体替换：历史加载期间新发的本地消息（含流式中回复）不会被覆盖，
+      // 已落库消息按「角色+内容」与历史行去重，避免重复（修复「输出需刷新才可见」）
+      const extras = current.filter((m) => !rows.some((r) => r.role === m.role && r.content === m.content))
+      chatMessages.value = extras.length ? [...rows, ...extras] : rows
     } catch {
       /* 历史加载失败不影响阅读 */
     }
@@ -99,7 +119,7 @@ export function useReaderAi(opts: {
     pendingSelection = ''
     streamError.value = ''
     newSession() // 模式分池视为独立会话（决策 30/34）
-    void loadChatHistory()
+    return loadChatHistory()
   }
 
   function resetChat() {
@@ -109,12 +129,12 @@ export function useReaderAi(opts: {
     void loadChatHistory()
   }
 
-  function presetPrompt(kind: string) {
+  async function presetPrompt(kind: string) {
     if (kind === '脑图') {
       void openMindmap()
       return
     }
-    if (['解读', '概论', '思考逻辑'].includes(kind)) switchMode(kind)
+    if (['解读', '概论', '思考逻辑'].includes(kind)) await switchMode(kind)
     const ch = currentChapter.value
     const ctx = ch ? `当前章节：第${ch.index}章「${ch.title}」。` : '当前未选择章节。'
     const prompts: Record<string, string> = {
@@ -123,6 +143,7 @@ export function useReaderAi(opts: {
       思考逻辑: `${ctx} 请梳理本章的思考逻辑：论证链条、关键假设与可追问的问题，引用须标注出处。`,
     }
     aiInput.value = prompts[kind] ?? ''
+    void sendChat() // 一键生成：切换模式池后立即发起标准提示词（交互优化）
   }
 
   /** 把累积的缓冲一次性写入消息并滚动（渲染节流的核心刷出点）。 */
@@ -151,6 +172,20 @@ export function useReaderAi(opts: {
     }, FLUSH_INTERVAL_MS)
   }
 
+  /** 方案2：流式期间固定频率轮询历史；SSE 静默/丢失时用已落库增量补全本地消息。 */
+  async function pollStreamHistory(assistant: UiChatMsg, streamKey: string) {
+    try {
+      const rows = await listChatMessages(bookId.value, chatMode.value)
+      const row = rows.find((r) => r.role === 'assistant' && r.stream_key === streamKey)
+      if (row && row.content.length > assistant.content.length) {
+        assistant.content = row.content
+        scrollChat()
+      }
+    } catch {
+      /* 轮询失败忽略：SSE 仍为主通道 */
+    }
+  }
+
   async function sendChat(opts?: { crop_image?: string; crop_label?: string }) {
     const question = aiInput.value.trim()
     if (!question || streaming.value || !currentChapterId.value) return
@@ -162,29 +197,50 @@ export function useReaderAi(opts: {
       id: Date.now(), role: 'user', content: question,
       book_id: bookId.value, chapter_id: currentChapterId.value, ref_para_pos: null, created_at: null,
     })
-    const assistant: UiChatMsg = {
+    // reactive() 包裹：流中直接改 content/thinking 能触发 Vue 渲染（普通对象变更不重渲染，
+    // 这是「输出需刷新才可见」的根因之一）；stream_key 供后端滚动落库、前端轮询匹配。
+    const streamKey = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const assistant = reactive<UiChatMsg>({
       id: Date.now() + 1, role: 'assistant', content: '', local: true,
       book_id: bookId.value, chapter_id: currentChapterId.value, ref_para_pos: null, created_at: null,
-    }
+      stream_key: streamKey,
+    })
     chatMessages.value.push(assistant)
     streaming.value = true
     pendingText = ''
     lastFlushAt = Date.now()
+    let pendingThinking = ''
+    let thinkingFlushAt = Date.now()
+    function flushThinking() {
+      if (!pendingThinking) return
+      assistant.thinking = (assistant.thinking ?? '') + pendingThinking
+      pendingThinking = ''
+      thinkingFlushAt = Date.now()
+    }
+    const pollTimer = setInterval(() => {
+      void pollStreamHistory(assistant, streamKey)
+    }, POLL_INTERVAL_MS)
     const { promise, abort } = streamChat(
       bookId.value,
-      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: chatMode.value, session_id: sessionId },
+      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: chatMode.value, session_id: sessionId, stream_key: streamKey },
       (ev) => {
-        if (ev.type === 'delta') {
+        if (ev.type === 'thinking') {
+          pendingThinking += ev.text
+          if (Date.now() - thinkingFlushAt >= THINKING_FLUSH_MS) flushThinking()
+        } else if (ev.type === 'delta') {
           pendingText += ev.text
           scheduleFlush(assistant)
         } else if (ev.type === 'end') {
+          flushThinking()
           flushDelta(assistant)
           assistant.content = ev.text
           assistant.citations = ev.citations
           assistant.cached = ev.cached
           assistant.local = false
           streaming.value = false
+          onAssistantDone?.()
         } else if (ev.type === 'error') {
+          flushThinking()
           flushDelta(assistant)
           streaming.value = false
           streamError.value = ev.message
@@ -195,10 +251,12 @@ export function useReaderAi(opts: {
     try {
       await promise
     } catch (err) {
+      flushThinking()
       flushDelta(assistant)
       streaming.value = false
       streamError.value = (err as Error).message
     } finally {
+      clearInterval(pollTimer)
       chatAbort = null
       if (!assistant.content && streamError.value) {
         chatMessages.value = chatMessages.value.filter((m) => m !== assistant)

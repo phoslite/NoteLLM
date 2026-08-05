@@ -48,12 +48,12 @@ def test_chat_stream_and_persist(client, monkeypatch):
     book_id = _upload(client)
     ch = client.get(f"/api/books/{book_id}").json()["data"]["chapters"][0]["id"]
 
-    def fake_stream(self, messages):
+    def fake_stream_events(self, messages):
         assert messages and messages[0]["role"] == "system"
-        yield "第一段回复，引用【第1章 第1段】。"
-        yield "第二段回复。"
+        yield {"kind": "delta", "text": "第一段回复，引用【第1章 第1段】。"}
+        yield {"kind": "delta", "text": "第二段回复。"}
 
-    monkeypatch.setattr(LLMClient, "stream", fake_stream)
+    monkeypatch.setattr(LLMClient, "stream_events", fake_stream_events)
     with client.stream("POST", f"/api/books/{book_id}/chat", json={"question": "解读", "chapter_id": ch}) as resp:
         assert resp.status_code == 200
         events = [json.loads(line[5:]) for line in resp.iter_lines() if (line or "").startswith("data:")]
@@ -75,10 +75,10 @@ def test_chat_stream_error_event(client, monkeypatch):
     book_id = _upload(client)
     ch = client.get(f"/api/books/{book_id}").json()["data"]["chapters"][0]["id"]
 
-    def fail_stream(self, messages):
+    def fail_stream_events(self, messages):
         raise LLMError("模拟网络失败")
 
-    monkeypatch.setattr(LLMClient, "stream", fail_stream)
+    monkeypatch.setattr(LLMClient, "stream_events", fail_stream_events)
     with client.stream("POST", f"/api/books/{book_id}/chat", json={"question": "解读", "chapter_id": ch}) as resp:
         events = [json.loads(line[5:]) for line in resp.iter_lines() if (line or "").startswith("data:")]
     assert events[-1]["type"] == "error"
@@ -110,11 +110,11 @@ def test_chat_session_mode_pooling_and_history(client, monkeypatch):
     ch = client.get(f"/api/books/{book_id}").json()["data"]["chapters"][0]["id"]
     seen = []
 
-    def fake_stream(self, messages):
+    def fake_stream_events(self, messages):
         seen.append(messages)
-        yield "回复占位"
+        yield {"kind": "delta", "text": "回复占位"}
 
-    monkeypatch.setattr(LLMClient, "stream", fake_stream)
+    monkeypatch.setattr(LLMClient, "stream_events", fake_stream_events)
 
     def ask(question, mode=None):
         body = {"question": question, "chapter_id": ch}
@@ -145,3 +145,27 @@ def test_chat_session_mode_pooling_and_history(client, monkeypatch):
     assert client.delete(f"/api/books/{book_id}/chat/messages?mode=解读").status_code == 200
     assert client.get(f"/api/books/{book_id}/chat/messages?mode=解读").json()["data"] == []
     assert len(client.get(f"/api/books/{book_id}/chat/messages").json()["data"]) == 2
+
+
+def test_build_user_prompt_placeholder_scanned_book():
+    """扫描件（正文空）在隐私开启时不得注入「未发送」占位（审查报告 2-3 复测修复）。"""
+    from app.ai.prompts.chat import build_user_prompt
+
+    # 隐私关闭：保留原占位，告知模型正文按隐私设置未发送
+    p = build_user_prompt("书", 1, "第 1 页", "", "", "", "问题", enable_body_send=False, page_mode=True)
+    assert "正文未发送，遵循隐私设置" in p
+
+    # 隐私开启 + 扫描件按页阅读（正文空）：改扫描件说明，不得出现「未发送」
+    p = build_user_prompt("书", 1, "第 1 页", "", "", "", "问题", enable_body_send=True, page_mode=True)
+    assert "未发送" not in p
+    assert "扫描版 PDF" in p
+
+    # 隐私开启 + 普通书正文空：说明暂无正文
+    p = build_user_prompt("书", 1, "第一章", "", "", "", "问题", enable_body_send=True, page_mode=False)
+    assert "当前章节暂无正文" in p
+    assert "未发送" not in p
+
+    # 正文非空不受影响
+    p = build_user_prompt("书", 1, "第一章", "【第1段】正文", "", "", "问题", enable_body_send=True, page_mode=False)
+    assert "【第1段】正文" in p
+    assert "暂无正文" not in p

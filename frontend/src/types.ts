@@ -148,6 +148,8 @@ export interface ChatMessageItem {
   id: number
   role: 'user' | 'assistant'
   content: string
+  /** 方案2 流式滚动落库键：前端轮询时按此键匹配进行中的回答。 */
+  stream_key?: string | null
   book_id: number | null
   chapter_id: number | null
   ref_para_pos: string | null
@@ -156,6 +158,7 @@ export interface ChatMessageItem {
 
 export type ChatStreamEvent =
   | { type: 'start' }
+  | { type: 'thinking'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'end'; text: string; citations: { chapter: number; para: string }[]; cached?: boolean }
   | { type: 'error'; message: string }

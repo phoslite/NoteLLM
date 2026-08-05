@@ -44,6 +44,7 @@ def _ensure_columns() -> None:
             ("books", "position", "ALTER TABLE books ADD COLUMN position INTEGER NOT NULL DEFAULT 0"),
             ("books", "content_hash", "ALTER TABLE books ADD COLUMN content_hash VARCHAR(64)"),
             ("book_relations", "from_book_id", "ALTER TABLE book_relations ADD COLUMN from_book_id INTEGER"),
+            ("chat_messages", "stream_key", "ALTER TABLE chat_messages ADD COLUMN stream_key VARCHAR(64)"),
         ):
             cols = [r[1] for r in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()]
             if col not in cols:
@@ -65,6 +66,7 @@ _INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS ix_bookmarks_book_created ON bookmarks(book_id, created_at)",
     "CREATE INDEX IF NOT EXISTS ix_chat_messages_ref_book_id ON chat_messages(ref_book_id)",
     "CREATE INDEX IF NOT EXISTS ix_chat_messages_ref_chapter_id ON chat_messages(ref_chapter_id)",
+    "CREATE INDEX IF NOT EXISTS ix_chat_messages_stream_key ON chat_messages(stream_key)",
     "CREATE INDEX IF NOT EXISTS ix_book_relations_book_a_id ON book_relations(book_a_id)",
     "CREATE INDEX IF NOT EXISTS ix_book_relations_book_b_id ON book_relations(book_b_id)",
     "CREATE INDEX IF NOT EXISTS ix_book_relations_from_book_id ON book_relations(from_book_id)",

@@ -25,6 +25,8 @@ export function streamChat(
     crop_label?: string | null
     mode?: string | null
     session_id?: string | null
+    /** 方案2 流式滚动落库键（前端生成）：流中增量持久化后按此键轮询历史。 */
+    stream_key?: string | null
   },
   onEvent: (ev: ChatStreamEvent) => void,
 ) {
