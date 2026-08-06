@@ -260,3 +260,211 @@ def test_skill_domains_sanitized(client, monkeypatch):
         assert result["skill"]["domains"] == ["数学分析", "泛函", "Math Vol 2"]
     finally:
         db.close()
+def _long_md() -> str:
+    """>64K 字符的长书 Markdown（约 73K），保证触发方案 B 分块（默认块大小 64K）。"""
+    para = "很长的填充内容。" * 400  # 每章约 1600 字
+    return "\n".join(f"# 第{i}章 第{i}章内容\n\n第{i}章正文段落。{para}" for i in range(1, 60))
+
+
+def _chunk_reply(kps, skills):
+    return json.dumps({"key_points": kps, "skills": skills}, ensure_ascii=False)
+
+
+class _MapReduceClient:
+    """长书方案 B 模拟：map 轮按块返回中间结果，reduce 轮返回合并结果。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, messages):
+        self.calls.append(messages)
+        user = messages[-1]["content"]
+        if "以下是本书各片段" in user:
+            return json.dumps(
+                {
+                    "summary": "全书综合概述（合并后）。",
+                    "key_points": ["第一块要点（第1章第1段）", "第二块要点（第30章第1段）"],
+                    "tags": ["数学"],
+                    "skills": [
+                        {"name": "长书技能", "applicable": "综合", "usage": "合并后用法", "sources": ["第1章", "第30章"]}
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        if "第 1/" in user:
+            return _chunk_reply(
+                ["第一块要点（第1章第1段）"],
+                [{"name": "块1技能", "applicable": "块1", "usage": "块1用法", "sources": ["第1章"]}],
+            )
+        return _chunk_reply(
+            ["第二块要点（第30章第1段）"],
+            [{"name": "块2技能", "applicable": "块2", "usage": "块2用法", "sources": ["第30章"]}],
+        )
+
+
+def test_long_book_map_reduce_merges_across_blocks(client, monkeypatch):
+    """长书（>64K）走方案 B：map 逐块提炼 + reduce 合并，跨块 key_points 与 skills 齐全。"""
+    from app.services.rag_service import generate_rag_skill
+
+    book_id = _import_md(client, "长书.md", _long_md())
+    fake = _MapReduceClient()
+    monkeypatch.setattr("app.services.rag_service.is_configured", lambda db: True)
+    monkeypatch.setattr("app.services.rag_service.build_client", lambda db: fake)
+
+    db = SessionLocal()
+    try:
+        result = generate_rag_skill(db, book_id)
+    finally:
+        db.close()
+
+    map_calls = [m for m in fake.calls if "个片段" in m[-1]["content"]]
+    reduce_calls = [m for m in fake.calls if "以下是本书各片段" in m[-1]["content"]]
+    assert len(map_calls) >= 2, "长书应产生至少 2 个 map 块"
+    assert len(reduce_calls) == 1
+    assert result["version"] == 1
+    assert result["rag"]["summary"] == "全书综合概述（合并后）。"
+    assert any("第30章" in k for k in result["rag"]["key_points"])
+    assert result["skill"]["skills"][0]["name"] == "长书技能"
+
+
+def test_long_book_map_reduce_skips_failed_block(client, monkeypatch):
+    """单块 map 失败应跳过，其余块照常 reduce 合并。"""
+    from app.ai.client import LLMError
+    from app.services.rag_service import generate_rag_skill
+
+    book_id = _import_md(client, "长书失败.md", _long_md())
+
+    class _PartialClient(_MapReduceClient):
+        def chat(self, messages):
+            user = messages[-1]["content"]
+            if "个片段" in user and "第 2/" in user:
+                raise LLMError("mock 第二块失败")
+            return super().chat(messages)
+
+    fake = _PartialClient()
+    monkeypatch.setattr("app.services.rag_service.is_configured", lambda db: True)
+    monkeypatch.setattr("app.services.rag_service.build_client", lambda db: fake)
+
+    db = SessionLocal()
+    try:
+        result = generate_rag_skill(db, book_id)
+    finally:
+        db.close()
+    assert any("第1章" in k for k in result["rag"]["key_points"])
+    assert result["skill"]["skills"][0]["name"] == "长书技能"  # reduce 合并仍成功
+
+
+def test_long_book_incremental_map_reduce(client, monkeypatch):
+    """增量模式同样分块：reduce 轮注入旧资产与新增素材，版本在旧资产上递增。"""
+    from app.repositories.assets import upsert_asset
+    from app.services.rag_service import generate_rag_skill
+
+    book_id = _import_md(client, "长书增量.md", _long_md())
+
+    class _IncMapClient(_MapReduceClient):
+        def chat(self, messages):
+            user = messages[-1]["content"]
+            if "以下是本书各片段" in user:
+                assert "已有 RAG 资产" in user, "增量 reduce 应注入旧资产"
+                return json.dumps(
+                    {
+                        "summary": "增改后的全书概述。",
+                        "key_points": ["旧要点", "第一块要点（第1章第1段）"],
+                        "tags": ["数学"],
+                        "skills": [{"name": "旧技能", "applicable": "a", "usage": "u", "sources": ["第1章"]}],
+                    },
+                    ensure_ascii=False,
+                )
+            return super().chat(messages)
+
+    fake = _IncMapClient()
+    monkeypatch.setattr("app.services.rag_service.is_configured", lambda db: True)
+    monkeypatch.setattr("app.services.rag_service.build_client", lambda db: fake)
+
+    db = SessionLocal()
+    try:
+        upsert_asset(db, book_id, "rag", {"summary": "旧概要", "key_points": ["旧要点"]})
+        upsert_asset(db, book_id, "skill", {"name": "旧技能包", "skills": [{"name": "旧技能", "applicable": "a", "usage": "u", "sources": ["第1章"]}]})
+        db.commit()
+        result = generate_rag_skill(db, book_id)
+        assert result["version"] == 2
+        assert "旧要点" in result["rag"]["key_points"]
+    finally:
+        db.close()
+def test_page_input_and_chunks_skip_blank_pages():
+    """空白页标记不进入 RAG 片段与 LLM 输入正文（视觉归一化后下游过滤，v1.84）。"""
+    from app.services.blank_page import BLANK_PAGE_MARK
+    from app.services.rag_input import build_page_input, chunk_page_texts_for_summary
+
+    pages = {1: "第一页正文", 2: BLANK_PAGE_MARK, 3: "第三页正文", 4: "   "}
+    chunks = page_chunks(pages)
+    assert [c["chapter_index"] for c in chunks] == [1, 3]
+    body = build_page_input(pages)
+    assert "第一页正文" in body and "第三页正文" in body
+    assert "空白页" not in body
+    blocks = chunk_page_texts_for_summary(pages, 64000)
+    assert len(blocks) == 1
+    assert "空白页" not in blocks[0]
+
+def test_archive_pdf_skips_vision_when_all_pages_cached(client, fake_llm, monkeypatch):
+    """页缓存无缺失时归档不进入视觉提取：不调用 rebuild_book_caches，进度直接到文本总结。"""
+    from pathlib import Path
+
+    book_id = _import_md(client, "扫描书.md", "# 第一章\n\n内容\n")
+    db = SessionLocal()
+    book = db.get(Book, book_id)
+    assert book is not None
+    book.format = "pdf"
+    book.page_count = 2
+    db.commit()
+    page_dir = Path(book.file_path).parent / "page_text"
+    page_dir.mkdir(parents=True, exist_ok=True)
+    (page_dir / "page_001.md").write_text("第 1 页内容", encoding="utf-8")
+    (page_dir / "page_002.md").write_text("第 2 页内容", encoding="utf-8")
+    db.close()
+
+    calls: list[str] = []
+
+    def _fake_rebuild(db_, book_, force=False, progress=None, workers=None):
+        calls.append("rebuild")
+        return {"total": 2, "extracted": 1, "cached": 1, "failed": 0, "errors": []}
+
+    monkeypatch.setattr("app.services.rag_service.rebuild_book_caches", _fake_rebuild)
+    result = archive_book_task(book_id)
+    assert calls == []  # 未进入视觉提取
+    assert result["page_cache"]["total"] == 2
+    assert result["page_cache"]["extracted"] == 0
+    assert result["page_cache"]["cached"] == 2
+    assert result["rag"]["key_points"]
+
+def test_text_summary_block_progress(client, fake_llm, monkeypatch):
+    """长书 map-reduce：文本块处理进度逐块上报（块 X/N 处理中/完成 + 合并总结）。"""
+    from app.services import rag_service
+
+    calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(rag_service, "update_progress", lambda p, s="": calls.append((p, s)))
+    monkeypatch.setattr("app.core.config.settings.rag_summary_chunk_chars", 60, raising=False)
+    book_id = _import_md(
+        client,
+        "长书.md",
+        "# 第一章\n\n" + "变分法研究泛函极值。" * 40
+        + "\n\n# 第二章\n\n" + "泛函空间与范数。" * 40
+        + "\n\n# 第三章\n\n" + "极值问题的对偶。" * 40 + "\n",
+    )
+    archive_book_task(book_id)
+    block_stages = [s for _p, s in calls if "块" in s]
+    assert len(block_stages) >= 4  # 至少 2 块 ×（处理中/完成）
+    assert any("合并" in s for _p, s in calls)
+    assert any("单块" in s for _p, s in calls) is False
+
+
+def test_text_summary_single_block_progress(client, fake_llm, monkeypatch):
+    """短书单块：显示单块总结进度，不出现块 X/N。"""
+    from app.services import rag_service
+
+    calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(rag_service, "update_progress", lambda p, s="": calls.append((p, s)))
+    book_id = _import_md(client, "短书.md", "# 第一章\n\n变分法内容。\n")
+    archive_book_task(book_id)
+    assert any("单块" in s for _p, s in calls)
+    assert any("块" in s and "单块" not in s for _p, s in calls) is False

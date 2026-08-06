@@ -19,15 +19,29 @@ from app.parsers.pdf import render_pdf_page
 from app.repositories import books as book_repo
 from app.repositories.settings import load_ai_overrides, vision_client_kwargs, vision_configured
 from app.services.media_service import page_image_path
+from app.services.vision_image import (
+    ocr_configured,
+    prep_page_image,
+    prepare_book_vlm_images,
+    read_ocr_cache,
+    vlm_page_path,
+)
 
 PAGE_TEXT_DIR = "page_text"
+
+from app.services.blank_page import (  # noqa: E402 空白页标记（视觉判定空白时落盘，下游过滤）
+    BLANK_PAGE_MARK,
+    is_blank_page_text,
+)
 
 EXTRACT_SYSTEM = (
     "你是 PDF 页面信息提取专家。请把用户提供的这一页 PDF 图片完整地转为结构化 Markdown 文本：\n"
     "1) 转录正文内容；公式使用 LaTeX（行内 $...$、块级 $...$），禁止输出 Unicode 数学字符（如 Λ、∈、ℝ、√），一律写成 LaTeX 命令（如 \\Lambda、\\in、\\mathbb{R}、\\sqrt）；表格转为 Markdown 表格；\n"
     "2) 图片/图表用文字描述其内容与作用（图注优先转录）；\n"
     "3) 保留标题层级、列表与页码信息；不要遗漏任何可见文字；\n"
-    "4) 只输出该页内容本身，不要任何前言后语。"
+    "4) 只输出该页内容本身，不要任何前言后语。\n"
+    "5) 若该页完全空白（无任何文字/图表/可见内容），只输出标记 `<!-- 空白页 -->`，"
+    "绝对不要编造或描述不存在的文字内容。"
 )
 
 
@@ -45,9 +59,21 @@ def read_page_cache(book, page_index: int) -> str | None:
     return text or None
 
 
+def missing_page_caches(book) -> list[int]:
+    """预检缺失页缓存（不存在或为空）的页号列表；不触发任何视觉 API 或页图渲染。"""
+    total = getattr(book, "page_count", 0)
+    return [i for i in range(1, total + 1) if read_page_cache(book, i) is None]
+
+
 def _extract_page_text(client: LLMClient, book, page_index: int) -> str:
-    """调用多模态 LLM 提取单页完整信息，返回 Markdown 文本。"""
-    path = page_image_path(book, page_index)
+    """调用多模态 LLM 提取单页完整信息，返回 Markdown 文本。
+
+    v1.86 压缩页图接入：输入优先 pages_vlm/page_XXX.jpg（裁边+缩放，降 token/请求体/超时率），
+    未生成时回退原图 pages/page_XXX.jpg。
+    """
+    path = vlm_page_path(book, page_index)
+    if not path.exists():
+        path = page_image_path(book, page_index)
     if not path.exists():
         # 页图缺失自愈：导入后台渲染中断/遗漏时按需补渲染（归档/阅读提问依赖页图），再提取
         try:
@@ -71,6 +97,9 @@ def _extract_page_text(client: LLMClient, book, page_index: int) -> str:
     text = client.chat(messages).strip()
     if not text:
         raise RuntimeError(f"第 {page_index} 页提取结果为空")
+    if is_blank_page_text(text):
+        # 视觉模型判定为空白页：归一化为标准标记落盘（非空，可被缓存命中与下游识别）
+        return BLANK_PAGE_MARK
     return text
 
 
@@ -135,8 +164,13 @@ def extract_image_attachment(db: Session, image_uri: str, hint: str = "") -> str
 
 
 def ensure_page_cache(db: Session, book, page_index: int, force: bool = False) -> str:
-    """确保指定页有缓存：命中（非空且非 force）直接读取，否则调用多模态 LLM 提取并落盘。
+    """确保指定页有缓存：命中（非空且非 force）直接读取，否则提取并落盘。
 
+    提取路径（v1.86 压缩页图/OCR 预留扩展）：
+    1) 页图缺失自愈补渲染（压缩图分析依赖原图）；
+    2) prep_page_image 空白预判 -> 直接落盘统一空白标记（不调用多模态 API）；
+    3) 本地 OCR 文本缓存命中（vision_ocr_engine 已配置）-> 直接使用（省多模态调用）；
+    4) 多模态 LLM 提取（输入优先 pages_vlm/ 压缩图，未生成时回退原图）。
     隐私开关关闭时抛 ValueError（不触发提取）。
     """
     overrides = load_ai_overrides(db)
@@ -146,8 +180,24 @@ def ensure_page_cache(db: Session, book, page_index: int, force: bool = False) -
     cached = read_page_cache(book, page_index)
     if cached and not force:
         return cached
-    client = LLMClient(**vision_client_kwargs(db), kind="vision")
-    text = _extract_page_text(client, book, page_index)
+    # 页图缺失自愈：导入后台渲染中断/遗漏时按需补渲染（压缩图分析依赖原图）
+    src = page_image_path(book, page_index)
+    if not src.exists():
+        try:
+            render_pdf_page(book.file_path, page_index, src)
+        except Exception as exc:  # noqa: BLE001 补渲染失败按页图缺失处理（单页失败不中断整体）
+            raise FileNotFoundError(f"页图缺失且补渲染失败: {src}（{exc}）") from exc
+    prep = prep_page_image(book, page_index)  # 懒生成压缩页图（参数变更自动重建）
+    if prep["blank"]:
+        # 图像级空白预判：直接落盘统一空白标记，不调用多模态 API
+        text = BLANK_PAGE_MARK
+    else:
+        ocr_text = read_ocr_cache(book, page_index) if ocr_configured() else None
+        if ocr_text:
+            text = ocr_text  # OCR 预留扩展：本地 OCR 文本缓存优先（省多模态调用）
+        else:
+            client = LLMClient(**vision_client_kwargs(db), kind="vision")
+            text = _extract_page_text(client, book, page_index)
     path = page_text_path(book, page_index)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -196,6 +246,12 @@ def rebuild_book_caches(
 
     total = getattr(book, "page_count", 0)
     stats = {"total": total, "extracted": 0, "cached": 0, "failed": 0, "errors": []}
+    # v1.86：批量预生成压缩页图（参数变更整目录重建；OCR 已配置时同步产出文本缓存）。
+    # 失败不阻断提取（单页懒生成兜底）。
+    try:
+        prepare_book_vlm_images(book, workers=workers)
+    except Exception as exc:  # noqa: BLE001
+        stats["errors"].append(f"压缩页图预生成失败: {exc}")
     if workers is None:
         workers = settings.vision_concurrency
     if workers <= 1 or total <= 1:

@@ -30,7 +30,7 @@ def _remove_book_files(file_path: Path) -> None:
     if parent.name == file_path.stem:
         shutil.rmtree(parent, ignore_errors=True)
         return
-    for candidate in (file_path, parent / "cover.jpg", parent / "pages", parent / "annotations"):
+    for candidate in (file_path, parent / "cover.jpg", parent / "pages", parent / "pages_vlm", parent / "annotations"):
         try:
             if candidate.is_dir():
                 shutil.rmtree(candidate, ignore_errors=True)

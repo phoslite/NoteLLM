@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     vision_enable_thinking: bool | None = None  # SiliconFlow 推理模型（DeepSeek/Zhipu 系）开关；非推理模型勿开
     vision_thinking_budget: int | None = None  # SiliconFlow 思维链 token 上限（仅推理模型）
 
+    # 视觉提取压缩页图（v1.86）：pages_vlm/ 裁边 + 缩放（降 token/请求体/超时率），原图不动
+    vision_image_max_width: int = 1400  # 压缩页图目标宽度（原图宽 <= 阈值且无裁边收益时复用原图）
+    vision_image_quality: int = 82  # 压缩页图 JPEG 质量（80~90 体积/清晰度平衡）
+    vision_image_trim: str = "conservative"  # 裁边模式：conservative | aggressive | none
+    # OCR 预留扩展（v1.86）：本地 OCR 引擎接入点，压缩图生成后同步产出 pages_vlm/page_XXX.txt
+    vision_ocr_engine: str = ""  # 空=关闭（默认走多模态视觉模型）；tesseract=已实现；paddle/rapidocr=预留占位
+    vision_ocr_lang: str = "eng"  # OCR 语言（tesseract 如 chi_sim+eng）
+    vision_ocr_bin: str = ""  # OCR 可执行文件路径；空=走 PATH（如 tesseract）
+
     # 任务系统与并发（决策 35；任一 =0 表示不限制）
     task_workers: int = 8  # 任务系统全局线程池大小；0=每任务独立线程（旧行为）
     ai_concurrency: int = 4  # 文本 LLM 并发数（信号量，demo 实测 4 为甜点）
@@ -62,6 +71,9 @@ class Settings(BaseSettings):
     llm_cache_max_entries: int = 300  # LLM 结果缓存容量上限（脑图/预设模式解读，超限删最旧）；0=不缓存
     llm_cache_ttl_days: int = 30  # LLM 结果缓存 TTL（天）
     fts_search_enabled: bool = True  # FTS5 全书搜索开关；关闭时不建索引、搜索接口返回空
+    # 归档总结分块（方案 B map-reduce，决策：主流模型 200K 上下文，块大小定 64K 字符）
+    # 书籍正文超过该字符数时按块分多次提炼（map）再合并（reduce），避免旧 8K 截断只覆盖前几章
+    rag_summary_chunk_chars: int = 64000
 
 
     # 决策 34：LLM 自主挑选 RAG/Skill（挑选器独立模型配置；未填项回退主文本模型）

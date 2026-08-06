@@ -95,6 +95,9 @@ def test_extract_page_renders_missing_image(monkeypatch, client, tmp_path):
         img = vision_extract.page_image_path(book, 1)
         assert img.exists(), "导入后台应已渲染页图"
         img.unlink()  # 模拟渲染中断/页图缺失
+        vlm = vision_extract.vlm_page_path(book, 1)
+        if vlm.exists():
+            vlm.unlink()  # v1.86：压缩图一并移除，模拟页图完全缺失（否则压缩图已可提取，无需原图）
         text = vision_extract.ensure_page_cache(db, book, 1)
         assert "第 1 页内容" in text
         assert img.exists(), "缺失页图应被补渲染"
@@ -320,3 +323,65 @@ def test_extract_page_citations():
 def test_build_page_context_block_privacy():
     assert "【第 1 页】" in build_page_context_block({1: "第一页", 2: "第二页"}, True)
     assert build_page_context_block({1: "x"}, False) == ""
+class BlankVision(FakeVision):
+    """模拟视觉模型判定页面为空白：返回空白页描述文本。"""
+
+    def chat(self, messages):
+        return "本页为空白页，没有任何内容。"
+
+
+def test_blank_page_extract_normalizes_to_mark(monkeypatch, client, tmp_path):
+    """视觉模型判定空白页 → 落盘统一空白标记（非空可缓存命中，不落幻觉/空文本）。"""
+    pdf = tmp_path / "scan_blank.pdf"
+    _make_pdf(pdf, pages=2)
+    data = _import(client, pdf, "scan_blank.pdf")
+    calls: list[int] = []
+
+    class CountingBlank(BlankVision):
+        def chat(self, messages):
+            calls.append(0)
+            return super().chat(messages)
+
+    monkeypatch.setattr(vision_extract, "LLMClient", CountingBlank)
+    db = SessionLocal()
+    try:
+        book = _book(db, data["id"])
+        text = vision_extract.ensure_page_cache(db, book, 1)
+        assert text == vision_extract.BLANK_PAGE_MARK
+        path = vision_extract.page_text_path(book, 1)
+        assert path.read_text(encoding="utf-8").strip() == vision_extract.BLANK_PAGE_MARK
+        assert vision_extract.is_blank_page_text(text)
+        # 空白标记页非空 → 缓存命中，不重复调用多模态
+        again = vision_extract.ensure_page_cache(db, book, 1)
+        assert again == vision_extract.BLANK_PAGE_MARK and len(calls) == 1
+    finally:
+        db.close()
+
+
+def test_blank_page_standard_mark_kept(monkeypatch, client, tmp_path):
+    """视觉模型直接输出标准标记 `<!-- 空白页 -->` 时原样保留（归一化幂等）。"""
+    pdf = tmp_path / "scan_blank2.pdf"
+    _make_pdf(pdf, pages=1)
+    data = _import(client, pdf, "scan_blank2.pdf")
+
+    class MarkVision(FakeVision):
+        def chat(self, messages):
+            return vision_extract.BLANK_PAGE_MARK
+
+    monkeypatch.setattr(vision_extract, "LLMClient", MarkVision)
+    db = SessionLocal()
+    try:
+        book = _book(db, data["id"])
+        text = vision_extract.ensure_page_cache(db, book, 1)
+        assert text == vision_extract.BLANK_PAGE_MARK
+    finally:
+        db.close()
+
+def test_missing_page_caches_lists_only_missing(tmp_path):
+    book = SimpleNamespace(file_path=str(tmp_path / "book.pdf"), page_count=3)
+    page_dir = tmp_path / vision_extract.PAGE_TEXT_DIR
+    page_dir.mkdir()
+    (page_dir / "page_001.md").write_text("内容A", encoding="utf-8")
+    (page_dir / "page_002.md").write_text("   ", encoding="utf-8")  # 空白视为缺失
+    (page_dir / "page_003.md").write_text("", encoding="utf-8")  # 空文件视为缺失
+    assert vision_extract.missing_page_caches(book) == [2, 3]

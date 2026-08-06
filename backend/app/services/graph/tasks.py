@@ -59,6 +59,9 @@ def run_summarize_task(book_id: int) -> dict:
     """后台总结任务：独立会话 + finally 关闭（审查 A-1：会话泄漏修复）。"""
     db = SessionLocal()
     try:
-        return generate_rag_skill(db, book_id=book_id)
+        update_progress(65, "文本模型总结 RAG/Skill")
+        result = generate_rag_skill(db, book_id=book_id)
+        update_progress(100, "总结完成")
+        return result
     finally:
         db.close()

@@ -312,6 +312,9 @@
 - **链路**：PDF 页图（含文本型，文本抽取数学符号会乱码）→ 多模态 LLM 逐页提取完整页面信息（Markdown 文本，含公式/表格/图注描述）→ 缓存 `data/books/<书目录>/page_text/page_XXX.md` → 文本大模型基于缓存解读（引用出处「第 X 页」）。
 - **触发时机**：手动导入 PDF（含文本型）作为知识库时**批量预提取**；阅读时不预提取，**用户在当前页对 AI 提问**时按需提取（窗口 `[P-1,P,P+1]`，第 1 页/末页裁剪，仅补缺失页，需求 9.1 决策 22）。
 - **缓存命中**：`page_XXX.md` 存在且非空即命中，不再调用多模态 API；缓存缺失且未配置多模态提取时仅**纯文本降级**（章节文本 / 提示先触发提取），**不再回退直发页图附件**（决策 36）。
+- **归档页缓存预检（v1.92）**：`archive_book_task` 先 `missing_page_caches` 预检（只查文件、不触视觉 API），页缓存无缺失（如 192/192）整段跳过视觉提取，进度直接显示「页缓存已完整，跳过视觉提取」；有缺失才进入补齐/提取。
+- **文本块处理进度（v1.92）**：map-reduce 逐块上报「文本总结 块 i/N（处理中/完成）」（65→90 区间）、合并阶段「文本模型合并总结」（92%）、单块路径「文本模型总结（单块）」（90%）、全部失败回退「文本总结回退单次调用」（92%）；手动总结任务 65 起点、100%「总结完成」收尾。
+- **压缩页图与 OCR 预留扩展（v1.86）**：视觉提取输入由原图改为**压缩页图**（`data/books/<书目录>/pages_vlm/page_XXX.jpg`，阅读原图 `pages/` 不动）：**裁边**（`VISION_IMAGE_TRIM=conservative` 默认只裁 ≥20px 完全空白边带；aggressive/none 可配；裁后 <原 50% 整页回退；双页扫描只裁四边）+ **等比缩放**到 `VISION_IMAGE_MAX_WIDTH=1400`（JPEG q82），降 token/请求体/超时率；`meta.json` 参数签名不一致整目录重建（保留 OCR 文本）；**空白预判**：投影无内容或裁后非白 <0.05% → 直接落盘 `<!-- 空白页 -->` 不调多模态；**OCR 预留扩展**：`VISION_OCR_ENGINE` 配置本地 OCR（tesseract 已实现；paddle/rapidocr 占位），压缩图生成后同步产出 `pages_vlm/page_XXX.txt`，提取链路＝压缩图 → OCR 文本缓存（命中省多模态调用）→ 多模态 LLM；详见 §9.3.1。- **空白页处理（v1.84）**：视觉模型判定空白页 → 落盘统一标记 `<!-- 空白页 -->`（`app/services/blank_page.py` 的 `BLANK_PAGE_MARK`/`is_blank_page_text`；归一化规则：去标点后**短文本 ≤20 字符**且含「空白页/无内容/blank/empty」等关键词才判定空白，避免长正文误判）；标记页**不进入 RAG 片段与 LLM 输入正文**（`rag_input` 的 `page_chunks`/`build_page_input`/`chunk_page_texts_for_summary` 三处过滤）；空文本仍按提取失败处理（不落盘）。
 - **预期落点**：后端 `app/ai/vision_client.py` + 任务模块提取任务 + 页图相关 API（提取/重建/读取页缓存）；前端设置页多模态配置（base_url/api_key/model 独立）与阅读页「提取本页 / 重建本书页缓存」入口。
 - **依赖与约束**：多模态 API **独立配置**（`vision_base_url / vision_api_key / vision_model`，无需额度管理，需求 9.1 决策 23）；受「发送书籍内容至模型」隐私开关约束（关闭不提取、不发送）；随书删除清理页缓存。
 
@@ -437,11 +440,23 @@
 | --- | --- | --- |
 | `page_text_path(book, page_index)` | 页缓存文件路径 `<书目录>/page_text/page_XXX.md` | 调整目录名改 `PAGE_TEXT_DIR` |
 | `read_page_cache(book, page_index)` | 读缓存；缺失/空返回 None | 缓存命中判定唯一入口 |
-| `ensure_page_cache(db, book, page_index, force=False)` | 单页提取：命中（非空且非 force）直接返回，否则调用多模态 LLM 提取并落盘；隐私开关关闭抛 ValueError | 修改提取提示词改 `EXTRACT_SYSTEM`；切换视觉模型改配置 |
+| `ensure_page_cache(db, book, page_index, force=False)` | 单页提取（v1.86 链路）：命中（非空且非 force）直接返回 → 页图缺失自愈补渲染 → `prep_page_image` 空白预判（blank 直接落盘 `<!-- 空白页 -->`，不调 API）→ OCR 文本缓存命中（配置 `VISION_OCR_ENGINE` 时，省多模态调用）→ 多模态 LLM 提取并落盘；隐私开关关闭抛 ValueError | 修改提取提示词改 `EXTRACT_SYSTEM`；空白判定改 `blank_page.py` + `vision_image.BLANK_RATIO`；OCR 引擎接入改 `vision_image.ocr_page_text` |
+| `app/services/blank_page.py`（`BLANK_PAGE_MARK`/`is_blank_page_text`，v1.84） | 空白页统一标记与判定：视觉判定空白 → 落盘 `<!-- 空白页 -->`（非空可命中缓存）；去标点后短文本 ≤20 字符含「空白页/无内容/blank/empty」等关键词判定 | 调整标记文本/关键词；下游 rag_input 三处过滤该标记 |
 | `extract_image_attachment(db, image_uri, hint="")` | 附件（划线裁剪图/正文插图）视觉提取为文本：命中内容寻址缓存 `data/cache/attachment_text/`（sha256 前 32 位）直接返回；未配置视觉模型（`vision_configured`）或提取空/异常返回 None 且不落盘 | 缓存目录改 `ATTACHMENT_TEXT_DIR`；提取提示词改 `ATTACHMENT_SYSTEM`（LaTeX 硬性规则）；触发开关=`ai_send_page_image`（决策 36） |
 | `ensure_window_caches(db, book, page_index, force=False)` | `[P-1,P,P+1]`（首/末页裁剪）增量缓存，返回 {页号: 文本} | 窗口大小改 `start/end` 计算 |
-| `rebuild_book_caches(db, book, force=False, progress=None)` | 全书重建/补齐；返回 {total, extracted, cached, failed, errors} | force=False 跳过已缓存页（归档默认）；并发模式完成后重新 attach book；**页图缺失自动补渲染**（`_extract_page_text` 先 `render_pdf_page` 再提取，v1.81） |
+| `rebuild_book_caches(db, book, force=False, progress=None)` | 全书重建/补齐；返回 {total, extracted, cached, failed, errors} | **v1.86 开头先 `prepare_book_vlm_images` 批量预生成压缩页图**（参数变更整目录重建、OCR 已配置时同步产出文本缓存）；force=False 跳过已缓存页（归档默认）；并发模式完成后重新 attach book；页图缺失自动补渲染（v1.81） |
 | `extract_book_pages_task(book_id, force=False)` | 后台任务入口（独立会话） | 供导入预提取与重建路由调用；**M9 读完归档只从未缓存页提取**（`archive_book_task` 内 force=False 调用，已缓存页直接复用，再以全书缓存调 `generate_rag_skill` 总结） |
+
+### 9.3.1 压缩页图与 OCR 预留（`backend/app/services/vision_image.py`，v1.86）
+
+| 函数 | 功能 | 使用/修改 |
+| --- | --- | --- |
+| `vlm_page_path(book, page_index)` | 压缩图路径 `<书目录>/pages_vlm/page_XXX.jpg` | 目录名改 `VLM_DIR` |
+| `prep_page_image(book, page_index)` | 单页懒生成：原图 → 灰度分析（`ANALYZE_WIDTH=1000`）→ 裁边 bbox（conservative/aggressive/none）→ 空白预判（<0.05% 或投影无内容）→ **从原图重渲染**裁边区域到 `pages_vlm/`；返回 `{path, source(cached/original/new/blank), blank, trimmed}`；meta 签名不一致自动 purge 重建（只删 jpg，保留 OCR 文本） | 裁边参数改 `vision_image.py` 常量（`GRAY_THRESHOLD`/`MIN_BAND_PX`/`SPREAD_GAP_RATIO` 等）或 `.env`（`VISION_IMAGE_MAX_WIDTH`/`QUALITY`/`TRIM`） |
+| `prepare_book_vlm_images(book, workers=None, progress=None)` | 批量预生成全书压缩页图（归档/导入）；`PAGE_RENDER_CONCURRENCY` 并发；返回 `{total, ok, skipped, blank, purged, ocr, errors}` | 归档批量入口；单页失败不中断（errors 收集） |
+| `ocr_configured()` | `VISION_OCR_ENGINE` 非空即 True | 新增引擎只改 `ocr_page_text` 分支 |
+| `ocr_page_text(img_path)` | 本地 OCR 提取：tesseract 已实现（subprocess，`VISION_OCR_LANG`/`VISION_OCR_BIN`）；paddle/rapidocr 预留占位；失败/未实现返回 None（回退视觉模型） | **预留扩展点**：新增引擎在此加分支 |
+| `read_ocr_cache(book, page_index)` / `write_ocr_cache(...)` | `pages_vlm/page_XXX.txt` 读写（提取优先使用，省多模态调用） | 缓存格式/路径修改入口 |
 
 ### 9.4 页缓存 API（`backend/app/api/routes/vision.py`，prefix `/api/books`）
 
