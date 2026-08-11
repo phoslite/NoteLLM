@@ -1,4 +1,4 @@
-import type { ProfileData, ProfileThresholds, RecommendationsData } from '@/types'
+import type { ProfileData, ProfileRefreshStats, ProfileThresholds, RecommendationsData } from '@/types'
 import { get, patch, post } from './client'
 
 /** 读取三层画像（冷/暖/热）。 */
@@ -37,4 +37,9 @@ export function saveThresholds(payload: Partial<Pick<ProfileThresholds, 'warm_th
 /** 立即按归档节奏/确认关联样本重新学习画像阈值。 */
 export function learnProfileThresholds() {
   return post<ProfileThresholds>('/profile/learn')
+}
+
+/** 重新生成画像（清洗脏词 + 按近期阅读重算暖主题，不清空）。 */
+export function refreshProfile() {
+  return post<ProfileRefreshStats>('/profile/refresh')
 }

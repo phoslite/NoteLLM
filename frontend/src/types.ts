@@ -373,6 +373,17 @@ export interface RecommendationsData {
 }
 
 /** 画像阈值与学习状态（需求 3.4.1：系统自动学习，可手动覆盖）。 */
+/** 重新生成画像统计（v1.132）。 */
+export interface ProfileRefreshStats {
+  themes_before: number
+  themes_after: number
+  cold_before: number
+  cold_after: number
+  interests_before: number
+  interests_after: number
+  removed_sample: string[]
+}
+
 export interface ProfileThresholds {
   warm_threshold: number
   related_strength: number

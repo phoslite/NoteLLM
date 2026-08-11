@@ -11,6 +11,7 @@
       </div>
       <div class="head-actions">
         <el-button size="small" :loading="busy" @click="refresh">🔄 刷新</el-button>
+        <el-button size="small" type="primary" plain :loading="busy" @click="onRebuild">🔃 重新生成</el-button>
         <el-button size="small" type="danger" plain :loading="busy" @click="onReset">重置画像</el-button>
       </div>
     </header>
@@ -237,7 +238,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getProfile, getRecommendations, getThresholds, learnProfileThresholds, resetProfile, saveColdProfile, saveThresholds } from '@/api/profile'
+import { getProfile, getRecommendations, getThresholds, learnProfileThresholds, refreshProfile, resetProfile, saveColdProfile, saveThresholds } from '@/api/profile'
 import type { ProfileData, ProfileThresholds, RecommendationsData } from '@/types'
 
 const profiles = ref<ProfileData>({ cold: {}, warm: {}, hot: {} })
@@ -367,6 +368,24 @@ async function onLearnThresholds() {
     ElMessage.error((err as Error).message)
   } finally {
     learningThresholds.value = false
+  }
+}
+
+async function onRebuild() {
+  try {
+    await ElMessageBox.confirm('将清洗画像脏词并按近期阅读重新生成暖主题，不会清空任何层？', '重新生成画像', { type: 'warning' })
+  } catch {
+    return
+  }
+  busy.value = true
+  try {
+    const stats = await refreshProfile()
+    await refresh()
+    ElMessage.success(`画像已重新生成：暖主题 ${stats.themes_before} → ${stats.themes_after}，冷画像 ${stats.cold_before} → ${stats.cold_after}`)
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    busy.value = false
   }
 }
 
