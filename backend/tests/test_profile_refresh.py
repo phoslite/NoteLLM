@@ -1,5 +1,7 @@
-﻿"""「重新生成画像」：暖主题重算 + 冷画像清洗/领域偏好重建（v1.132/v1.133）。"""
+﻿"""「重新生成画像」：暖主题重算 + 冷画像清洗/领域偏好重建/词库沉淀（v1.132~v1.134）。"""
 import json
+import os
+from pathlib import Path
 
 from app.core.database import SessionLocal
 from app.models.asset import BookAsset
@@ -107,5 +109,37 @@ def test_refresh_rebuilds_domain_preferences_from_rag(client):
         assert "变分法" in prefs or "变分" in prefs  # 书内可溯源术语
         assert stats["cold_before"] == 3 and stats["cold_after"] <= 60
         assert "实分析" in cold["long_term_interests"]  # 手动整词保留
+    finally:
+        db.close()
+
+
+def test_refresh_syncs_domain_terms_to_lexicon(client):
+    """v1.134 联动：覆盖≥2 本书的领域词沉淀词库系统缓存区；单书词不沉淀；重复 refresh 幂等。"""
+    rag_text = "# 第一章\n\n内容。\n"
+    book_ids = []
+    for name in ("联动A.md", "联动B.md"):
+        r = client.post("/api/books", files={"file": (name, rag_text.encode("utf-8"), "text/markdown")})
+        assert r.status_code == 200
+        book_ids.append(r.json()["data"]["id"])
+    db = SessionLocal()
+    try:
+        contents = [
+            {"summary": "变分法研究泛函极值与空间", "key_points": ["角动量守恒定律"]},
+            {"summary": "变分法在力学中的应用与空间", "key_points": ["变分法核心"]},
+        ]
+        for bid, content in zip(book_ids, contents, strict=True):
+            db.add(BookAsset(
+                book_id=bid, kind="rag", version=1,
+                content_json=json.dumps(content, ensure_ascii=False),
+            ))
+        db.commit()
+        refresh_profiles(db)
+        lexicon_path = os.environ.get("DOMAIN_TERMS_FILE", "domain_terms.txt")
+        text = Path(lexicon_path).read_text(encoding="utf-8")
+        assert "变分法" in text  # 两本书共享 → 沉淀
+        assert "角动量" not in text  # 仅 A 书 → 不沉淀
+        assert "空间" not in text  # 次泛词即使覆盖 2 本也不沉淀
+        refresh_profiles(db)  # 幂等：不重复写入
+        assert Path(lexicon_path).read_text(encoding="utf-8").count("变分法") == 1
     finally:
         db.close()

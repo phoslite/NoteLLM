@@ -19,7 +19,9 @@ from app.core.time import utcnow
 from app.models.book import Book
 from app.models.profile import UserProfile
 from app.repositories.assets import list_assets_by_books
+from app.services.graph.lexicon import cache_domain_term
 from app.services.graph.terms import (
+    _PROFILE_SYNC_STOPWORDS,
     _inner_bigrams,
     extract_profile_terms,
     sanitize_profile_term_freq,
@@ -291,6 +293,7 @@ def _rebuild_domain_preferences(db: Session) -> tuple[dict[str, float], set[str]
     返回 (偏好词频, 全部书级抽取词的内部二元组)——后者用于抑制长期兴趣中的残留碎片。
     """
     counter: Counter = Counter()
+    book_coverage: Counter = Counter()  # v1.134：词 → 覆盖书数（词库沉淀阈值）
     fragments: set[str] = set()
     for _book_id, kinds in list_assets_by_books(db).items():
         rag = kinds.get("rag")
@@ -305,9 +308,19 @@ def _rebuild_domain_preferences(db: Session) -> tuple[dict[str, float], set[str]
         terms = extract_profile_terms(" ".join(texts), PROFILE_PREF_PER_BOOK)
         for term, weight in terms.items():
             counter[term] += weight
+        book_coverage.update(terms)
         for term in terms:
             fragments |= _inner_bigrams(term)
-    return dict(counter.most_common(PROFILE_PREF_TOP_N)), fragments
+    prefs = dict(counter.most_common(PROFILE_PREF_TOP_N))
+    # v1.134 联动：覆盖≥2 本书且进入领域偏好的强领域词沉淀词库系统缓存区（正反馈）；
+    # 写入失败（文件锁/IO）不阻塞重建，保持 refresh 幂等安全。
+    for term, covered in book_coverage.items():
+        if covered >= 2 and term in prefs and term not in _PROFILE_SYNC_STOPWORDS:
+            try:
+                cache_domain_term(term)
+            except OSError:
+                continue
+    return prefs, fragments
 
 
 def refresh_profiles(db: Session) -> dict:
