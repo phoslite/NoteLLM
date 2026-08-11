@@ -13,6 +13,7 @@ from app.services.profile_learning import (
 )
 from app.services.profile_service import (
     get_all_profiles,
+    refresh_profiles,
     reset_profiles,
 )
 from app.services.profile_service import (
@@ -89,3 +90,10 @@ def reset_profile(db: Session = Depends(get_db)):
     """清空三层画像（重新从用户阅读行为积累）。"""
     reset_profiles(db)
     return ok(None, "画像已重置")
+
+
+@router.post("/profile/refresh")
+def refresh_profile(db: Session = Depends(get_db)):
+    """重新生成画像（v1.132）：暖主题重算 + 冷画像脏词清洗，不清空任何层。"""
+    stats = refresh_profiles(db)
+    return ok(stats, "画像已重新生成")
