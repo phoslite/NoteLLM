@@ -203,12 +203,32 @@ def _write_classify(db: Session, book: Book, name: str, source: str, version: in
     db.commit()
     db.refresh(book)
 
-def post_classify_book(db: Session, book: Book) -> str:
+def build_posterior_index(db: Session, exclude_book_id: int | None = None) -> dict[str, list[set[str]]]:
+    """一次性构建 post-classify 簇代表特征索引（L0 优化）。
+
+    返回 {cluster_name: [每本书的后验关键词集合]}：只读一次全部已 post 书的
+    RAG 资产，供 `sync_assets_for_relations` 循环内多次 `post_classify_book`
+    复用（DB 读取与 JSON 解析一次性完成，循环内仅做内存集合运算）。
+    保留按书粒度：计算当前簇代表特征时跳过被归类书自身关键词，
+    避免自匹配压制簇迁移，语义与逐本现构建一致。
+    """
+    index: dict[str, list[set[str]]] = defaultdict(list)
+    for ob in list_post_classified_books(db, exclude_book_id=exclude_book_id):
+        content = read_asset_content(db, ob.id, "rag")
+        keys = set(_posterior_keywords(content))
+        if keys:
+            index[ob.cluster_name].append(keys)
+    return dict(index)
+
+
+def post_classify_book(db: Session, book: Book, index: dict[str, list[set[str]]] | None = None) -> str:
     """两阶段分类 post-classify（知识图谱聚类算法文档 §9）：基于 RAG 资产后验信息修正该书聚类归属。
 
     规则：用户 tag/文件夹为硬约束（不改动用户意图）；否则以后验关键词做
     簇内一致性校验（重叠 ≥ T_POST 维持）→ 簇迁移（其它簇最高重叠 ≥ T_POST）→
     维持 pre 簇；落盘 cluster_name / classify_source=post / classified_at / classify_version。
+    index 为可选的簇代表特征索引（build_posterior_index 构建，批量场景复用，
+    自动排除本书自身关键词，语义与逐本现构建一致；为 None 时现构建，
     """
     asset = get_asset(db, book.id, "rag")
     if not asset:
@@ -228,35 +248,33 @@ def post_classify_book(db: Session, book: Book) -> str:
     posterior = _posterior_keywords(read_asset_content(db, book.id, "rag"))
     if not posterior:
         return book.cluster_name or ""
+    if index is None:
+        index = build_posterior_index(db, exclude_book_id=book.id)
 
-    others: list[tuple[Book, dict[str, float]]] = []
-    for ob in list_post_classified_books(db, exclude_book_id=book.id):
-        content = read_asset_content(db, ob.id, "rag")
-        if content:
-            others.append((ob, _posterior_keywords(content)))
+    posterior_set = set(posterior)
+    current = book.cluster_name or ""
 
-    def _cluster_repr(name: str) -> set[str]:
+    def _cluster_repr(name: str, skip: set[str] | None = None) -> set[str]:
+        """簇内各书关键词并集；skip 命中（本书自身集合）时剔除，防止自匹配。"""
         keys: set[str] = set()
-        for ob, kws in others:
-            if ob.cluster_name == name:
-                keys |= set(kws)
+        for member_keys in index.get(name, ()):
+            if skip is not None and member_keys == skip:
+                continue
+            keys |= member_keys
         return keys
 
-    current = book.cluster_name or ""
-    current_overlap = len(set(posterior) & _cluster_repr(current)) if current else 0
+    current_overlap = len(posterior_set & _cluster_repr(current, skip=posterior_set)) if current else 0
     if current_overlap >= T_POST:
         _write_classify(db, book, current, "post", version)
         return current
 
     best, best_overlap = current, current_overlap
-    seen: set[str] = set()
-    for ob, _kws in others:
-        if ob.cluster_name in seen:
+    for name in index:
+        if name == current:
             continue
-        seen.add(ob.cluster_name)
-        ov = len(set(posterior) & _cluster_repr(ob.cluster_name))
-        if ov > best_overlap:
-            best, best_overlap = ob.cluster_name, ov
+        overlap = len(posterior_set & _cluster_repr(name))
+        if overlap > best_overlap:
+            best, best_overlap = name, overlap
     if best and best_overlap >= T_POST and best != current:
         _write_classify(db, book, best, "post", version)
         return best
@@ -268,12 +286,14 @@ def post_classify_book(db: Session, book: Book) -> str:
     _write_classify(db, book, name, "post", version)
     return name
 
+
 def _union_keywords(by_book: dict[int, dict], members: list[Book]) -> set[str]:
     """簇内各书后验关键词并集（簇代表特征）。"""
     keys: set[str] = set()
     for m in members:
         keys |= set(by_book.get(m.id, {}))
     return keys
+
 
 def _cluster_keywords(by_book: dict[int, dict], members: list[Book]) -> set[str]:
     """簇代表特征（剔除数学/学术泛词），防止仅共享泛词导致错误合并（F6 修复）。"""

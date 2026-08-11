@@ -51,10 +51,18 @@ def rebuild_graph_task() -> dict:
 
 
 def sync_assets_task() -> dict:
-    """图谱资产联动后台任务：本地存根 + LLM 增量增改，独立会话执行。"""
+    """图谱资产联动后台任务：本地存根 + LLM 增量增改，独立会话执行。
+
+    L2：LLM 阶段按书上报进度（20%→70% 窗口，指纹跳过瞬时完成不占用）。
+    """
     with SessionLocal() as session:
         update_progress(20, "补本地联动存根")
-        merged = sync_assets_for_relations(session)
+        merged = sync_assets_for_relations(
+            session,
+            on_progress=lambda done, total: update_progress(
+                20 + int(50 * done / max(total, 1)), f"LLM 联动 {done}/{total}"
+            ),
+        )
         update_progress(70, "RAG 术语补水")
         terms = link_domain_terms(session)
         update_progress(100, "联动完成")

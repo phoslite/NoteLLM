@@ -3,9 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { deleteBook, reorderBooks, searchBooks, updateBook, uploadBook } from '@/api/books'
+import { createFolder, deleteFolder, listFolders, renameFolder } from '@/api/folders'
 import { highlightSnippet } from '@/utils/searchHighlight'
 import { useBookStore } from '@/stores/book'
-import type { BookItem, SearchHit } from '@/types'
+import type { BookItem, FolderItem, SearchHit } from '@/types'
 import { chapterPercent } from '@/utils/progress'
 import { notifyTaskSubmitted } from '@/utils/task'
 import GlobalChatPanel from '@/components/GlobalChatPanel.vue'
@@ -41,7 +42,10 @@ const tagEditId = ref<number | null>(null)
 const tagEditBook = ref<BookItem | null>(null)
 const tagDraft = ref<string[]>([])
 
-onMounted(() => store.fetchBooks())
+onMounted(() => {
+  store.fetchBooks()
+  void fetchFolders()
+})
 
 /* ---------- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） ---------- */
 const globalAi = useGlobalAi()
@@ -100,6 +104,11 @@ const allTags = computed(() => {
 const displayedBooks = computed(() => {
   const kw = searchQuery.value.trim().toLowerCase()
   return store.books.filter((b) => {
+    if (activeFolderId.value == null) {
+      if (b.folder_id != null) return false
+    } else if (b.folder_id !== activeFolderId.value) {
+      return false
+    }
     if (activeTag.value && !b.tags.includes(activeTag.value)) return false
     if (!kw) return true
     return [b.title, b.author ?? '', ...b.tags].some((t) => t.toLowerCase().includes(kw))
@@ -262,6 +271,227 @@ async function onSaveTags() {
 function toggleTagFilter(tag: string) {
   activeTag.value = activeTag.value === tag ? '' : tag
 }
+
+/* ---------- 文件夹（需求决策 21 / 待办 D8，桌面式：与书混排） ---------- */
+const folders = ref<FolderItem[]>([])
+/** null = 根视图（全部书籍 + 根文件夹）；否则为当前进入的文件夹 id */
+const activeFolderId = ref<number | null>(null)
+
+interface FolderNode {
+  folder: FolderItem
+  children: FolderNode[]
+}
+
+async function fetchFolders() {
+  try {
+    folders.value = await listFolders()
+  } catch {
+    /* 后端不可用时不阻塞书架 */
+  }
+}
+
+const folderTree = computed<FolderNode[]>(() => {
+  const map = new Map<number, FolderNode>()
+  for (const f of folders.value) map.set(f.id, { folder: f, children: [] })
+  const roots: FolderNode[] = []
+  for (const f of folders.value) {
+    const node = map.get(f.id)!
+    const parent = f.parent_id != null ? map.get(f.parent_id) : undefined
+    if (parent) parent.children.push(node)
+    else roots.push(node)
+  }
+  return roots
+})
+
+/** 拍平文件夹树（含深度），供移动 popover 列表使用 */
+const folderFlat = computed(() => {
+  const out: { folder: FolderItem; depth: number }[] = []
+  const walk = (nodes: FolderNode[], depth: number) => {
+    for (const n of nodes) {
+      out.push({ folder: n.folder, depth })
+      walk(n.children, depth + 1)
+    }
+  }
+  walk(folderTree.value, 0)
+  return out
+})
+
+/** 当前视图内的文件夹卡片（桌面式：根视图=根文件夹，文件夹视图=子文件夹） */
+const visibleFolders = computed(() => {
+  const kw = searchQuery.value.trim().toLowerCase()
+  return folders.value.filter((f) => {
+    if (f.parent_id !== activeFolderId.value) return false
+    if (!kw) return true
+    return f.name.toLowerCase().includes(kw)
+  })
+})
+
+/** 面包屑路径（根 → 当前文件夹） */
+const folderPath = computed(() => {
+  if (activeFolderId.value == null) return []
+  const path: FolderItem[] = []
+  let cur = folders.value.find((f) => f.id === activeFolderId.value)
+  const guard = new Set<number>()
+  while (cur && !guard.has(cur.id)) {
+    guard.add(cur.id)
+    path.unshift(cur)
+    cur = cur.parent_id != null ? folders.value.find((f) => f.id === cur!.parent_id) : undefined
+  }
+  return path
+})
+
+/** 文件夹直接包含的书数量（不含子孙文件夹） */
+function folderBookCount(id: number) {
+  return store.books.filter((b) => b.folder_id === id).length
+}
+
+/** 当前视图是否为空（书与文件夹均无） */
+const viewEmpty = computed(() => !displayedBooks.value.length && !visibleFolders.value.length)
+
+function selectFolder(id: number | null) {
+  activeFolderId.value = id
+  exitBatch()
+}
+
+async function onCreateFolder(parentId: number | null = null) {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入文件夹名称', parentId == null ? '新建文件夹' : '新建子文件夹', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputValidator: (v: string) => (v && v.trim() ? true : '名称不能为空'),
+    })
+    await createFolder(value.trim(), parentId)
+    ElMessage.success('文件夹已创建')
+    await fetchFolders()
+  } catch {
+    /* 用户取消 */
+  }
+}
+
+async function onRenameFolder(folder: FolderItem) {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新名称', '重命名文件夹', {
+      inputValue: folder.name,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (v: string) => (v && v.trim() ? true : '名称不能为空'),
+    })
+    await renameFolder(folder.id, value.trim())
+    ElMessage.success('已重命名')
+    await fetchFolders()
+  } catch {
+    /* 用户取消 */
+  }
+}
+
+async function onDeleteFolder(folder: FolderItem) {
+  try {
+    await ElMessageBox.confirm(`确定删除文件夹「${folder.name}」？其中书籍将转为未归类（不删除书籍）。`, '删除文件夹', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    await deleteFolder(folder.id)
+    if (activeFolderId.value === folder.id) activeFolderId.value = null
+    ElMessage.success('文件夹已删除')
+    await fetchFolders()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
+/** 单本移动（卡片 📁 菜单 / 拖拽到文件夹共用） */
+async function moveBookToFolder(book: BookItem, folderId: number | null) {
+  if (book.folder_id === folderId) return
+  try {
+    const updated = await updateBook(book.id, { folder_id: folderId })
+    const idx = store.books.findIndex((b) => b.id === book.id)
+    if (idx >= 0) store.books[idx] = updated
+    movePopId.value = null
+    ElMessage.success(folderId == null ? '已移出文件夹' : '已移动')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
+const movePopId = ref<number | null>(null)
+function toggleMovePop(book: BookItem) {
+  movePopId.value = movePopId.value === book.id ? null : book.id
+}
+
+/** 拖拽书籍到文件夹行 */
+async function onDropToFolder(folder: FolderItem | null) {
+  const src = dragBook.value
+  dragBook.value = null
+  dragOverId.value = null
+  if (!src) return
+  await moveBookToFolder(src, folder ? folder.id : null)
+}
+
+/* ---------- 批量管理（决策 21：批量移动 / 批量设 tag） ---------- */
+const batchMode = ref(false)
+const batchSelected = ref<number[]>([])
+const batchMoveVisible = ref(false)
+
+function enterBatch() {
+  batchMode.value = true
+  batchSelected.value = []
+}
+function exitBatch() {
+  batchMode.value = false
+  batchSelected.value = []
+  batchMoveVisible.value = false
+}
+function toggleBatchSelect(id: number) {
+  const i = batchSelected.value.indexOf(id)
+  if (i >= 0) batchSelected.value.splice(i, 1)
+  else batchSelected.value.push(id)
+}
+
+async function batchMoveToFolder(folderId: number | null) {
+  const ids = [...batchSelected.value]
+  if (!ids.length) return
+  try {
+    for (const id of ids) {
+      const updated = await updateBook(id, { folder_id: folderId })
+      const idx = store.books.findIndex((b) => b.id === id)
+      if (idx >= 0) store.books[idx] = updated
+    }
+    ElMessage.success(`已移动 ${ids.length} 本书`)
+    exitBatch()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
+async function batchSetTags() {
+  const ids = [...batchSelected.value]
+  if (!ids.length) return
+  try {
+    const { value } = await ElMessageBox.prompt('输入要追加的标签（逗号 / 空格分隔，不影响已有标签）', '批量设 tag', {
+      confirmButtonText: '应用',
+      cancelButtonText: '取消',
+    })
+    const newTags = [...new Set(value.split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean))]
+    if (!newTags.length) return
+    for (const id of ids) {
+      const book = store.books.find((b) => b.id === id)
+      if (!book) continue
+      const merged = [...new Set([...(book.tags ?? []), ...newTags])]
+      const updated = await updateBook(id, { tags: merged })
+      const idx = store.books.findIndex((b) => b.id === id)
+      if (idx >= 0) store.books[idx] = updated
+    }
+    ElMessage.success(`已为 ${ids.length} 本书追加标签`)
+    exitBatch()
+  } catch {
+    /* 用户取消 */
+  }
+}
 </script>
 
 <template>
@@ -339,8 +569,32 @@ function toggleTagFilter(tag: string) {
           </el-select>
         </div>
         <div class="toolbar-right">
-          <span v-if="store.books.length" class="drag-hint">💡 拖动封面可交换位置</span>
-          <el-button type="primary" round @click="uploadRef?.click()">＋ 导入书籍</el-button>
+          <template v-if="batchMode">
+            <span class="batch-info">已选 {{ batchSelected.length }} 本</span>
+            <el-popover v-model:visible="batchMoveVisible" placement="bottom" width="220" trigger="click">
+              <template #reference>
+                <el-button size="small" type="primary" plain>移动到文件夹</el-button>
+              </template>
+              <div class="folder-move-list">
+                <div class="folder-move-item" @click="batchMoveToFolder(null)">📚 未归类</div>
+                <div
+                  v-for="item in folderFlat"
+                  :key="'bm' + item.folder.id"
+                  class="folder-move-item"
+                  :style="{ paddingLeft: (10 + item.depth * 14) + 'px' }"
+                  @click="batchMoveToFolder(item.folder.id)"
+                >📁 {{ item.folder.name }}</div>
+              </div>
+            </el-popover>
+            <el-button size="small" type="primary" plain @click="batchSetTags">批量设 tag</el-button>
+            <el-button size="small" @click="exitBatch">退出批量</el-button>
+          </template>
+          <template v-else>
+            <span v-if="store.books.length" class="drag-hint">💡 拖动封面交换位置 · 拖到文件夹归类</span>
+            <el-button round @click="onCreateFolder(activeFolderId)">📁 新建文件夹</el-button>
+            <el-button round @click="enterBatch">☑ 批量</el-button>
+            <el-button type="primary" round @click="uploadRef?.click()">＋ 导入书籍</el-button>
+          </template>
           <input ref="uploadRef" type="file" accept=".pdf,.md,.markdown,.txt,.epub" hidden @change="onFilePicked" />
         </div>
       </div>
@@ -354,12 +608,37 @@ function toggleTagFilter(tag: string) {
         <div>书架还是空的</div>
         <div class="empty-sub">点击右上角「导入书籍」开始</div>
       </div>
-      <div v-else-if="displayedBooks.length === 0" class="empty-block">
+      <template v-else>
+      <div v-if="folderPath.length" class="folder-crumbs">
+        <button type="button" class="crumb" @click="selectFolder(null)">📚 全部书籍</button>
+        <template v-for="(f, i) in folderPath" :key="f.id">
+          <span class="crumb-sep">/</span>
+          <button type="button" class="crumb" :class="{ active: i === folderPath.length - 1 }" @click="selectFolder(f.id)">{{ f.name }}</button>
+        </template>
+      </div>
+      <div v-if="viewEmpty" class="empty-block">
         <div class="empty-icon">🔍</div>
         <div>没有匹配的书籍</div>
         <div class="empty-sub">试试其他关键词或清除标签筛选</div>
       </div>
       <div v-else class="shelf-grid">
+        <div
+          v-for="f in visibleFolders"
+          :key="'folder' + f.id"
+          class="folder-card"
+          @click="selectFolder(f.id)"
+          @dragover.prevent
+          @drop.prevent="onDropToFolder(f)"
+        >
+          <span class="folder-card-icon">📁</span>
+          <span class="folder-card-name" :title="f.name">{{ f.name }}</span>
+          <span class="folder-card-count">{{ folderBookCount(f.id) }} 本</span>
+          <span class="folder-card-ops" @click.stop>
+            <button type="button" class="book-action-btn" title="新建子文件夹" @click="onCreateFolder(f.id)">＋</button>
+            <button type="button" class="book-action-btn" title="重命名" @click="onRenameFolder(f)">✏️</button>
+            <button type="button" class="book-action-btn danger" title="删除" @click="onDeleteFolder(f)">🗑</button>
+          </span>
+        </div>
         <div
           v-for="b in displayedBooks"
           :key="b.id"
@@ -376,6 +655,13 @@ function toggleTagFilter(tag: string) {
             {{ statusMeta[b.status]?.label || b.status || '未读' }}
           </span>
           <div class="book-actions">
+            <el-checkbox
+              v-if="batchMode"
+              class="batch-check"
+              :model-value="batchSelected.includes(b.id)"
+              @change="toggleBatchSelect(b.id)"
+              @click.stop
+            />
             <el-popover
               :visible="tagEditId === b.id"
               placement="top"
@@ -404,6 +690,27 @@ function toggleTagFilter(tag: string) {
                   <el-button size="small" @click="tagEditId = null">取消</el-button>
                   <el-button size="small" type="primary" @click="onSaveTags">保存</el-button>
                 </div>
+              </div>
+            </el-popover>
+            <el-popover
+              :visible="movePopId === b.id"
+              placement="top"
+              width="220"
+              trigger="manual"
+            >
+              <template #reference>
+                <button type="button" class="book-action-btn" title="移动到文件夹" @click.stop="toggleMovePop(b)">📁</button>
+              </template>
+              <div class="folder-move-list">
+                <div class="folder-move-item" @click="moveBookToFolder(b, null)">📚 未归类</div>
+                <div
+                  v-for="item in folderFlat"
+                  :key="'mv' + item.folder.id"
+                  class="folder-move-item"
+                  :style="{ paddingLeft: (10 + item.depth * 14) + 'px' }"
+                  @click="moveBookToFolder(b, item.folder.id)"
+                >📁 {{ item.folder.name }}</div>
+                <div v-if="!folderFlat.length" class="folder-move-empty">暂无文件夹，可先新建</div>
               </div>
             </el-popover>
             <button type="button" class="book-action-btn danger" title="删除书籍" @click.stop="onDeleteBook(b)">🗑</button>
@@ -437,6 +744,7 @@ function toggleTagFilter(tag: string) {
           <el-progress :percentage="chapterPercent(b.read_chapters, b.chapter_count)" :stroke-width="5" :show-text="false" class="book-progress" />
         </div>
       </div>
+      </template>
     </section>
 
     <!-- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） -->
@@ -488,10 +796,16 @@ function toggleTagFilter(tag: string) {
 .recent-progress { width: 100%; }
 
 .shelf-panel { flex: 1; min-width: 0; padding: 18px 20px; overflow-y: auto; background: var(--bg-color); }
+.folder-move-list { max-height: 300px; overflow-y: auto; }
+.folder-move-item { padding: 6px 8px; font-size: 13px; cursor: pointer; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-move-item:hover { background: var(--panel-bg); }
+.folder-move-empty { padding: 8px; font-size: 13px; color: var(--text-secondary); text-align: center; }
+.batch-check { margin-right: 4px; }
+.batch-info { font-size: 13px; color: var(--text-secondary); }
 .shelf-toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap; position: sticky; top: 0; z-index: 3;
-  padding-bottom: 14px; background: var(--bg-color);
+  gap: 12px; flex-wrap: wrap;
+  padding-bottom: 14px;
 }
 .toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .shelf-title { display: flex; align-items: baseline; gap: 10px; }
@@ -522,6 +836,23 @@ function toggleTagFilter(tag: string) {
 .search-icon { font-size: 13px; }
 .drag-hint { font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); }
 
+.folder-crumbs { display: flex; align-items: center; gap: 4px; padding: 2px 0 10px; flex-wrap: wrap; }
+.crumb { border: none; background: none; cursor: pointer; font-size: 13px; color: var(--primary-color); padding: 2px 6px; border-radius: 4px; }
+.crumb:hover { background: var(--panel-bg); }
+.crumb.active { color: var(--text-color); font-weight: 600; cursor: default; }
+.crumb-sep { color: var(--text-secondary); font-size: 13px; }
+.folder-card {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  padding: 22px 10px; border: 1px dashed var(--border-color); border-radius: var(--radius-md);
+  cursor: pointer; background: var(--card-bg); position: relative; min-height: 170px;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.folder-card:hover { border-color: var(--primary-color); background: rgba(47, 111, 237, 0.05); transform: translateY(-1px); }
+.folder-card-icon { font-size: 42px; line-height: 1; }
+.folder-card-name { font-size: 13px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-card-count { font-size: 12px; color: var(--text-secondary); }
+.folder-card-ops { position: absolute; top: 6px; right: 6px; display: none; gap: 2px; }
+.folder-card:hover .folder-card-ops { display: flex; }
 .shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 6px; }
 .book-card {
   position: relative; border: 1px solid var(--border-color); border-radius: var(--radius-md);

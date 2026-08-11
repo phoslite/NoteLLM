@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # 任务系统与并发（决策 35；任一 =0 表示不限制）
     task_workers: int = 8  # 任务系统全局线程池大小；0=每任务独立线程（旧行为）
     ai_concurrency: int = 4  # 文本 LLM 并发数（信号量，demo 实测 4 为甜点）
+    graph_sync_concurrency: int = 1  # 联动沉淀 LLM 并发（默认 1=串行；0=不限制；N=上限，cap 8）
     vision_concurrency: int = 4  # 视觉 LLM 并发数（信号量，demo 实测 4~8）
     page_render_concurrency: int = 4  # PDF 页图渲染并发（线程池）
     task_quota_text: int = 4  # 文本类任务全局配额（信号量分池）；0=不限制

@@ -1,3 +1,9 @@
+export interface FolderItem {
+  id: number
+  name: string
+  parent_id: number | null
+}
+
 export interface BookItem {
   id: number
   title: string

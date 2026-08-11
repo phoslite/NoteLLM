@@ -6,20 +6,29 @@
   提示词对受影响书籍做增量增改（RAG 补跨书关联与共同概念、Skill 融合跨书新方法），
   失败回滚不阻塞，成功后触发该书 post-classify。
 """
+import hashlib
 import json
+from collections import defaultdict
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
 from app.ai.factory import build_client, is_configured
 from app.ai.parsing import parse_llm_json
-from app.ai.prompts.rag_link import SYSTEM_PROMPT, build_link_user_prompt
+from app.ai.prompts.rag_link import SYSTEM_PROMPT, build_multi_link_user_prompt
+from app.core.config import settings
 from app.core.time import utcnow
 from app.models.book import Book
 from app.models.graph import BookRelation
 from app.repositories.assets import read_asset_content, save_asset_content, upsert_asset
 from app.repositories.books import get_book
 from app.repositories.graph import list_active_relations, list_books
-from app.services.graph.clustering import post_classify_book
+from app.services.graph.clustering import (
+    build_posterior_index,
+    merge_and_rename_clusters,
+    post_classify_book,
+)
 from app.services.graph.keywords import extract_keywords
 from app.services.graph.lexicon import generic_domain_terms
 from app.services.html_util import html_to_text
@@ -28,6 +37,8 @@ from app.services.html_util import html_to_text
 LINK_MIN_STRENGTH = 50.0
 # linked_books 保留最近条目数
 MAX_LINKED_BOOKS = 20
+# L1：每本书单轮聚合联动边上限（超出部分只补本地存根，不参与 LLM 上下文）
+MAX_LINKS_PER_BOOK = 8
 
 
 def load_reasons(rel: BookRelation) -> list[str]:
@@ -37,6 +48,18 @@ def load_reasons(rel: BookRelation) -> list[str]:
     except (ValueError, TypeError):
         return []
     return reasons if isinstance(reasons, list) else []
+
+
+def _link_fingerprint(edges: list[dict]) -> str:
+    """本轮联动边集合的稳定指纹（L1 幂等）：rel_id + 强度 + 方向排序哈希。
+
+    任一边增删/强度/方向变化 → 指纹变化 → 重新联动；重跑一致 → 跳过 LLM。
+    """
+    payload = json.dumps(
+        sorted((e["rel_id"], round(float(e["strength"]), 1), e["direction"]) for e in edges),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _upsert_if_changed(db: Session, book_id: int, kind: str, content: dict) -> bool:
@@ -136,18 +159,45 @@ def link_graph_assets(db: Session) -> dict:
     return {"stubs": stubs, "domain_terms": link_domain_terms(db)}
 
 
-def _llm_link_update(db: Session, book: Book, other: Book, rel: BookRelation, reasons: list[str]) -> None:
-    """LLM 增量增改：以旧资产 + 本轮跨书关联为输入，输出合并后的 RAG/Skill 整体覆盖。"""
+
+def _prepare_link_update(
+    db: Session, book: Book, links: list[dict], *, force: bool = False
+) -> tuple[Book, dict, dict, str, list[dict]] | None:
+    """L2 准备阶段（主线程）：指纹判定 + 读旧资产 + 构造 multi-link 提示词。
+
+    links 为该书本轮参与 LLM 的关联边（按强度降序、≤ MAX_LINKS_PER_BOOK）。
+    返回 (book, old_rag, old_skill, fingerprint, messages)；指纹命中返回 None（跳过 LLM、不 bump 版本）。
+    """
+    fingerprint = _link_fingerprint(links)
     old_rag = read_asset_content(db, book.id, "rag")
+    if not force and old_rag.get("linked_sync_fingerprint") == fingerprint:
+        return None
     old_skill = read_asset_content(db, book.id, "skill")
-    relation_desc = f"（{rel.relation_type}，强度 {rel.strength}）"
-    user_prompt = build_link_user_prompt(
-        book.title, other.title, relation_desc, reasons, old_rag, old_skill, rag_book_input(db, book)
+    link_parts = [
+        {
+            "other_title": link["other_title"],
+            "relation_desc": link["relation_desc"],
+            "reasons": link["reasons"],
+        }
+        for link in links
+    ]
+    user_prompt = build_multi_link_user_prompt(
+        book.title, link_parts, old_rag, old_skill, rag_book_input(db, book)
     )
-    client = build_client(db)
-    reply = client.chat(
-        [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}]
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+    return book, old_rag, old_skill, fingerprint, messages
+
+
+def _apply_link_update(
+    db: Session, book: Book, old_rag: dict, old_skill: dict, fingerprint: str, reply: str
+) -> None:
+    """L2 落盘阶段（主线程）：解析 LLM 回复并整体覆盖 RAG/Skill（短事务，commit 由 upsert_asset 承担）。
+
+    解析或落盘失败抛异常，由调用方按书回滚并继续，不中断其它书。
+    """
     parsed = parse_llm_json(reply)
     rag = {
         "title": book.title,
@@ -157,6 +207,7 @@ def _llm_link_update(db: Session, book: Book, other: Book, rel: BookRelation, re
         "linked_books": old_rag.get("linked_books", []),
         "domain_terms": old_rag.get("domain_terms", []),
         "linked_terms": old_rag.get("linked_terms", []),
+        "linked_sync_fingerprint": fingerprint,
     }
     skill = {
         "name": parsed.get("skill_name") or old_skill.get("name") or f"{book.title} 技能包",
@@ -166,10 +217,27 @@ def _llm_link_update(db: Session, book: Book, other: Book, rel: BookRelation, re
     }
     upsert_asset(db, book.id, "rag", rag)
     upsert_asset(db, book.id, "skill", skill)
+
+
+def _chat_safe(client, messages: list[dict]) -> str | BaseException:
+    """L2 并发 chat 包装：子线程只做网络 IO（红线 1）；单书失败返回异常对象，不中断其它书。"""
     try:
-        post_classify_book(db, book)
-    except Exception:
-        db.rollback()
+        return client.chat(messages)
+    except Exception as exc:  # noqa: BLE001
+        return exc
+
+
+def _sync_llm_workers(total: int) -> int:
+    """L2 worker 数：GRAPH_SYNC_CONCURRENCY 默认 1=串行；0=不限制（min(书数, 8)）；N=上限（cap 8）。
+
+    并发仍受 ai_concurrency 信号量约束（client.chat 内部统一限流，决策 35 红线 3）。
+    """
+    n = settings.graph_sync_concurrency
+    if n <= 1:
+        return 1
+    if n == 0:
+        return min(max(total, 1), 8)
+    return min(n, 8)
 
 
 def apply_relation_feedback(
@@ -199,18 +267,28 @@ def apply_relation_feedback(
 
 
 def sync_assets_for_relations(
-    db: Session, relation_ids: list[int] | None = None, *, use_llm: bool | None = None
+    db: Session,
+    relation_ids: list[int] | None = None,
+    *,
+    use_llm: bool | None = None,
+    force: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
     """对受影响书籍执行跨书联动增量增改。
 
     - 始终补本地 RAG 存根（linked_books）；
     - use_llm 未指定时：已配置 AI 才走 LLM（POST /api/graph/sync 显式调用）；
-    - 返回 {"stubs": 新增存根数, "llm_updated": LLM 更新书数}。
+    - force=True 忽略幂等指纹强制联动（L1，预留参数；任务/路由层暂不暴露）；
+    - on_progress(done, total) 在 LLM 落盘阶段每完成一本书回调一次（L2，total=落盘书数，
+      指纹跳过瞬时完成不计入；任务层映射进度条）；
+    - LLM 阶段三段式执行（L2）：主线程准备 → 并发 chat（仅网络 IO，GRAPH_SYNC_CONCURRENCY
+      控制 worker 数，默认 1=串行）→ 主线程落盘（每书独立事务，失败回滚不阻塞）；
+    - 返回 {"stubs": 新增存根数, "llm_updated": LLM 更新书数, "llm_skipped": 指纹命中跳过书数}。
     """
     relations = list_active_relations(db, relation_ids)
     llm_enabled = is_configured(db) if use_llm is None else (use_llm and is_configured(db))
     stubs = 0
-    llm_updated = 0
+    by_book: dict[int, list[dict]] = defaultdict(list)  # L1：按书聚合本轮关联边
     for rel in relations:
         stubs += link_relation_stubs(db, rel)
         if not llm_enabled or rel.strength < LINK_MIN_STRENGTH:
@@ -220,10 +298,73 @@ def sync_assets_for_relations(
         if not a or not b:
             continue
         reasons = load_reasons(rel)
+        relation_desc = f"（{rel.relation_type}，强度 {rel.strength}）"
+        direction = rel.direction or "无"
         for book, other in ((a, b), (b, a)):
+            by_book[book.id].append(
+                {
+                    "rel_id": rel.id,
+                    "strength": rel.strength,
+                    "direction": direction,
+                    "other_title": other.title,
+                    "relation_desc": relation_desc,
+                    "reasons": reasons,
+                }
+            )
+    llm_updated = 0
+    llm_skipped = 0  # L1：指纹命中跳过数
+    affected: set[int] = set()  # L0：LLM 更新受影响书，循环后统一 post-classify（每本一次）
+    # L2 准备阶段（主线程，只读）：指纹判定 + 构造提示词，id 升序保证确定性
+    pending: list[tuple[Book, dict, dict, str, list[dict]]] = []
+    for book_id in sorted(by_book):
+        edges = by_book[book_id]
+        edges.sort(key=lambda edge: -float(edge["strength"]))
+        book = db.get(Book, book_id)
+        if book is None:
+            continue
+        prep = _prepare_link_update(db, book, edges[:MAX_LINKS_PER_BOOK], force=force)
+        if prep is None:
+            llm_skipped += 1
+        else:
+            pending.append(prep)
+    # L2 并发 chat（仅网络 IO，不触碰 Session/ORM；client 线程安全可共享；失败按书隔离）
+    if pending:
+        client = build_client(db)
+        workers = _sync_llm_workers(len(pending))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="graph-sync") as pool:
+                replies = list(pool.map(lambda m: _chat_safe(client, m), [p[4] for p in pending]))
+        else:
+            replies = [_chat_safe(client, p[4]) for p in pending]
+        # L2 落盘阶段（主线程串行）：解析 + upsert，每书独立事务边界
+        done = 0
+        total = len(pending)
+        for (book, old_rag, old_skill, fingerprint, _messages), reply in zip(pending, replies, strict=True):
             try:
-                _llm_link_update(db, book, other, rel, reasons)
+                if isinstance(reply, BaseException):
+                    raise reply
+                _apply_link_update(db, book, old_rag, old_skill, fingerprint, reply)
+                affected.add(book.id)
                 llm_updated += 1
             except Exception:
                 db.rollback()
-    return {"stubs": stubs, "llm_updated": llm_updated}
+            done += 1
+            if on_progress is not None:
+                on_progress(done, total)
+    # L0：LLM 更新落库完成后统一后验分类——复用簇代表特征索引（O(M·C) → O(C)），
+    # 每本独立 try/except，post-classify 失败只回滚分类、不丢已成功更新的资产。
+    if affected:
+        index = build_posterior_index(db)
+        for book_id in sorted(affected):
+            book = db.get(Book, book_id)
+            if book is None:
+                continue
+            try:
+                post_classify_book(db, book, index=index)
+            except Exception:
+                db.rollback()
+        try:
+            merge_and_rename_clusters(db)
+        except Exception:
+            db.rollback()
+    return {"stubs": stubs, "llm_updated": llm_updated, "llm_skipped": llm_skipped}

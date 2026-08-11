@@ -74,6 +74,9 @@ def create_book_with_chapters(
     return book
 
 
+_UNSET = object()  # 字段哨兵：区分「未传」与「显式置 None」（移出文件夹）
+
+
 def update_book(
     db: Session,
     book_id: int,
@@ -81,7 +84,7 @@ def update_book(
     author: str | None = None,
     status: str | None = None,
     progress: float | None = None,
-    folder_id: int | None = None,
+    folder_id: int | None | object = _UNSET,
     tags: list[str] | None = None,
     position: int | None = None,
 ) -> Book | None:
@@ -97,7 +100,7 @@ def update_book(
         book.status = status
     if progress is not None:
         book.progress = progress
-    if folder_id is not None:
+    if folder_id is not _UNSET:
         book.folder_id = folder_id
     if tags is not None:
         book.tags_json = json.dumps(tags, ensure_ascii=False)

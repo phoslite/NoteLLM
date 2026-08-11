@@ -45,3 +45,48 @@ def build_link_user_prompt(
         f"【本书轻量素材（章节标题/要点，供核实）】\n{materials}\n\n"
         "请输出增改合并后的完整 JSON 资产。"
     )
+
+
+def build_multi_link_user_prompt(
+    book_title: str,
+    links: list[dict],
+    old_rag: dict | None,
+    old_skill: dict | None,
+    materials: str,
+) -> str:
+    """构造跨书联动（L1 按书聚合）的用户侧输入：旧资产概要 + 本轮全部关联 + 轻量素材。
+
+    links 每项含 other_title / relation_desc / reasons；长度 1 时与单边版语义等价。
+    """
+    old_rag = old_rag or {}
+    old_skill = old_skill or {}
+    kps = old_rag.get("key_points") or []
+    kp_lines = "\n".join(
+        k if isinstance(k, str) else str(k.get("title") or k.get("point") or "") for k in kps
+    )
+    skills = old_skill.get("skills") or []
+    skill_lines = "\n".join(
+        f"- {s.get('name', '')}（适用：{s.get('applicable', '')}）用法：{s.get('usage', '')}"
+        if isinstance(s, dict)
+        else f"- {s}"
+        for s in skills
+    )
+    link_lines = []
+    for i, link in enumerate(links, 1):
+        reasons = link.get("reasons") or []
+        reason_line = "、".join(reasons) if reasons else "（无）"
+        link_lines.append(
+            f"{i}. 与《{link.get('other_title', '')}》{link.get('relation_desc', '')}；"
+            f"关联原因：{reason_line}"
+        )
+    return (
+        f"书籍：《{book_title}》\n\n"
+        f"【本轮跨书关联（共 {len(links)} 条）】\n"
+        + "\n".join(link_lines)
+        + "\n\n"
+        f"【已有 RAG 资产】\nsummary: {old_rag.get('summary', '')}\n"
+        f"key_points:\n{kp_lines or '（无）'}\n\n"
+        f"【已有 Skill 资产】\n{skill_lines or '（无）'}\n\n"
+        f"【本书轻量素材（章节标题/要点，供核实）】\n{materials}\n\n"
+        "请把本轮全部跨书关联合并进资产，输出增改合并后的完整 JSON 资产（不要遗漏任何一条关联）。"
+    )

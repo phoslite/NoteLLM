@@ -82,6 +82,20 @@ def test_search_combined_with_folder(client):
     assert searched == []
 
 
+def test_patch_book_folder_id_null_moves_out(client):
+    """D8 修复（2026-08-11）：PATCH folder_id=null 把书移出文件夹（哨兵语义区分未传/置空）。"""
+    folder = client.post("/api/folders", json={"name": "待移出"}).json()["data"]
+    a = _import_md(client, "移出测试.md", "# 移出测试\n\n内容。\n")
+    client.patch(f"/api/books/{a}", json={"folder_id": folder["id"]})
+    assert client.get(f"/api/books/{a}").json()["data"]["folder_id"] == folder["id"]
+    resp = client.patch(f"/api/books/{a}", json={"folder_id": None})
+    assert resp.status_code == 200
+    assert client.get(f"/api/books/{a}").json()["data"]["folder_id"] is None
+    # 未传 folder_id 时保持不变（哨兵不误伤其他字段更新）
+    client.patch(f"/api/books/{a}", json={"tags": ["保持"]})
+    assert client.get(f"/api/books/{a}").json()["data"]["folder_id"] is None
+
+
 def test_patch_book_invalid_folder_id_returns_404(client):
     """终审 §6.9：PATCH 无效 folder_id 与全库「资源不存在→404」契约一致。"""
     r = client.post("/api/books", files={"file": ("无效文件夹.md", "# 第一章\n\n正文\n".encode(), "text/markdown")})

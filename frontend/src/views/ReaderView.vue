@@ -74,6 +74,12 @@ function onPageImgLoad(e: Event) {
 }
 const totalCount = computed(() => book.value?.chapters.length ?? 0)
 
+/* ---------- 文本书（MD/EPUB）阅读区宽度（D9：第 x/共 x 章 右侧调节） ---------- */
+const contentMaxWidth = ref(860)
+const textBodyStyle = computed(() =>
+  pageMode.value ? {} : { maxWidth: `${contentMaxWidth.value}px`, margin: '0 auto' },
+)
+
 /* ---------- PDF 页缓存（M7 多模态视觉提取） ---------- */
 const pageCache = useReaderPageCache({ bookId, book, pageIndex })
 const { pageCacheStatus, pageCacheBusy, refreshPageCacheStatus, reExtractCurrentPage, rebuildPageCache } = pageCache
@@ -427,9 +433,17 @@ onBeforeUnmount(() => {
                 <span v-if="pageZoom !== 'fit'" class="page-zoom-text">{{ pageZoomText }}</span>
               </span>
             </template>
-            <h2 v-else-if="currentChapter" class="chapter-heading">
-              <MdRender :source="currentChapter.title" inline />
-            </h2>
+            <template v-else-if="currentChapter">
+              <span class="page-indicator">第 {{ currentChapter.index }}/{{ totalCount }} 章</span>
+              <span class="text-zoombar">
+                <button type="button" class="mini-btn" title="收窄阅读区" :disabled="contentMaxWidth <= 640" @click="contentMaxWidth = Math.max(640, contentMaxWidth - 40)">－</button>
+                <span class="page-zoom-text">{{ contentMaxWidth }}px</span>
+                <button type="button" class="mini-btn" title="加宽阅读区" :disabled="contentMaxWidth >= 1200" @click="contentMaxWidth = Math.min(1200, contentMaxWidth + 40)">＋</button>
+              </span>
+              <h2 class="chapter-heading">
+                <MdRender :source="currentChapter.title" inline />
+              </h2>
+            </template>
             <h2 v-else class="chapter-heading">选择章节开始阅读</h2>
           </div>
           <div class="toolbar-actions">
@@ -479,7 +493,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
       </div>
-      <div ref="scrollEl" class="reading-scroll" @scroll="onReadScroll">
+      <div ref="scrollEl" class="reading-scroll" :style="textBodyStyle" @scroll="onReadScroll">
         <div v-if="chapterLoading" class="loading-tip">章节加载中…</div>
         <div v-else-if="pageMode" class="page-view">
           <div class="page-scroll">
@@ -687,6 +701,7 @@ onBeforeUnmount(() => {
 .reading-scroll { flex: 1; overflow-y: auto; padding: 18px 40px 48px; }
 .page-view { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .page-zoombar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.text-zoombar { display: flex; align-items: center; gap: 6px; }
 .page-zoom-text { font-size: 13px; color: var(--text-secondary); min-width: 34px; text-align: center; }
 .page-scroll { width: 100%; display: flex; justify-content: safe center; }
 .page-img { max-width: 100%; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12); border-radius: 4px; }
