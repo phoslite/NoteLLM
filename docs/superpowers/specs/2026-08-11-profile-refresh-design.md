@@ -1,6 +1,6 @@
 ﻿# 「重新生成画像」功能设计（v1.132）
 
-> 日期：2026-08-11 ｜ 状态：待用户审阅 ｜ 关联：冷记忆分词修复（v1.131，`graph/terms.py` 画像术语层 + `scripts/clean_profiles.py`）
+> 日期：2026-08-11 ｜ 状态：已实施（v1.132） ｜ 关联：冷记忆分词修复（v1.131，`graph/terms.py` 画像术语层 + `scripts/clean_profiles.py`）
 
 ## 1. 背景与目标
 
