@@ -122,6 +122,8 @@ def update_cold_profile(
                 seen.add(n)
                 uniq.append(n)
         cold["long_term_interests"] = uniq
+        # v1.136 手动编辑快照：refresh 重建时仅保留快照内的整词（旧碎片无法冒充手动词）
+        cold["manual_interests"] = uniq
     if knowledge_level is not None:
         cold["knowledge_level"] = _normalize_knowledge_level(knowledge_level)
     _save(db, COLD, "default", cold)
@@ -253,7 +255,8 @@ def migrate_profiles_on_archive(db: Session, book: Book, rag: dict | None = None
         cold.setdefault("language_style", "default")
         long_terms = cold.setdefault("long_term_interests", [])
         for t in sorted(themes, key=lambda x: -themes[x])[:10]:
-            if t not in long_terms:
+            # v1.136：次泛词（空间/系统/函数…）不进长期兴趣
+            if t not in long_terms and t not in _PROFILE_SYNC_STOPWORDS:
                 long_terms.append(t)
     if count > warm_threshold:
         warm["recent_books"] = warm["recent_books"][-1:]
@@ -286,6 +289,7 @@ def migrate_profiles_on_archive(db: Session, book: Book, rag: dict | None = None
 PROFILE_REFRESH_TOP_N = 40  # 重新生成画像：暖主题聚合上限（v1.132）
 PROFILE_PREF_TOP_N = 60  # 领域偏好重建上限（v1.133）
 PROFILE_PREF_PER_BOOK = 15  # 领域偏好重建：每本书抽取上限（v1.133）
+PROFILE_PREF_FRAGMENT_TOP_N = 80  # v1.136：碎片抑制覆盖每本书 top80 抽取词（父整词常落 top15 之外）
 
 # 知识水平校准（v1.135，用户主动触发）：仅生成建议，不自动写入
 KNOWLEDGE_LEVELS = ("beginner", "intermediate", "advanced")
@@ -325,12 +329,15 @@ def _rebuild_domain_preferences(db: Session) -> tuple[dict[str, float], set[str]
                 texts.append(kp)
             else:
                 texts.append(str(kp.get("title") or kp.get("point") or ""))
-        terms = extract_profile_terms(" ".join(texts), PROFILE_PREF_PER_BOOK)
+        # v1.136：每本书抽 top80 构建碎片抑制集合（旧实现只覆盖 top15，漏掉
+        # 「自由度→由度」这类父整词落在 top15 之外的碎片）；聚合口径仍取原 top15，行为不变
+        terms_all = extract_profile_terms(" ".join(texts), PROFILE_PREF_FRAGMENT_TOP_N)
+        for term in terms_all:
+            fragments |= _inner_bigrams(term)
+        terms = dict(list(terms_all.items())[:PROFILE_PREF_PER_BOOK])
         for term, weight in terms.items():
             counter[term] += weight
         book_coverage.update(terms)
-        for term in terms:
-            fragments |= _inner_bigrams(term)
     prefs = dict(counter.most_common(PROFILE_PREF_TOP_N))
     # v1.134 联动：覆盖≥2 本书且进入领域偏好的强领域词沉淀词库系统缓存区（正反馈）；
     # 写入失败（文件锁/IO）不阻塞重建，保持 refresh 幂等安全。
@@ -375,13 +382,20 @@ def refresh_profiles(db: Session) -> dict:
     interests_before = list(cold.get("long_term_interests") or [])
     # v1.133：领域偏好从书库 RAG 重建（非仅清洗）
     cold["domain_preferences"], fragments = _rebuild_domain_preferences(db)
-    # 长期兴趣 = 重建 top10 + 旧词中「非书级整词内部碎片」的整词（保护手动编辑，剔除残留碎片）
+    # v1.136 长期兴趣 = 重建 top10（过滤次泛词）+ manual_interests 快照内的整词：
+    # - 旧碎片（由度/性映/然种…）无手动编辑标记 → 不再保留（旧实现误判为手动词永久保留）；
+    # - 次泛词（_PROFILE_SYNC_STOPWORDS：空间/系统/函数…）重建与手动添加均不保留；
+    # - 整词内部二元组碎片（fragments，现覆盖每本书 top80）继续抑制。
+    manual = list(cold.get("manual_interests") or [])
+    rebuilt_top = [t for t in cold["domain_preferences"] if t not in _PROFILE_SYNC_STOPWORDS][:10]
     old_interests = list(sanitize_profile_term_freq({str(t): 1.0 for t in interests_before}))
     kept_old = [
         term for term in old_interests
-        if not (len(term) == 2 and term in fragments and term not in cold["domain_preferences"])
+        if term in manual
+        and term not in _PROFILE_SYNC_STOPWORDS
+        and not (len(term) == 2 and term in fragments and term not in cold["domain_preferences"])
     ]
-    cold["long_term_interests"] = list(dict.fromkeys([*list(cold["domain_preferences"])[:10], *kept_old]))
+    cold["long_term_interests"] = list(dict.fromkeys([*rebuilt_top, *kept_old]))
 
     removed = sorted(
         set(themes_before) - set(warm["themes"]), key=lambda k: -float(themes_before.get(k, 0))

@@ -1,4 +1,4 @@
-﻿"""「重新生成画像」：暖主题重算 + 冷画像清洗/领域偏好重建/词库沉淀（v1.132~v1.134）。"""
+"""「重新生成画像」：暖主题重算 + 冷画像清洗/领域偏好重建/词库沉淀（v1.132~v1.134）。"""
 import json
 import os
 from pathlib import Path
@@ -9,9 +9,11 @@ from app.services.profile_service import (
     COLD,
     HOT,
     WARM,
+    _rebuild_domain_preferences,
     _save,
     get_all_profiles,
     refresh_profiles,
+    update_cold_profile,
 )
 
 
@@ -28,6 +30,7 @@ def _seed(db):
     _save(db, COLD, "default", {
         "domain_preferences": {"定义": 515.0, "任意": 234.0, "的稳": 22.0, "Hilbert": 5.0},
         "long_term_interests": ["实分析", "的稳"],
+        "manual_interests": ["实分析"],  # v1.136 手动编辑快照：refresh 仅保留快照内整词
     })
     _save(db, HOT, "current", {
         "current_book_id": 7, "current_title": "热书", "progress": 0.5,
@@ -100,6 +103,7 @@ def test_refresh_rebuilds_domain_preferences_from_rag(client):
         _save(db, COLD, "default", {
             "domain_preferences": {"由度": 545.0, "度定": 317.0, "函数": 410.0},
             "long_term_interests": ["实分析"],
+            "manual_interests": ["实分析"],  # v1.136 手动编辑快照
         })
         stats = refresh_profiles(db)
         cold = get_all_profiles(db)["cold"]
@@ -109,6 +113,92 @@ def test_refresh_rebuilds_domain_preferences_from_rag(client):
         assert "变分法" in prefs or "变分" in prefs  # 书内可溯源术语
         assert stats["cold_before"] == 3 and stats["cold_after"] <= 60
         assert "实分析" in cold["long_term_interests"]  # 手动整词保留
+    finally:
+        db.close()
+
+
+def test_refresh_interests_drop_legacy_fragments_and_generic(client):
+    """v1.136：无手动编辑标记时，旧二元组碎片（由度/度定/性映/然种）与次泛词（空间/系统）全部清除。"""
+    db = SessionLocal()
+    try:
+        _save(db, WARM, "default", {"recent_books": [], "related_books": [], "themes": {}, "archived_count": 3})
+        _save(db, COLD, "default", {
+            "domain_preferences": {"定义": 5.0},
+            "long_term_interests": ["实分析", "由度", "度定", "性映", "然种", "空间", "系统"],
+        })
+        refresh_profiles(db)
+        interests = get_all_profiles(db)["cold"]["long_term_interests"]
+        assert "由度" not in interests and "度定" not in interests
+        assert "性映" not in interests and "然种" not in interests
+        assert "空间" not in interests and "系统" not in interests
+    finally:
+        db.close()
+
+
+def test_refresh_interests_keep_manual_edited_words_only(client):
+    """v1.136：manual_interests 快照内的整词保留；快照外的旧词（即使非碎片）不保留。"""
+    db = SessionLocal()
+    try:
+        _save(db, WARM, "default", {"recent_books": [], "related_books": [], "themes": {}, "archived_count": 3})
+        _save(db, COLD, "default", {
+            "long_term_interests": ["实分析", "复分析"],
+            "manual_interests": ["实分析"],
+        })
+        refresh_profiles(db)
+        interests = get_all_profiles(db)["cold"]["long_term_interests"]
+        assert "实分析" in interests
+        assert "复分析" not in interests
+    finally:
+        db.close()
+
+
+def test_update_cold_profile_records_manual_interests(client):
+    """v1.136：手动保存长期兴趣时同步记录 manual_interests 快照（去重+清洗后）。"""
+    db = SessionLocal()
+    try:
+        cold = update_cold_profile(db, long_term_interests=["实分析", "实分析", "参数论（不动点）"])
+        assert cold["long_term_interests"] == ["实分析", "参数论 不动点"]
+        assert cold["manual_interests"] == ["实分析", "参数论 不动点"]
+    finally:
+        db.close()
+
+
+def test_refresh_rebuilt_interests_skip_sync_stopwords(client):
+    """v1.136：长期兴趣的重建 top10 也过滤次泛词（函数/方程/空间…），专业词保留。"""
+    r = client.post("/api/books", files={"file": ("兴趣重建.md", "# 第一章\n\n内容。\n".encode(), "text/markdown")})
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        db.add(BookAsset(
+            book_id=r.json()["data"]["id"], kind="rag", version=1,
+            content_json=json.dumps({"summary": "变分法研究函数方程与空间", "key_points": ["角动量守恒与能量"]}, ensure_ascii=False),
+        ))
+        db.commit()
+        refresh_profiles(db)
+        interests = get_all_profiles(db)["cold"]["long_term_interests"]
+        assert "变分法" in interests or "角动量" in interests
+        assert "函数" not in interests and "方程" not in interests and "空间" not in interests
+    finally:
+        db.close()
+
+
+def test_rebuild_fragments_cover_deeper_book_terms(client):
+    """v1.136：fragments 从每本书 top80 抽取词构建——父整词落在 top15 之外的碎片（由度）也能被抑制。"""
+    elements = ["hydrogen", "helium", "lithium", "beryllium", "boron", "carbon", "nitrogen",
+                "oxygen", "fluorine", "neon", "sodium", "magnesium", "aluminum", "silicon",
+                "phosphorus", "sulfur", "chlorine", "argon", "potassium", "calcium"]
+    kps = [elem for elem in elements for _ in range(4)] + ["自由度与广义坐标"]
+    r = client.post("/api/books", files={"file": ("碎片书.md", "# 第一章\n\n内容。\n".encode(), "text/markdown")})
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        db.add(BookAsset(
+            book_id=r.json()["data"]["id"], kind="rag", version=1,
+            content_json=json.dumps({"summary": "测试", "key_points": kps}, ensure_ascii=False),
+        ))
+        db.commit()
+        prefs, fragments = _rebuild_domain_preferences(db)
+        assert "由度" in fragments  # 「自由度」的内部二元组（父整词不在 top15，旧实现会漏）
     finally:
         db.close()
 

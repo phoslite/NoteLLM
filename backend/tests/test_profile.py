@@ -214,6 +214,25 @@ def test_update_cold_profile_edits_domains_and_interests(client):
     assert cold2["long_term_interests"] == ["实分析", "参数论 不动点"]
 
 
+def test_archive_interests_skip_sync_stopwords(client):
+    """v1.136：归档沉淀长期兴趣时过滤次泛词（空间/系统/函数…），专业词保留。"""
+    for i in range(3):
+        book_id = _import_md(client, f"兴趣书{i}.md", "# 第一章\n\n内容。\n")
+        book = _get_book(book_id)
+        db = SessionLocal()
+        try:
+            migrate_profiles_on_archive(db, book, rag=_rag(f"兴趣书{i}", ["Hilbert空间与Banach空间的函数关系"]))
+        finally:
+            db.close()
+    db = SessionLocal()
+    try:
+        interests = get_all_profiles(db)["cold"]["long_term_interests"]
+        assert "Hilbert" in interests
+        assert "空间" not in interests and "函数" not in interests
+    finally:
+        db.close()
+
+
 def test_archive_other_book_does_not_carry_hot_highlights(client):
     """I-2：归档非热书时，暖画像条目不得携带热画像中其他书的划线与问题。"""
     a_id = _import_md(client, "热书A.md", "# 第一章\n\n内容。\n")
