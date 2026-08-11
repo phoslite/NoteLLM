@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.models.book import Book
 from app.models.profile import UserProfile
-from app.services.graph.terms import extract_profile_terms
+from app.services.graph.terms import extract_profile_terms, sanitize_profile_term_freq
 from app.services.profile_learning import (
     get_thresholds,
     learn_thresholds,
@@ -271,3 +271,59 @@ def migrate_profiles_on_archive(db: Session, book: Book, rag: dict | None = None
     except Exception:
         db.rollback()
     return get_all_profiles(db)
+
+PROFILE_REFRESH_TOP_N = 40  # 重新生成画像：暖主题聚合上限（v1.132）
+
+
+def refresh_profiles(db: Session) -> dict:
+    """重新生成画像（v1.132）：暖主题按近期书+相关书重算，冷画像脏词清洗；不清空任何层。
+
+    - 暖主题：recent_books + related_books 的 summary/key_points 经画像术语层重抽（修正历史过度累积）；
+    - 冷画像：domain_preferences / long_term_interests 清洗（泛化词/虚词碎片/LaTeX 剔除，手动整词保留）；
+    - 热画像不读取不修改；幂等收敛（第二次统计变化≈0）；失败不落库（调用方事务回滚）。
+    """
+    warm = get_warm(db)
+    cold = get_cold(db)
+
+    texts: list[str] = []
+    for group in ("recent_books", "related_books"):
+        for item in warm.get(group) or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("summary"):
+                texts.append(str(item["summary"]))
+            kps = item.get("key_points") or []
+            if isinstance(kps, list):
+                texts.extend(str(k) for k in kps)
+            else:
+                texts.append(str(kps))
+    themes_before = dict(warm.get("themes") or {})
+    warm["themes"] = (
+        {k: float(v) for k, v in extract_profile_terms(" ".join(texts), PROFILE_REFRESH_TOP_N).items()}
+        if texts else {}
+    )
+
+    prefs_before = dict(cold.get("domain_preferences") or {})
+    interests_before = list(cold.get("long_term_interests") or [])
+    cold["domain_preferences"] = sanitize_profile_term_freq(
+        {str(k): float(v) for k, v in prefs_before.items()}
+    )
+    if interests_before:
+        cold["long_term_interests"] = list(
+            sanitize_profile_term_freq({str(t): 1.0 for t in interests_before})
+        )
+
+    removed = sorted(
+        set(themes_before) - set(warm["themes"]), key=lambda k: -float(themes_before.get(k, 0))
+    )[:12]
+    _save(db, WARM, "default", warm)
+    _save(db, COLD, "default", cold)
+    return {
+        "themes_before": len(themes_before),
+        "themes_after": len(warm["themes"]),
+        "cold_before": len(prefs_before),
+        "cold_after": len(cold["domain_preferences"]),
+        "interests_before": len(interests_before),
+        "interests_after": len(cold.get("long_term_interests") or []),
+        "removed_sample": removed,
+    }
