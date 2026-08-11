@@ -124,6 +124,13 @@
             <div class="sub-head"><span>🧭 长期兴趣</span></div>
             <div v-if="interests.length" class="chip-flow">{{ interests.join(' · ') }}</div>
             <p v-else class="empty">—</p>
+            <div class="sub-head"><span>🎓 知识水平</span><span class="sub-count">{{ levelLabel(levelValue) }}</span></div>
+            <div class="level-row">
+              <el-select v-model="levelValue" size="small" style="width: 160px" @change="onLevelChange">
+                <el-option v-for="(lab, key) in levelOptions" :key="key" :label="`${lab}（${key}）`" :value="key" />
+              </el-select>
+              <el-button size="small" :loading="calibrating" @click="onCalibrate">🎯 校准建议</el-button>
+            </div>
           </template>
           <template v-else>
             <div class="sub-head"><span>🏷️ 领域偏好（分数 1~10）</span></div>
@@ -238,8 +245,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getProfile, getRecommendations, getThresholds, learnProfileThresholds, refreshProfile, resetProfile, saveColdProfile, saveThresholds } from '@/api/profile'
-import type { ProfileData, ProfileThresholds, RecommendationsData } from '@/types'
+import { getKnowledgeLevelSuggestion, getProfile, getRecommendations, getThresholds, learnProfileThresholds, refreshProfile, resetProfile, saveColdProfile, saveThresholds } from '@/api/profile'
+import type { KnowledgeLevelSuggestion, ProfileData, ProfileThresholds, RecommendationsData } from '@/types'
 
 const profiles = ref<ProfileData>({ cold: {}, warm: {}, hot: {} })
 const busy = ref(false)
@@ -258,6 +265,16 @@ const relatedBooks = computed(() => (profiles.value.warm?.related_books as any[]
 const prefs = computed(() => Object.entries((profiles.value.cold?.domain_preferences as Record<string, number>) || {}).slice(0, 12))
 const dueReviewCount = computed(() => (rec.value?.review ?? []).filter((r) => r.due).length)
 const interests = computed(() => (profiles.value.cold?.long_term_interests as string[] || []))
+const levelValue = ref('intermediate')
+const calibrating = ref(false)
+const baseLevelOptions: Record<string, string> = { beginner: '入门', intermediate: '进阶', advanced: '深入' }
+const levelOptions = computed(() => {
+  const raw = String(profiles.value.cold?.knowledge_level || '')
+  const opts = { ...baseLevelOptions }
+  if (raw && !opts[raw]) opts[raw] = raw
+  return opts
+})
+const levelLabel = (v: string) => baseLevelOptions[v] || v || '—'
 
 const hotProgress = computed(() => Math.round((Number(profiles.value.hot?.progress) || 0) * 100))
 const chapterFlow = computed(() => ((profiles.value.hot?.chapter_titles as string[] | undefined) || []).join(' → ') || '—')
@@ -291,6 +308,7 @@ async function refresh() {
   const [profileR, recsR, thsR] = await Promise.allSettled([getProfile(), getRecommendations(), getThresholds()])
   if (profileR.status === 'fulfilled') {
     profiles.value = profileR.value
+    levelValue.value = String(profiles.value.cold?.knowledge_level || 'intermediate')
   } else {
     ElMessage.warning(`画像加载失败：${(profileR.reason as Error)?.message ?? '未知错误'}`)
   }
@@ -389,6 +407,51 @@ async function onRebuild() {
   }
 }
 
+async function onLevelChange(v: string) {
+  const prev = levelValue.value
+  try {
+    profiles.value.cold = await saveColdProfile({ knowledge_level: v })
+    ElMessage.success(`知识水平已设为：${levelLabel(v)}`)
+  } catch (err) {
+    levelValue.value = prev
+    ElMessage.error((err as Error).message)
+  }
+}
+
+async function onCalibrate() {
+  calibrating.value = true
+  let suggestion: KnowledgeLevelSuggestion
+  try {
+    suggestion = await getKnowledgeLevelSuggestion()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+    calibrating.value = false
+    return
+  }
+  calibrating.value = false
+  const lines = [
+    `建议：<b>${suggestion.levels[suggestion.suggested] || suggestion.suggested}</b>（${suggestion.suggested}），总分 ${suggestion.score} / ${suggestion.max_score}`,
+    ...suggestion.signals.map((s) => `· ${s.label}：${s.value}${s.unit}（+${s.points}）`),
+  ]
+  try {
+    await ElMessageBox.confirm(lines.join('<br>'), '🎓 知识水平校准', {
+      type: 'info',
+      confirmButtonText: '应用建议',
+      cancelButtonText: '取消',
+      dangerouslyUseHTMLString: true,
+    })
+  } catch {
+    return
+  }
+  try {
+    profiles.value.cold = await saveColdProfile({ knowledge_level: suggestion.suggested })
+    levelValue.value = suggestion.suggested
+    ElMessage.success(`已按建议更新知识水平：${levelLabel(suggestion.suggested)}`)
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
 async function onReset() {
   try {
     await ElMessageBox.confirm('将清空冷/暖/热三层画像并重新积累？', '重置画像', { type: 'warning' })
@@ -468,6 +531,7 @@ onMounted(refresh)
 .rec-days { color: var(--text-secondary); font-size: 13px; }
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip-flow { font-size: 13px; line-height: 1.9; background: var(--panel-bg); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
+.level-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 .empty { color: var(--text-secondary); font-size: 13px; margin: 6px 0; }
 
 /* 通用面板（阈值 / 建议） */

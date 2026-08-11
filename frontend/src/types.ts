@@ -374,6 +374,30 @@ export interface RecommendationsData {
 
 /** 画像阈值与学习状态（需求 3.4.1：系统自动学习，可手动覆盖）。 */
 /** 重新生成画像统计（v1.132）。 */
+export interface KnowledgeLevelSignal {
+  key: string
+  label: string
+  value: number
+  points: number
+  unit: string
+}
+
+/** 知识水平校准建议（v1.135，用户主动触发：只建议不写入）。 */
+export interface KnowledgeLevelSuggestion {
+  current: string
+  suggested: string
+  score: number
+  max_score: number
+  levels: Record<string, string>
+  signals: KnowledgeLevelSignal[]
+  evidence: {
+    archived_books: number
+    rag_books: number
+    long_term_interests: number
+    top_domain_preference: number
+  }
+}
+
 export interface ProfileRefreshStats {
   themes_before: number
   themes_after: number

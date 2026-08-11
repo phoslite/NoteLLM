@@ -1,4 +1,4 @@
-import type { ProfileData, ProfileRefreshStats, ProfileThresholds, RecommendationsData } from '@/types'
+import type { KnowledgeLevelSuggestion, ProfileData, ProfileRefreshStats, ProfileThresholds, RecommendationsData } from '@/types'
 import { get, patch, post } from './client'
 
 /** 读取三层画像（冷/暖/热）。 */
@@ -15,6 +15,7 @@ export function resetProfile() {
 export function saveColdProfile(payload: {
   domain_preferences?: Record<string, number>
   long_term_interests?: string[]
+  knowledge_level?: string
 }) {
   return patch<ProfileData['cold']>('/profile/cold', payload)
 }
@@ -42,4 +43,9 @@ export function learnProfileThresholds() {
 /** 重新生成画像（清洗脏词 + 按近期阅读重算暖主题，不清空）。 */
 export function refreshProfile() {
   return post<ProfileRefreshStats>('/profile/refresh')
+}
+
+/** 知识水平校准建议（v1.135，按行为证据打分，只建议不写入）。 */
+export function getKnowledgeLevelSuggestion() {
+  return get<KnowledgeLevelSuggestion>('/profile/calibrate')
 }

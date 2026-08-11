@@ -94,6 +94,7 @@ def update_cold_profile(
     db: Session,
     domain_preferences: dict[str, int] | None = None,
     long_term_interests: list[str] | None = None,
+    knowledge_level: str | None = None,
 ) -> dict:
     """手动编辑冷画像（方案 A：仅冷画像可编辑——领域偏好 / 专业领域长期兴趣）。
 
@@ -121,6 +122,8 @@ def update_cold_profile(
                 seen.add(n)
                 uniq.append(n)
         cold["long_term_interests"] = uniq
+    if knowledge_level is not None:
+        cold["knowledge_level"] = _normalize_knowledge_level(knowledge_level)
     _save(db, COLD, "default", cold)
     return cold
 
@@ -284,6 +287,23 @@ PROFILE_REFRESH_TOP_N = 40  # 重新生成画像：暖主题聚合上限（v1.13
 PROFILE_PREF_TOP_N = 60  # 领域偏好重建上限（v1.133）
 PROFILE_PREF_PER_BOOK = 15  # 领域偏好重建：每本书抽取上限（v1.133）
 
+# 知识水平校准（v1.135，用户主动触发）：仅生成建议，不自动写入
+KNOWLEDGE_LEVELS = ("beginner", "intermediate", "advanced")
+KNOWLEDGE_LEVEL_LABELS = {"beginner": "入门", "intermediate": "进阶", "advanced": "深入"}
+
+
+def _normalize_knowledge_level(level: str) -> str:
+    """知识水平归一化：接受英文枚举或中文别名，非法值报错（前端只提供枚举选择）。"""
+    s = str(level or "").strip().lower()
+    if s in KNOWLEDGE_LEVELS:
+        return s
+    alias = {"入门": "beginner", "初级": "beginner", "新手": "beginner",
+             "进阶": "intermediate", "中级": "intermediate",
+             "深入": "advanced", "高级": "advanced", "专家": "advanced"}
+    if s in alias:
+        return alias[s]
+    raise ValueError("知识水平仅支持：beginner / intermediate / advanced（或其中文别名）")
+
 
 def _rebuild_domain_preferences(db: Session) -> tuple[dict[str, float], set[str]]:
     """从有 RAG 资产的书重建冷画像领域偏好（v1.133）：每本 top15 → 聚合 top60。
@@ -376,4 +396,83 @@ def refresh_profiles(db: Session) -> dict:
         "interests_before": len(interests_before),
         "interests_after": len(cold.get("long_term_interests") or []),
         "removed_sample": removed,
+    }
+
+
+def calibrate_knowledge_level(db: Session) -> dict:
+    """知识水平校准建议（v1.135）：按行为证据打分，只建议不写入。
+
+    证据信号：归档书数 / 已建 RAG 资产的书数 / 长期兴趣词数 / 领域偏好最高分。
+    得分映射：≥4.5 深入（advanced）、≥2 进阶（intermediate）、否则入门（beginner）。
+    触发方式：仅用户主动点击「校准建议」（增强点 3 定稿为用户主动触发，不自动改值）。
+    """
+    warm = get_warm(db)
+    cold = get_cold(db)
+
+    archived = int(warm.get("archived_count") or 0)
+    rag_books = sum(1 for kinds in list_assets_by_books(db).values() if kinds.get("rag"))
+    interests_n = len(cold.get("long_term_interests") or [])
+    prefs = cold.get("domain_preferences") or {}
+    top_pref = max((float(v) for v in prefs.values()), default=0.0)
+
+    score = 0.0
+    signals: list[dict] = []
+
+    def _add(key: str, label: str, value: float, points: float, unit: str = "") -> None:
+        nonlocal score
+        score += points
+        signals.append({"key": key, "label": label, "value": value, "points": points, "unit": unit})
+
+    if archived >= 10:
+        _add("archived", "归档书数量", archived, 2.0, "本")
+    elif archived >= 5:
+        _add("archived", "归档书数量", archived, 1.0, "本")
+    elif archived >= 3:
+        _add("archived", "归档书数量", archived, 0.5, "本")
+    else:
+        _add("archived", "归档书数量", archived, 0.0, "本")
+
+    if rag_books >= 10:
+        _add("rag", "已建 RAG 资产的书", rag_books, 2.0, "本")
+    elif rag_books >= 5:
+        _add("rag", "已建 RAG 资产的书", rag_books, 1.0, "本")
+    elif rag_books >= 2:
+        _add("rag", "已建 RAG 资产的书", rag_books, 0.5, "本")
+    else:
+        _add("rag", "已建 RAG 资产的书", rag_books, 0.0, "本")
+
+    if interests_n >= 15:
+        _add("interests", "长期兴趣词数", interests_n, 1.0, "个")
+    elif interests_n >= 8:
+        _add("interests", "长期兴趣词数", interests_n, 0.5, "个")
+    else:
+        _add("interests", "长期兴趣词数", interests_n, 0.0, "个")
+
+    if top_pref >= 8:
+        _add("depth", "领域偏好最高分", top_pref, 1.0, "")
+    elif top_pref >= 5:
+        _add("depth", "领域偏好最高分", top_pref, 0.5, "")
+    else:
+        _add("depth", "领域偏好最高分", top_pref, 0.0, "")
+
+    if score >= 4.5:
+        suggested = "advanced"
+    elif score >= 2.0:
+        suggested = "intermediate"
+    else:
+        suggested = "beginner"
+
+    return {
+        "current": cold.get("knowledge_level") or "intermediate",
+        "suggested": suggested,
+        "score": round(score, 1),
+        "max_score": 6.0,
+        "levels": dict(KNOWLEDGE_LEVEL_LABELS),
+        "signals": signals,
+        "evidence": {
+            "archived_books": archived,
+            "rag_books": rag_books,
+            "long_term_interests": interests_n,
+            "top_domain_preference": round(top_pref, 1),
+        },
     }

@@ -1,5 +1,5 @@
 """画像 API（M9 三层画像）：查看三层画像、重置、阈值查看/保存/自动学习。"""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,7 @@ from app.services.profile_learning import (
     save_thresholds,
 )
 from app.services.profile_service import (
+    calibrate_knowledge_level,
     get_all_profiles,
     refresh_profiles,
     reset_profiles,
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/api", tags=["profile"])
 class ColdProfileIn(BaseModel):
     domain_preferences: dict[str, int] | None = None
     long_term_interests: list[str] | None = None
+    knowledge_level: str | None = None
 
 
 class ThresholdsIn(BaseModel):
@@ -37,14 +39,18 @@ class ThresholdsIn(BaseModel):
 
 @router.patch("/profile/cold")
 def update_cold_profile(body: ColdProfileIn, db: Session = Depends(get_db)):
-    """手动编辑冷画像（方案 A：仅冷画像可编辑——领域偏好 / 长期兴趣）。"""
-    return ok(
-        update_cold_profile_service(
-            db,
-            domain_preferences=body.domain_preferences,
-            long_term_interests=body.long_term_interests,
+    """手动编辑冷画像（方案 A：仅冷画像可编辑——领域偏好 / 长期兴趣 / 知识水平）。"""
+    try:
+        return ok(
+            update_cold_profile_service(
+                db,
+                domain_preferences=body.domain_preferences,
+                long_term_interests=body.long_term_interests,
+                knowledge_level=body.knowledge_level,
+            )
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/profile")
@@ -97,3 +103,9 @@ def refresh_profile(db: Session = Depends(get_db)):
     """重新生成画像（v1.132）：暖主题重算 + 冷画像脏词清洗，不清空任何层。"""
     stats = refresh_profiles(db)
     return ok(stats, "画像已重新生成")
+
+
+@router.get("/profile/calibrate")
+def calibrate_profile(db: Session = Depends(get_db)):
+    """知识水平校准建议（v1.135）：按行为证据打分，只建议不写入；由用户确认后手动应用。"""
+    return ok(calibrate_knowledge_level(db))
