@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.models.book import Book
 from app.models.profile import UserProfile
-from app.services.graph.keywords import extract_keywords
+from app.services.graph.terms import extract_profile_terms
 from app.services.profile_learning import (
     get_thresholds,
     learn_thresholds,
@@ -177,9 +177,13 @@ def _asset_summary(rag: dict | None) -> dict:
 
 
 def _terms(text: str, top_n: int = 10) -> list[str]:
-    """从短文本抽取术语（复用关键词抽取，中文二元组+英文词）。"""
+    """从短文本抽取画像术语（2026-08-11 修复：泛化词/虚词碎片/LaTeX 清理 + 词库整词抑制）。
 
-    return list(extract_keywords(text or "", top_n))
+    冷记忆分词质量问题即源于此处直接使用 extract_keywords 的原始二元组，
+    现统一走画像术语层 terms.extract_profile_terms（聚类链路行为不受影响）。
+    """
+
+    return list(extract_profile_terms(text or "", top_n))
 
 
 def migrate_profiles_on_archive(db: Session, book: Book, rag: dict | None = None) -> dict:
