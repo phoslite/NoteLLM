@@ -28,7 +28,7 @@ const route = useRoute()
 .app-header { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 52px; border-bottom: 1px solid var(--border-color); flex: none; }
 .app-title { font-weight: 700; }
 .app-nav { display: flex; gap: 16px; }
-.app-nav a { color: var(--text-color); text-decoration: none; }
+.app-nav a { color: var(--text-color); text-decoration: none; display: inline-block; padding: 6px 2px; } /* 三审 Minor-8：点击目标高度 21px → 33px */
 .app-nav a.router-link-active { color: var(--primary-color); font-weight: 600; }
 .app-main { flex: 1; min-height: 0; }
 </style>

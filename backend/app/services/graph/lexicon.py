@@ -24,50 +24,84 @@ _GENERIC_DOMAIN_TERMS = {
     # 版本/出版/文件名元词
     "第一章", "第一", "一章", "第二", "第三", "新版", "版本", "出版", "出版社",
     "系列", "全集", "选集", "卷", "册", "页",
+    # LaTeX 命令/数学排版碎片（A1 术语层：公式噪声不参与聚类成图与命名）
+    "frac", "int", "infty", "lambda", "mathbf", "mathbb", "mathrm", "text",
+    "left", "right", "sum", "lim", "sqrt", "begin", "end", "quad", "times",
+    "partial", "nabla", "leq", "geq", "cdots", "ldots", "dots", "over",
+    "operatorname", "emph", "textbf", "textit", "implies", "colon",
 }
 
 def generic_domain_terms() -> frozenset[str]:
     """通用领域过滤词（学术/出版元词），供图谱与总结链路过滤泛化词。"""
-    return _GENERIC_DOMAIN_TERMS
+    return frozenset(_GENERIC_DOMAIN_TERMS)  # 审查 I-2：返回不可变视图，防调用方意外修改常量
 
 
 _LEXICON_CACHE_MARKER = "# ================= 系统缓存区（自动追加，可编辑/删除） ================="
 
-_DOMAIN_LEXICON_CACHE: tuple[frozenset[str], frozenset[str], float] | None = None
+_DOMAIN_LEXICON_CACHE: tuple[frozenset[str], frozenset[str], dict[str, str], float] | None = None
 _LEXICON_LOCK = threading.Lock()  # 词库读-改-写互斥（审查 C-问题8）
 
 def _lexicon_path() -> Path:
     return Path(settings.domain_terms_file)
 
 def load_domain_lexicon() -> tuple[frozenset[str], frozenset[str]]:
-    """读取专业术语词库：返回 (用户区术语, 系统缓存区术语)；文件缺失/异常返回空集。"""
+    """读取专业术语词库：返回 (用户区术语, 系统缓存区术语)；文件缺失/异常返回空集。
+
+    同义词区行（``规范词 = 别名1, 别名2``，L1 术语层）同时解析进别名映射
+    （经 `load_synonym_aliases` 取用），规范词并入用户区术语。
+    """
+    return _load_lexicon_all()[:2]
+
+
+def load_synonym_aliases() -> dict[str, str]:
+    """读取同义词区别名映射：alias(小写) → 规范词；文件缺失/异常返回空映射。
+
+    只做整词折叠输入（聚类/建边共用，terms.canonical_terms），不做词库注入。
+    """
+    return dict(_load_lexicon_all()[2])
+
+
+def _load_lexicon_all() -> tuple[frozenset[str], frozenset[str], dict[str, str]]:
+    """词库三件套（用户区、系统缓存区、同义词映射）统一加载，mtime 缓存失效。"""
     path = _lexicon_path()
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return frozenset(), frozenset()
+        return frozenset(), frozenset(), {}
     global _DOMAIN_LEXICON_CACHE
-    if _DOMAIN_LEXICON_CACHE is not None and _DOMAIN_LEXICON_CACHE[2] == mtime:
-        return _DOMAIN_LEXICON_CACHE[0], _DOMAIN_LEXICON_CACHE[1]
+    if _DOMAIN_LEXICON_CACHE is not None and _DOMAIN_LEXICON_CACHE[3] == mtime:
+        return _DOMAIN_LEXICON_CACHE[0], _DOMAIN_LEXICON_CACHE[1], _DOMAIN_LEXICON_CACHE[2]
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return frozenset(), frozenset()
+        return frozenset(), frozenset(), {}
     user: set[str] = set()
     cached: set[str] = set()
+    aliases: dict[str, str] = {}
     in_cached = False
     for raw in text.splitlines():
         line = raw.strip()
-        if line.startswith("#"):
+        if not line or line.startswith("#"):
             if _LEXICON_CACHE_MARKER in line:
                 in_cached = True
+            continue
+        if "=" in line:
+            canonical_raw, _, aliases_raw = line.partition("=")
+            canonical = sanitize_cluster_name(canonical_raw)
+            if canonical:
+                user.add(canonical)
+                for a in aliases_raw.split(","):
+                    alias = sanitize_cluster_name(a)
+                    if alias and alias != canonical:
+                        aliases[alias.lower()] = canonical
             continue
         term = sanitize_cluster_name(line)
         if term:
             (cached if in_cached else user).add(term)
-    result = (frozenset(user), frozenset(cached))
-    _DOMAIN_LEXICON_CACHE = (result[0], result[1], mtime)
+    result = (frozenset(user), frozenset(cached), aliases)
+    _DOMAIN_LEXICON_CACHE = (result[0], result[1], result[2], mtime)
     return result
+
 
 def _lexicon_hits(text: str, terms: frozenset[str]) -> set[str]:
     """术语在文本中的命中：中文词组按子串；英文/数字词组按词边界（大小写不敏感）。"""
@@ -216,4 +250,8 @@ def _posterior_keywords(content: dict) -> dict[str, float]:
             texts.append(kp)
         elif isinstance(kp, dict):
             texts.append(str(kp.get("title") or kp.get("point") or ""))
-    return extract_keywords(" ".join(texts), 60)
+    return {
+        k: v
+        for k, v in extract_keywords(" ".join(texts), 60).items()
+        if k not in _GENERIC_DOMAIN_TERMS
+    }

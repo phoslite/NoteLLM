@@ -118,6 +118,7 @@ onMounted(renderMath)
 .md-render :deep(ul), .md-render :deep(ol) { padding-left: 1.6em; }
 .md-render :deep(blockquote) { margin: 0.8em 0; padding: 0.4em 1em; border-left: 3px solid var(--border-color); color: var(--text-secondary); }
 .md-render :deep(code) { background: var(--panel-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; }
+.md-render :deep(.katex-mathml), .md-render :deep(.katex-mathml *) { overflow: hidden; } /* E2E 五轮 #3：KaTeX MathML 分支（视觉上已 clip-path 隐藏）在窄容器内不再产生可滚动溢出 */
 .md-render :deep(pre) { background: var(--panel-bg); padding: 12px; border-radius: 6px; overflow-x: auto; }
 .md-render :deep(pre code) { background: none; padding: 0; }
 .md-render :deep(table) { border-collapse: collapse; margin: 0.8em 0; }

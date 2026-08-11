@@ -6,12 +6,6 @@ export interface PageCacheStatus {
   cached: number
 }
 
-/** 读取指定页缓存文本（未缓存时 text 为 null）。 */
-export function getPageText(bookId: number, pageIndex: number) {
-  return get<{ page_index: number; cached: boolean; text: string | null }>(
-    `/books/${bookId}/page-text/${pageIndex}`,
-  )
-}
 
 /** 查看本书页缓存覆盖情况。 */
 export function getPageTextStatus(bookId: number) {
@@ -28,7 +22,8 @@ export function reextractPage(bookId: number, pageIndex: number) {
 
 /** 重建本书页缓存（后台任务）；force=true 全部重提取，false 仅补缺失页。 */
 export function rebuildPageText(bookId: number, force = false) {
-  return post<{ task_id: string }>(`/books/${bookId}/page-text/rebuild`, { force })
+  // 三审 Minor：后端返回 msg（防重提示文案），类型补全
+  return post<{ task_id: string; msg?: string }>(`/books/${bookId}/page-text/rebuild`, { force })
 }
 
 /** 查询页缓存重建任务状态。 */

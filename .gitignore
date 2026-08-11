@@ -11,6 +11,7 @@ __pycache__/
 venv/
 .pytest_cache/
 .pytest_tmp*/
+.pytest_*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -53,6 +54,8 @@ docs/性能优化路径.md
 
 # ---- AI 编辑器 / 浏览器测试残留 ----
 .codex-edge-test/
+.e2e_logs/
+.recovery/
 .codex-edge-test2/
 .qoder/
 

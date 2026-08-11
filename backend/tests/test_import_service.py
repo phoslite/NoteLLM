@@ -88,9 +88,9 @@ def test_import_unsupported_format_rejects_without_orphan(client):
     r = client.post(
         "/api/books", files={"file": ("测试.xyz", b"not a book", "application/octet-stream")}
     )
+    assert r.status_code == 400, r.text  # 错误契约（审查）：HTTP 400 + detail，与同模块其余端点一致
     body = r.json()
-    assert body["code"] == 400, body
-    assert body["data"] is None
+    assert body["detail"]
     books_dir = settings.data_dir / "books"
     if books_dir.exists():
         orphan = [p for p in books_dir.iterdir() if p.is_dir() and (p / "测试.xyz").exists()]
@@ -101,9 +101,9 @@ def test_corrupt_epub_rejected_without_orphan(client):
     from app.core.config import settings
 
     r = client.post("/api/books", files={"file": ("损坏.epub", b"not a real epub zip", "application/epub+zip")})
+    assert r.status_code == 400, r.text  # 错误契约（审查）：HTTP 400 + detail
     body = r.json()
-    assert body["code"] == 400, body
-    assert "EPUB" in body["message"]
+    assert "EPUB" in body["detail"]
     books_dir = settings.data_dir / "books"
     if books_dir.exists():
         orphan = [p for p in books_dir.iterdir() if p.is_dir() and (p / "损坏.epub").exists()]
@@ -158,3 +158,20 @@ def test_markdown_inline_images_copy_and_media_endpoint(client):
         assert bad.status_code == 200 and bad.content.startswith(b"<svg")
     finally:
         (upload_dir / "logo.png").unlink(missing_ok=True)
+
+
+def test_import_corrupt_pdf_returns_400(client, tmp_path):
+    """I-6：损坏 PDF 上传应返回业务码 400（解析异常统一包装为 ValueError），且不残留孤儿目录。"""
+    from app.core.config import settings
+
+    bad = tmp_path / "corrupt.pdf"
+    bad.write_bytes(b"not a real pdf at all")
+    with open(bad, "rb") as f:
+        r = client.post("/api/books", files={"file": ("corrupt.pdf", f, "application/pdf")})
+    assert r.status_code == 400, r.text  # 错误契约（审查）：HTTP 400 + detail
+    body = r.json()
+    assert "PDF" in body["detail"]
+    books_dir = settings.data_dir / "books"
+    if books_dir.exists():
+        orphan = [p for p in books_dir.iterdir() if p.is_dir() and (p / "corrupt.pdf").exists()]
+        assert orphan == [], "损坏 PDF 导入不应残留书籍目录"

@@ -12,7 +12,7 @@ from app.services.vision_extract import (
     extract_book_pages_task,
     read_page_cache,
 )
-from app.tasks import get_status, submit
+from app.tasks import VISION_TASK_PREFIX, get_status, submit_dedupe
 
 router = APIRouter(prefix="/api/books", tags=["vision"])
 
@@ -38,8 +38,17 @@ def rebuild_page_text(book_id: int, body: RebuildIn | None = None, db: Session =
     if not vision_configured(db):
         raise HTTPException(status_code=400, detail="未配置多模态视觉 API，请先在设置页填写")
     force = bool(body.force) if body else False
-    task_id = submit("vision", "vision-rebuild", lambda: extract_book_pages_task(book_id, force=force), related_id=book_id)
-    return ok({"task_id": task_id}, "已提交重建任务")
+    # 终审 §6.9：force 纳入防重名——进行中的普通重建不吞并显式全量重提取；
+    # B-I2：非 force 重建与导入预提取共用 VISION_TASK_PREFIX（同书同时只跑一路全书提取）
+    task_name = "vision-rebuild-force" if force else "vision-rebuild"
+    task_id, created = submit_dedupe(
+        "vision", task_name,
+        lambda: extract_book_pages_task(book_id, force=force),
+        related_id=book_id,
+        name_prefix=VISION_TASK_PREFIX if not force else task_name,
+    )
+    msg = ("已提交强制重建任务" if force else "已提交页图提取任务") if created else ("已有强制重建任务进行中，直接复用" if force else "已有页图提取任务进行中（含导入预提取），直接复用")
+    return ok({"task_id": task_id, "msg": msg})
 
 @router.get("/{book_id}/page-text/{page_index}")
 def get_page_text(book_id: int, page_index: int, db: Session = Depends(get_db)):

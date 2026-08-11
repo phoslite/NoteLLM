@@ -224,10 +224,26 @@ class LLMClient:
             return body
         if self.mode == "responses":
             system = "\n".join(self._content_text(m["content"]) for m in messages if m["role"] == "system")
-            user = "\n".join(self._content_text(m["content"]) for m in messages if m["role"] == "user")
-            body: dict = {"model": self.model, "instructions": system or None, "input": user}
+            inputs: list[dict] = [
+                {"role": m["role"], "content": self._content_text(m["content"])}
+                for m in messages
+                if m["role"] != "system"
+            ]
+            body: dict = {"model": self.model, "instructions": system or None, "input": inputs}
             if self.max_tokens is not None:
                 body["max_output_tokens"] = self.max_tokens  # DeepSeek responses 命名（含思考 token）
+            if self.reasoning_effort and self.thinking_type != "disabled":
+                body["reasoning"] = {"effort": self.reasoning_effort}
+            if self.enable_thinking is not None:
+                body["enable_thinking"] = self.enable_thinking
+            if self.thinking_budget is not None:
+                body["thinking_budget"] = self.thinking_budget
+            # B-I3：responses 模式此前静默丢弃采样参数（默认 AI_MODE=responses 时
+            # 挑选器 RAG_SELECT_TEMPERATURE=0.0 的确定性意图落空）；DeepSeek responses 支持
+            if self.temperature is not None:
+                body["temperature"] = self.temperature
+            if self.top_p is not None:
+                body["top_p"] = self.top_p
             return body
         body: dict = {"model": self.model, "messages": messages}
         if self.temperature is not None:
@@ -298,7 +314,14 @@ class LLMClient:
             body = self._build_body(messages)
             resp = self._request(body)
             with resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                try:
+                    raw = resp.read()
+                except (OSError, TimeoutError) as exc:  # B-M1：连接中断/超时统一转 LLMError
+                    raise LLMError(f"响应读取失败：{exc}") from exc
+                try:
+                    data = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError as exc:  # 审查 I-2：非 JSON 响应统一包装为 LLMError
+                    raise LLMError(f"响应解析失败（非 JSON）：{exc}") from exc
             reply = self._extract_reply(data)
             if not reply:
                 raise LLMError("响应中未找到文本内容")
@@ -380,6 +403,9 @@ class LLMClient:
                             if obj.get("type") == "response.output_text.delta" and obj.get("delta"):
                                 yield {"kind": "delta", "text": obj["delta"]}
                             elif obj.get("type") == "response.reasoning_summary_text.delta" and obj.get("delta"):
+                                yield {"kind": "thinking", "text": obj["delta"]}
+                            elif obj.get("type") == "response.reasoning_text.delta" and obj.get("delta"):
+                                # 审查 I-2：部分网关以 reasoning_text 而非 reasoning_summary_text 输出思考流
                                 yield {"kind": "thinking", "text": obj["delta"]}
                             continue
                         choices = obj.get("choices") or []

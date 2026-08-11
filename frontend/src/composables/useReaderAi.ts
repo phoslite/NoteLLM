@@ -1,6 +1,9 @@
 import { computed, reactive, ref, watch, type ComputedRef, type Ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { clearChatMessages, listChatMessages, streamChat } from '@/api/chat'
+import { mergeChatHistory } from '@/utils/chatMerge'
+import { useStreamSession } from '@/composables/useStreamSession'
+import { uuid } from '@/utils/streamCore'
 import type { ChapterItem, ChatMessageItem } from '@/types'
 
 export type UiChatMsg = ChatMessageItem & {
@@ -30,22 +33,12 @@ export interface ReaderAi {
   askSelection: () => void
 }
 
-/** 渲染节流（手册 §18）：每 80ms 批量刷出一次；公式未闭合时最多等待 500ms 再强制刷出。 */
-const FLUSH_INTERVAL_MS = 80
-const MATH_MAX_WAIT_MS = 500
-/** 方案2：流式期间固定频率轮询历史（SSE 静默/丢失时自动补增量，无需刷新）。 */
-const POLL_INTERVAL_MS = 2000
-/** 思考过程渲染节流（thinking 事件可能高频小片）。 */
-const THINKING_FLUSH_MS = 150
-
-/** 检测缓冲区尾部是否有未闭合的 $$…$$ 或 $…$（避免流式中 KaTeX 闪错）。 */
-function hasUnclosedMath(text: string): boolean {
-  const blockPairs = (text.match(/\$\$/g) ?? []).length
-  const inlineDollars = (text.replace(/\$\$/g, '').match(/\$/g) ?? []).length
-  return blockPairs % 2 === 1 || inlineDollars % 2 === 1
-}
-
-/** AI 助手：按章节上下文流式问答、预设能力按钮、划词追问、清空与复制。 */
+/**
+ * AI 助手（MO3 薄适配层）：按章节上下文流式问答、预设能力按钮、划词追问、清空与复制。
+ * 流式内核（缓冲/节流 flush/公式未闭合延迟/思考折叠/2s 轮询补偿/streamSeq 终态机/中止释放）
+ * 已抽取至 useStreamSession；本层只保留差异化状态：消息池、模式切换、历史加载、
+ * 清空确认、会话键、划词/滚动注入。
+ */
 export function useReaderAi(opts: {
   bookId: ComputedRef<number>
   currentChapterId: Ref<number | null>
@@ -63,23 +56,37 @@ export function useReaderAi(opts: {
   const chatMessages = ref<UiChatMsg[]>([])
   const chatMode = ref('')
   const aiInput = ref('')
-  const streaming = ref(false)
-  const streamError = ref('')
-  let chatAbort: (() => void) | null = null
-  let activePollTimer: number | null = null
   let pendingSelection = ''
   let historySeq = 0
   // 会话标识（决策 34）：同会话内后端复用 LLM 挑选结果；换书/换模式/清空后重新生成
   let sessionId = ''
   function newSession() {
-    sessionId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    sessionId = uuid()
   }
   newSession()
   watch(bookId, () => newSession())
-  // 流式渲染节流缓冲
-  let pendingText = ''
-  let flushTimer: ReturnType<typeof setTimeout> | null = null
-  let lastFlushAt = 0
+
+  // 一次发送的流参数快照：fetchStream 在 stream() 内同步调用，读取最近一次发送的参数
+  let sendParams: { question: string; selection?: string; crop_image?: string; crop_label?: string; stream_key: string } | null = null
+  const session = useStreamSession({
+    fetchStream: (onEvent) => {
+      const p = sendParams!
+      return streamChat(
+        bookId.value,
+        { question: p.question, chapter_id: currentChapterId.value, selection: p.selection, crop_image: p.crop_image, crop_label: p.crop_label, mode: chatMode.value, session_id: sessionId, stream_key: p.stream_key },
+        onEvent,
+      )
+    },
+    pollHistory: () => listChatMessages(bookId.value, chatMode.value),
+    // 差异点①③：reader 在 flush 增量、轮询补差后滚动聊天区（内核 finally 兜底滚动）
+    scrollToBottom: scrollChat,
+    // end 终态 / F2 无终态收尾（非 abort）时通知未读角标
+    onFinal: onAssistantDone,
+    removeAssistant: (assistant) => {
+      chatMessages.value = chatMessages.value.filter((m) => m !== assistant)
+    },
+  })
+  const { streaming, streamError } = session
 
   const currentChapterTitle = computed(() => {
     const ch = currentChapter.value
@@ -104,10 +111,9 @@ export function useReaderAi(opts: {
         chatMessages.value = rows
         return
       }
-      // 合并而非整体替换：历史加载期间新发的本地消息（含流式中回复）不会被覆盖，
-      // 已落库消息按「角色+内容」与历史行去重，避免重复（修复「输出需刷新才可见」）
-      const extras = current.filter((m) => !rows.some((r) => r.role === m.role && r.content === m.content))
-      chatMessages.value = extras.length ? [...rows, ...extras] : rows
+      // C-I2：合并而非整体替换——本地流式消息保留，在途流的 DB 部分行按 stream_key 排除，
+      // 已落库消息按「角色+内容」去重（修复「输出需刷新才可见」与折叠再展开重复）
+      chatMessages.value = mergeChatHistory(current, rows)
     } catch {
       /* 历史加载失败不影响阅读 */
     }
@@ -116,8 +122,11 @@ export function useReaderAi(opts: {
   /** 切换会话模式（默认/解读/概论/思考逻辑）：中断进行中的流、重载该模式历史。 */
   function switchMode(mode: string) {
     if (mode === chatMode.value) return
-    if (streaming.value) chatAbort?.()
+    if (streaming.value) abortChat()
     chatMode.value = mode
+    // C-I1：先清空旧模式池的本地消息再加载新历史——否则旧消息会被合并逻辑
+    // 当作 extras 追加到新模式历史尾部，四个能力池互相串台（决策 30 分池失效）
+    chatMessages.value = []
     pendingSelection = ''
     streamError.value = ''
     newSession() // 模式分池视为独立会话（决策 30/34）
@@ -125,7 +134,7 @@ export function useReaderAi(opts: {
   }
 
   function resetChat() {
-    if (streaming.value) chatAbort?.()
+    if (streaming.value) abortChat()
     chatMessages.value = []
     streamError.value = ''
     void loadChatHistory()
@@ -148,46 +157,6 @@ export function useReaderAi(opts: {
     void sendChat() // 一键生成：切换模式池后立即发起标准提示词（交互优化）
   }
 
-  /** 把累积的缓冲一次性写入消息并滚动（渲染节流的核心刷出点）。 */
-  function flushDelta(assistant: UiChatMsg) {
-    if (flushTimer !== null) {
-      clearTimeout(flushTimer)
-      flushTimer = null
-    }
-    if (!pendingText) return
-    assistant.content += pendingText
-    pendingText = ''
-    lastFlushAt = Date.now()
-    scrollChat()
-  }
-
-  /** 计划下一次批量刷出；公式未闭合且等待未超时则推迟。 */
-  function scheduleFlush(assistant: UiChatMsg) {
-    if (flushTimer !== null) return
-    flushTimer = setTimeout(() => {
-      flushTimer = null
-      if (hasUnclosedMath(pendingText) && Date.now() - lastFlushAt < MATH_MAX_WAIT_MS) {
-        scheduleFlush(assistant)
-        return
-      }
-      flushDelta(assistant)
-    }, FLUSH_INTERVAL_MS)
-  }
-
-  /** 方案2：流式期间固定频率轮询历史；SSE 静默/丢失时用已落库增量补全本地消息。 */
-  async function pollStreamHistory(assistant: UiChatMsg, streamKey: string) {
-    try {
-      const rows = await listChatMessages(bookId.value, chatMode.value)
-      const row = rows.find((r) => r.role === 'assistant' && r.stream_key === streamKey)
-      if (row && row.content.length > assistant.content.length) {
-        assistant.content = row.content
-        scrollChat()
-      }
-    } catch {
-      /* 轮询失败忽略：SSE 仍为主通道 */
-    }
-  }
-
   async function sendChat(opts?: { crop_image?: string; crop_label?: string }) {
     const question = aiInput.value.trim()
     if (!question || streaming.value || !currentChapterId.value) return
@@ -201,95 +170,42 @@ export function useReaderAi(opts: {
     })
     // reactive() 包裹：流中直接改 content/thinking 能触发 Vue 渲染（普通对象变更不重渲染，
     // 这是「输出需刷新才可见」的根因之一）；stream_key 供后端滚动落库、前端轮询匹配。
-    const streamKey = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const streamKey = uuid()
     const assistant = reactive<UiChatMsg>({
       id: Date.now() + 1, role: 'assistant', content: '', local: true,
       book_id: bookId.value, chapter_id: currentChapterId.value, ref_para_pos: null, created_at: null,
       stream_key: streamKey,
     })
     chatMessages.value.push(assistant)
-    streaming.value = true
-    pendingText = ''
-    lastFlushAt = Date.now()
-    let pendingThinking = ''
-    let thinkingFlushAt = Date.now()
-    function flushThinking() {
-      if (!pendingThinking) return
-      assistant.thinking = (assistant.thinking ?? '') + pendingThinking
-      pendingThinking = ''
-      thinkingFlushAt = Date.now()
-    }
-    activePollTimer = setInterval(() => {
-      void pollStreamHistory(assistant, streamKey)
-    }, POLL_INTERVAL_MS)
-    const { promise, abort } = streamChat(
-      bookId.value,
-      { question, chapter_id: currentChapterId.value, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, mode: chatMode.value, session_id: sessionId, stream_key: streamKey },
-      (ev) => {
-        if (ev.type === 'thinking') {
-          pendingThinking += ev.text
-          if (Date.now() - thinkingFlushAt >= THINKING_FLUSH_MS) flushThinking()
-        } else if (ev.type === 'delta') {
-          pendingText += ev.text
-          scheduleFlush(assistant)
-        } else if (ev.type === 'end') {
-          flushThinking()
-          flushDelta(assistant)
-          assistant.content = ev.text
-          assistant.citations = ev.citations
-          assistant.cached = ev.cached
-          assistant.local = false
-          streaming.value = false
-          onAssistantDone?.()
-        } else if (ev.type === 'error') {
-          flushThinking()
-          flushDelta(assistant)
-          streaming.value = false
-          streamError.value = ev.message
-        }
-      },
-    )
-    chatAbort = abort
-    try {
-      await promise
-    } catch (err) {
-      flushThinking()
-      flushDelta(assistant)
-      streaming.value = false
-      streamError.value = (err as Error).message
-    } finally {
-      if (activePollTimer != null) {
-        clearInterval(activePollTimer)
-        activePollTimer = null
-      }
-      chatAbort = null
-      if (!assistant.content && streamError.value) {
-        chatMessages.value = chatMessages.value.filter((m) => m !== assistant)
-      }
-      scrollChat()
-    }
+    sendParams = { question, selection, crop_image: opts?.crop_image, crop_label: opts?.crop_label, stream_key: streamKey }
+    await session.stream(assistant, streamKey)
+  }
+
+  /** 用户主动中断（阅读页侧命名）。 */
+  function abortChat() {
+    session.abort()
   }
 
   /** 卸载清理（审查 N-3/N-13）：中止进行中的流与历史轮询定时器。 */
   function dispose() {
-    abortChat()
-    if (activePollTimer != null) {
-      clearInterval(activePollTimer)
-      activePollTimer = null
-    }
-    if (flushTimer != null) {
-      clearTimeout(flushTimer)
-      flushTimer = null
-    }
-  }
-
-  function abortChat() {
-    chatAbort?.()
+    session.dispose()
   }
 
   async function clearChat() {
-    if (streaming.value) abortChat()
+    // C-1（E2E 2026-08-11）：清空为不可逆操作，必须先确认；范围 = 本书当前模式池（该模式唯一会话）
+    // 二轮复核：abortChat 移到确认成功后执行——用户取消确认时不得误杀在途流
+    const modeLabel = chatMode.value || '默认'
     try {
+      await ElMessageBox.confirm(
+        `将永久删除本书「${modeLabel}」模式的全部聊天记录（共 ${chatMessages.value.length} 条），此操作不可恢复。确定清空？`,
+        '清空对话',
+        { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
+      )
+    } catch {
+      return // 用户取消
+    }
+    try {
+      if (streaming.value) abortChat()
       await clearChatMessages(bookId.value, chatMode.value)
       chatMessages.value = []
       streamError.value = ''

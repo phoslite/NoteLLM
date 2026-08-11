@@ -291,8 +291,8 @@ def rebuild_book_caches(
                     else:
                         stats["cached"] += 1
                     done += 1
-                    if progress is not None:
-                        progress(done, total)
+                if progress is not None:
+                    progress(done, total)  # 审查 I-2：进度回调移出锁，避免串行化写入
     finally:
         db.add(book)  # 重新 attach 到调用方 Session
     return stats

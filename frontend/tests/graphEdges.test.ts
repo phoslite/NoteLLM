@@ -45,9 +45,10 @@ describe('edgeStrokeColor', () => {
     expect(edgeStrokeColor(50, true)).toBe('#e0382e')
   })
 
-  it('普通关联用蓝色，透明度随强度升高（0.55 → 0.95）', () => {
-    expect(edgeStrokeColor(10, false)).toBe('rgba(31, 92, 205, 0.75)')
-    expect(edgeStrokeColor(50, false)).toBe('rgba(31, 92, 205, 0.95)')
+  it('普通关联用蓝色，透明度随强度升高（0.68 起，白底对比度 >=3.6:1）', () => {
+    expect(edgeStrokeColor(10, false)).toBe('rgba(31, 92, 205, 0.71)')
+    expect(edgeStrokeColor(50, false)).toBe('rgba(31, 92, 205, 0.82)')
+    expect(edgeStrokeColor(100, false)).toBe('rgba(31, 92, 205, 0.95)')
   })
 })
 

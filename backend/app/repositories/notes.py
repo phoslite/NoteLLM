@@ -4,8 +4,6 @@ from sqlalchemy.orm import Session
 
 from app.models.activity import Note
 
-NOTE_TYPES = ("高亮", "批注", "思考", "不理解")
-
 
 def list_notes(db: Session, book_id: int) -> list[Note]:
     return list(db.scalars(select(Note).where(Note.book_id == book_id).order_by(Note.chapter_id, Note.id)))

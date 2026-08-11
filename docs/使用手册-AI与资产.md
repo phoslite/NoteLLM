@@ -8,9 +8,9 @@
 
 | 原编号 | 标题 |
 | --- | --- |
-| 1. LLM 简易对话 Demo（第 1 轮任务产出） |
-| 1.1 chat_demo.py —— 对话客户端（`demo/chat_demo.py`） |
-| 1.2 _mock_llm.py —— 本地模拟 LLM 服务（`demo/_mock_llm.py`） |
+| 1. LLM 简易对话 Demo（第 1 轮任务产出；历史产物已移除，见 §1 说明） |
+| 1.1 chat_demo.py —— 对话客户端（历史产物，已移除） |
+| 1.2 _mock_llm.py —— 本地模拟 LLM 服务（历史产物，已移除） |
 | 2.6 AI 客户端（`backend/app/ai/client.py`） |
 | 3.2 资产仓储（`backend/app/repositories/assets.py`） |
 | 3.3 RAG/Skill 提示词（`backend/app/ai/prompts/rag_skill.py`） |
@@ -21,7 +21,7 @@
 | 4.1 设置 API（`backend/app/api/routes/settings.py`） |
 | 4.2 对话流式问答（`backend/app/api/routes/chat.py` + `backend/app/services/chat_service.py`） |
 | 4.3 设置仓储扩展（`backend/app/repositories/settings.py`） |
-| 4.4 前端 AI 配置页（rontend/src/views/SettingsView.vue） |
+| 4.4 前端 AI 配置页（`frontend/src/views/SettingsView.vue`） |
 | 4.5 前端 AI 助手面板（`frontend/src/views/ReaderView.vue`） |
 | 4.6 冒烟要点（mock LLM） |
 | 6. M5 AI 增强：脑图图像组件 + 划词 AI 操作（第 5 轮任务产出） |
@@ -40,7 +40,7 @@
 | 17. 并发大模型实验（demo 验证轮） |
 | 17.1 背景与目的 |
 | 17.2 产物 |
-| 17.3 parallel_llm.py 使用说明 |
+| 17.3 parallel_llm.py 使用说明（历史产物，已移除） |
 | 17.4 实验结论 |
 | 17.5 主应用落地方向（按收益排序） |
 | 18. 阅读页 AI 流式渲染节流与会话分池（已实现） |
@@ -62,39 +62,12 @@
 
 ## 1. LLM 简易对话 Demo（第 1 轮任务产出）
 
-### 1.1 chat_demo.py —— 对话客户端（`demo/chat_demo.py`）
-
-| 函数 | 说明 |
-| --- | --- |
-| `load_env_file(path)` | 读取 KEY=VALUE 的 .env 文件，返回 dict；跳过注释与空行 |
-| `parse_args()` | 解析命令行参数（base-url/api-key/model/mode/timeout/no-verify-ssl/prompt/mock） |
-| `build_payload(mode, model, messages)` | 按接口模式构造请求体：responses（instructions/input）或 chat（messages） |
-| `extract_reply(mode, data)` | 从响应 JSON 中提取回复文本（两种模式的兼容解析） |
-| `call_llm(base_url, api_key, model, mode, messages, timeout, verify_ssl)` | 发送一次对话请求，返回回复文本；失败抛异常 |
-| `mask_key(key)` | 隐藏 API Key 中间部分，避免日志泄露 |
-| `main()` | 入口：单轮（--prompt）或交互式多轮对话 |
-
-**如何使用**
-```bash
-python demo/chat_demo.py --mock --prompt "请生成本书的思维导图"   # 本地 mock 验证
-python demo/chat_demo.py --prompt "你好"                          # 使用 demo/.env 的真实配置
-python demo/chat_demo.py --mode chat --prompt "1+1=?"             # 切换 chat 模式
-python demo/chat_demo.py                                          # 交互式多轮对话（exit 退出）
-```
-- 配置来源优先级：命令行参数 > 环境变量 > `demo/.env`。
-- `demo/.env` 为敏感文件（已加入 `.gitignore`），模板见 `demo/.env.example`。
-
-**如何修改**
-- 新增接口模式：在 `build_payload` / `extract_reply` 中按模式分支，并在 `--mode` 的 choices 中注册。
-- 调整默认超时/模型：改 `demo/.env` 的 `AI_TIMEOUT` / `AI_MODEL`。
-- 注意：`call_llm` 当前为非流式请求；后续接入流式输出（SSE）时保持该函数签名稳定，另加 `stream=True` 分支。
-
-### 1.2 _mock_llm.py —— 本地模拟 LLM 服务（`demo/_mock_llm.py`）
-
-- 功能：OpenAI 兼容 mock，同时支持 `/v1/chat/completions` 与 `/v1/responses`，默认端口 `18999`。
-- 回复规则：`pick_reply(sys_text, user_text)`——含「知识整理专家」返回固化知识 JSON；含「阅读辅导专家」返回画像 JSON；否则按关键字命中 `MOCK` 表，未命中返回提示语。
-- 如何使用：`python demo/_mock_llm.py` 启动；demo 用 `--mock` 自动指向 `http://127.0.0.1:18999/v1`。
-- 如何修改：新增模拟回复在 `MOCK` 字典与 `pick_reply` 中追加；修改端口改 `PORT` 常量（需同步 `chat_demo.py` 的 `DEFAULT_MOCK`）。
+> **历史说明（2026-08-10 起）**：`demo/chat_demo.py` / `demo/_mock_llm.py` 等本地 mock 实验脚本已移出版本控制
+> （`demo/` 目录仅本地留存、不入库；用户决策「demo 不提交 GitHub」，见 docs/审查报告-20260811-四域复审.md §4 D-C2）。
+> 本文档第 1.1/1.2 节原登记的函数表与用法随之作废。
+>
+> 当前全链路联调方式（无 mock）：`start.bat` 启动前后端 → 设置页填入真实 API → 阅读页 AI 助手 / 主页全局 AI 浮窗实际对话；
+> 连通性用设置页「测试连接」验证。LLM 客户端正式实现见 §2.6 `backend/app/ai/client.py`。
 
 ---
 
@@ -140,14 +113,14 @@ python demo/chat_demo.py                                          # 交互式多
 | --- | --- |
 | `chunk_chapter(chapter, chunk_chars=1600)` | 章节按段落切 RAG 片段，记录章节号/段落号出处 |
 | `chunk_book(chapters)` | 整本书切块（按章节顺序） |
-| `_parse_llm_json(text)` | 容错解析 LLM JSON（去代码围栏、取首个 `{...}`） |
-| `_normalize_skills(raw)` | 技能列表归一化（兼容字符串/字典两种返回） |
-| `_build_llm_input(chapters, chunks)` | 按章节组织发送正文（chunks 由调用方一次性切好；上限 `RAG_SUMMARY_CHUNK_CHARS=64000` 字；隐私开关关闭时仅章节标题） |
+| ~~_parse_llm_json~~（已删除，零引用） | LLM JSON 容错解析职责已并入 rag_service（`_chat_once`） |
+| ~~_normalize_skills~~（已删除，零引用） | 技能归一化现由 `rag_input.normalize_skills` 承担 |
+| ~~_build_llm_input~~（v1.129 已删除，零引用） | 原「按章节组织发送正文」由方案 B 分块（`chunk_chapters_for_summary`/`chunk_page_texts_for_summary`，v1.83）替代；隐私开关经 enable_body 透传（三审 Major-2） |
 | `page_chunks(page_texts)` | PDF 页缓存 → RAG 片段列表
-| `chunk_page_texts_for_summary(page_texts, chunk_chars)` | PDF 页缓存 → 方案 B 总结分块（map 轮输入；隐私开关关闭仅页号标题单块，v1.83） |
-| `chunk_chapters_for_summary(chapters, chunks, chunk_chars)` | 章节正文 → 方案 B 总结分块（按章节顺序；隐私开关关闭仅章节标题单块，v1.83） |
+| `chunk_page_texts_for_summary(page_texts, chunk_chars, enable_body=None)` | PDF 页缓存 → 方案 B 总结分块（map 轮输入；隐私开关关闭仅页号标题单块，v1.83；enable_body 透传同方案 B 分块约定） |
+| `chunk_chapters_for_summary(chapters, chunks, chunk_chars, enable_body=None)` | 章节正文 → 方案 B 总结分块（按章节顺序；隐私开关关闭仅章节标题单块，v1.83；enable_body 透传） |
 | `_split_blocks(blocks, chunk_chars)` | 带标题正文块按 chunk_chars 切块（标题行不拆分；单块超长按行再切；0=单次发送全文，v1.83） |（`chapter_index`=页号、`para_pos`=页），供 PDF 归档资产使用；片段粒度/页标题格式在此调整 |
-| `_build_page_input(page_texts)` | PDF 页缓存 → LLM 输入正文（隐私开关关闭仅页标题；超 `RAG_SUMMARY_CHUNK_CHARS` 截断）；页文本拼接格式在此调整 |
+| `_build_page_input(page_texts, enable_body=None)` | PDF 页缓存 → LLM 输入正文（隐私开关关闭仅页标题；超 `RAG_SUMMARY_CHUNK_CHARS` 截断；enable_body 透传）；页文本拼接格式在此调整 |
 | `generate_rag_skill(db, book_id, *, page_texts=None)` | 总结并落库，返回 `{book_id, version, rag, skill}`；未配置 `AI_API_KEY` 或 AI 返回非 JSON 时报错并透出。`page_texts` 传 PDF 页缓存时以页文本为正文与 RAG 片段（出处「第 X 页」）；成功后触发 `post_classify_book`；页输入分支看 `page_chunks`/`_build_page_input`；**长书分块（方案 B v1.83）**：正文 >`RAG_SUMMARY_CHUNK_CHARS`（默认 64K）时 map 逐块提炼后 reduce 合并（增量模式 reduce 注入旧资产+新素材；单块失败跳过、全失败回退单次） |
 | `archive_book_task(book_id)` | **M9 读完归档后台任务**：PDF **仅从未建立缓存的页视觉提取**（`rebuild_book_caches` force=False 跳过已缓存页；并发分支完成后重新 attach book 供收尾使用），再以全书缓存总结 RAG/Skill；随后 `set_all_chapters_read_flag(True)` 标记读完；成功后触发三层画像迁移与 post-classify |
 
@@ -208,20 +181,19 @@ python demo/chat_demo.py                                          # 交互式多
 - 引用出处：`extract_citations` 解析回答中 `【第X章 第Y段】` 格式标注，`end` 事件携带结构化列表供前端展示。
 - 历史落库：`end` 事件后写入 `ChatMessage`（独立会话，避免流式期间请求级会话被关闭）；失败不影响已输出的回答。
 
-**函数清单（chat_service.py）**
+**职责索引（二轮复审 2026-08-11 更新：原「函数清单」随下沉重构过期，改为职责 → 现属模块映射）**
 
-| 函数 | 功能 |
-| --- | --- |
-| `paragraph_numbered(text)` | 章节正文按行编号，每段前加【第N段】 |
-| `extract_citations(text)` | 从回答中解析引用出处 → `[{chapter, para}]` |
-| `retrieve_rag_chunks(db, book_id, question, top_k=4)` | 按关键词重叠从书籍 RAG 资产检索相关片段（含出处），无命中返回空 |
-| `load_skills(db, book_id)` | 读取书籍 Skill 资产技能列表 |
-| `build_messages(book, chapter, question, selection, rag_chunks, skills, enable_body_send, crop_text=None, media_texts=None)` | 组装 system/user messages；隐私开关关闭时不发正文；划线裁剪图/正文插图以视觉提取文本（`crop_text`/`media_texts`）注入，不再直发图片（决策 36） |
-| `persist_chat(db, book_id, chapter_id, selection, question, answer)` | 写入一条 user + 一条 assistant 历史 |
-| `stream_chat(job)` | SSE 事件生成器（start/delta/end/error + 落库兜底） |
-| `replay_cached_chat(db, book, chapter, question, selection, mode, cache_key_val)` | LLM 结果缓存命中回放（`cached=true`，审查 P0-4 下沉；chat 路由只做流式包装） |
-| `build_client(db)` | 按运行时配置构建 LLMClient（.env + 设置页覆盖） |
-| `is_configured(db)` | 是否已配置 API Key |
+| 职责 | 现属模块（函数） | 说明 |
+| --- | --- | --- |
+| 正文段落编号 | `services/ai_context.py::paragraph_numbered` | 每段前加【第N段】 |
+| 引用出处解析 | `services/citations.py::extract_citations` | 解析 `【第X章 第Y段】` → `[{chapter, para}]` |
+| RAG 片段检索 | `repositories/assets.py::retrieve_rag_chunks` | `top_k=RAG_TOP_K`（默认非固定 4） |
+| Skill 加载 | `repositories/assets.py::load_skills` | 按任务相关性 top N |
+| 历史落库 | `repositories/chat.py::persist_chat` | user + assistant 双行 |
+| 消息组装 | `services/chat_service.py::build_messages` | 15 参：含 crop_label/page_context/page_mode/mode/history/profiles/media_texts（三审订正：原写 16） |
+| 流式生成 | `services/chat_service.py::stream_chat(job, cache=None)` | SSE start/delta/end/error + 落库兜底 |
+| 缓存回放 | `services/chat_service.py::replay_cached_chat` | `cached=true` 回放 |
+| 客户端构建 | `ai/factory.py::build_client / is_configured` | .env + 设置页覆盖 |
 
 **如何修改**
 - 提示词：`backend/app/ai/prompts/chat.py`（`SYSTEM_PROMPT` / `build_system_prompt` / `build_user_prompt`）；新增 M5 专项能力（解读/概论/脑图/思考逻辑）在此扩展预设。
@@ -232,7 +204,7 @@ python demo/chat_demo.py                                          # 交互式多
 - `client_kwargs(db)` —— 把运行时 AI 配置（`ai_*` 键）映射为 `LLMClient` 构造参数（剔除与客户端无关的 `ai_enable_body_send`），供 `build_client` 与设置页测试连接复用；映射表 `CLIENT_KWARG_KEYS`。
 - 修改：新增 LLM 参数时同步 `AI_OVERRIDE_KEYS`、`CLIENT_KWARG_KEYS` 与 `.env.example`。
 
-### 4.4 前端 AI 配置页（rontend/src/views/SettingsView.vue）
+### 4.4 前端 AI 配置页（`frontend/src/views/SettingsView.vue`）
 
 - 页面布局（v1.7x 重构）：顶部页头（标题 + 保存配置按钮）＋ el-tabs **三 Tab**——「文本模型」「多模态视觉模型」「挑选模型」各自独立；Tab 内按「连接信息 / 采样参数 / 思考模式 / 隐私与附件」分组卡片（视觉模型无隐私组；挑选模型含「总开关 / 预算」组），字段由 `textFields` / `visionFields` / `selectorFields` 声明式驱动（FieldDef：text/password/number/switch/select + section 分组 + tip 提示），字段变化走 getField / setField 统一读写表单。挑选页签（v1.113）：总开关 → 连接信息（base_url/api_key/model/mode/timeout/verify_ssl）→ 采样参数（temperature/max_tokens）→ 思考模式（thinking_type/reasoning_effort）→ 预算（max_books/max_skills/cache_ttl）；**未填项自动跟随文本模型**（mode / reasoning_effort 可显式清空恢复跟随）；「测试挑选连接」调用 `POST /api/settings/ai/test-selector`（仅 api_key 必填）。
 - 表单字段与后端一致；**三个页签的 API Key 输入框留空 = 保持不变**（已设置时显示「已设置」绿色徽标 + 占位提示，load/save/reloadEnv 后输入框均清空，避免掩码值回显被误提交）；「测试连接」用当前表单值临时覆盖测试（不保存）。
@@ -246,13 +218,13 @@ python demo/chat_demo.py                                          # 交互式多
 - 历史：进入页面 `loadChatHistory()`；「清空」调用 `clearChatMessages`；切书自动 `resetChat()`。
 - 类型：`AiSettings / ChatMessageItem / ChatStreamEvent` 定义在 `src/types.ts`。
 
-### 4.6 冒烟要点（mock LLM）
+### 4.6 冒烟要点（真实 API）
 
-1. `python demo/_mock_llm.py` 启动 mock（18999）。
-2. 设置页填 `http://127.0.0.1:18999/v1`、任意 Key、mode=responses，点「测试连接」应提示连接成功。
-3. 打开任一书籍阅读页 → 点「解读」预设（输入框出现带章节上下文的提问）→ Enter 发送 → 右栏流式输出、无报错。
-4. 刷新页面历史仍在；「清空」后消失。
-5. 回归：`pytest`（27 项）+ `pnpm build`。
+1. 设置页填写真实文本模型 API（base_url / api_key / model / mode），点「测试连接」应提示连接成功。
+2. 打开任一书籍阅读页 → 点「解读」预设（输入框出现带章节上下文的提问）→ Enter 发送 → 右栏流式输出、无报错。
+3. 刷新页面历史仍在；「清空」后消失。
+4. 有扫描件 PDF 时：先在设置页配置多模态视觉 API，再对页面提问验证「未缓存附件走视觉模型」链路。
+5. 回归：后端 `pytest` + `ruff`；前端 `vitest` + `vue-tsc` + `vite build`。
 
 
 ## 6. M5 AI 增强：脑图图像组件 + 划词 AI 操作（第 5 轮任务产出）
@@ -299,7 +271,7 @@ python demo/chat_demo.py                                          # 交互式多
 | `chunk_book(chapters)` | 全书按章节顺序切片 |
 | `page_chunks(page_texts)` | PDF 页缓存 → 片段（出处「第 X 页」） |
 | `normalize_skills(raw)` | LLM 技能列表归一化（兼容字符串列表） |
-| `build_llm_input(chapters, chunks)` | 章节正文 → LLM 输入（隐私开关关闭仅发标题，超 `SEND_BUDGET` 截断） |
+| ~~build_llm_input~~（v1.129 已删除，零引用） | 章节正文 → LLM 输入职责由方案 B 分块函数（`chunk_chapters_for_summary`/`chunk_page_texts_for_summary`）承接 |
 | `build_page_input(page_texts)` | PDF 页缓存 → LLM 输入（同上约束） |
 
 - 使用：`rag_service.generate_rag_skill` / `archive_book_task` 调用；测试直接引用本模块（`test_assets`、`test_archive_m9`）。
@@ -398,36 +370,11 @@ python demo/chat_demo.py                                          # 交互式多
 - 数学硬规则改动：以 `chat.py MATH_RULE` 为基准文案，同步各提示词文件与 `docs/使用手册.md` v1.77 变更记录。
 
 
-## 17. 并发大模型实验（demo 验证轮）
+## 17. 并发大模型实验（demo 验证轮 · 历史产物已移除）
 
-### 17.1 背景与目的
-
-主应用存在多处可并行的 LLM 密集任务（扫描件逐页视觉提取、跨书关联打分、RAG/Skill 总结等），但 `ai/client.py` 尚无重试 / 限流 / 并发基础设施。本轮先在 `demo/` 内做可行性验证，不进入主应用。
-
-### 17.2 产物
-
-| 文件 | 说明 |
-| --- | --- |
-| `demo/parallel_llm.py` | 并发实验脚本（新增） |
-| `demo/_mock_llm.py` | 新增 `--delay` / `--port` 参数（修改，并修复 `global _DELAY` 语法错误） |
-
-### 17.3 parallel_llm.py 使用说明
-
-```bash
-# 0) 启动本地 mock（模拟每请求 1s 延迟）
-python demo/_mock_llm.py --delay 1
-
-# 场景 1+2：mock 并发验证（推荐）
-python demo/parallel_llm.py --mock --tasks 8 --workers 4
-
-# 真实 API（读 demo/.env），跳过 worker 扫描省额度
-python demo/parallel_llm.py --tasks 3 --workers 3 --skip-scan
-
-# 场景 3：文本 + 多模态异构并行（读 backend/.env 的 VISION_*）
-python demo/parallel_llm.py --tasks 3 --workers 3 --skip-scan --vision-env backend/.env
-```
-
-参数：`--mock`（本地 mock）、`--env`（文本 .env 路径，默认 demo/.env）、`--vision-env`（多模态 .env 路径，提供后启用场景 3）、`--tasks`（任务数，默认 8）、`--workers`（场景 1 并发数，默认 4）、`--retries`（失败重试，默认 1）、`--skip-scan`（跳过场景 2）。
+> **历史说明（2026-08-10 起）**：`demo/parallel_llm.py` / `demo/_mock_llm.py` 属实验产物，已随 `demo/` 移出版本控制（仅本地留存、不入库）。
+> 实验结论已并入正式实现：`ai/client.py` 三模式请求体 / `get_limiter` 限流（决策 35）/ 任务系统全局线程池与配额
+> （见 使用手册-后端核心.md §13 与 §2.6）。本文 17.2/17.3 原登记的使用说明随之作废。
 
 三个场景：场景 1 串行 vs 并发加速比；场景 2 worker 数量扫描（1/2/4/8）；场景 3 文本 + 视觉（图片附件，OpenAI 兼容 chat.completions 多模态格式）异构并行。
 
@@ -511,7 +458,7 @@ ReaderChatPanel 提问（携带 session_id）
           1) 会话缓存命中（session_id + chapter.id，TTL 内）→ 直接复用（source="cache"）
           2) 未命中 → _select_llm：build_catalog（领域分组目录）→ 挑选器 LLM（chat 非流式）→ parse_llm_json → 预算裁剪/当前书兜底
           3) LLM 失败/未配置/关闭开关 → _select_fallback（当前书 + 暖画像 related_books top3 + 谱系关联 top2 + 关键词）
-          4) _selection_payload：对选中书 retrieve_rag_chunks(每书 ≤3 段) + Skill 全文注入 → 写会话缓存
+          4) _selection_payload：对选中书 retrieve_rag_chunks(每书 ≤3 段) + Skill 全文注入 → 写会话缓存（F3：缓存只存挑选结果，chunks 按当前问题即时检索）
       → _cross_book_rag_block(chunks)：组装【《书名》第X章 第Y段】块
       → build_messages（页模式同样注入 rag 块；隐私关闭只注入 Skill 不注入 chunks）
   → stream_chat SSE 流式返回
@@ -540,8 +487,8 @@ ReaderChatPanel 提问（携带 session_id）
 
 | 函数 | 说明 |
 | --- | --- |
-| `select_knowledge(..., session_id)` | 键 = `session_id:chapter_id`；TTL = `RAG_SELECT_CACHE_TTL_MINUTES`（默认 60，0=不缓存）；命中返回 `source="cache"` 并跳过挑选 |
-| `clear_session_cache(session_id=None)` | 清空指定会话缓存（空=全清），测试用 |
+| `select_knowledge(..., session_id)` | 键 = `session_id:chapter_id`；TTL = `RAG_SELECT_CACHE_TTL_MINUTES`（默认 60，0=不缓存）；命中返回 `source="cache"` 并跳过挑选。**F3（v1.120）**：缓存仅含挑选结果（书/Skill/理由），chunks 按当前问题重新检索——不回放旧问题片段 |
+| `clear_session_cache(session_id=None)` | 清空指定会话缓存（空=全清）；v1.121 起同时清 `global:{session_id}` 全局对话挑选缓存，测试用 |
 
 - 缓存为**进程内 dict + 锁**，重启后丢失（重新挑选一次，可接受）；键含章节，同会话切章会重新挑选。
 - 使用：前端进入对话会话生成 `session_id`（换书/换模式/清空对话后重新生成），随每次提问传递。

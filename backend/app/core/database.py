@@ -79,6 +79,7 @@ _INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS ix_book_assets_book_id ON book_assets(book_id)",
     "CREATE INDEX IF NOT EXISTS ix_book_assets_book_kind ON book_assets(book_id, kind)",
     "CREATE INDEX IF NOT EXISTS ix_tasks_related_id ON tasks(related_id)",
+    "CREATE INDEX IF NOT EXISTS ix_term_aliases_canonical ON term_aliases(canonical)",
 )
 
 
@@ -141,9 +142,17 @@ def init_db() -> None:
 
 
 def get_db():
-    """FastAPI 依赖：请求级会话。"""
+    """FastAPI 依赖：请求级会话（I-7 修复：请求成功统一 commit，异常回滚）。
+
+    持久化不再依赖「仓储内部 commit」隐式契约——路由/服务层直接 db.add 的对象
+    在请求正常结束后也会提交；仓储内部已有的 commit 保持不变（重复 commit 无害）。
+    """
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

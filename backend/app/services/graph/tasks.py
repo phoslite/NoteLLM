@@ -8,6 +8,7 @@
 """
 from app.core.database import SessionLocal
 from app.models.book import Book
+from app.repositories.graph import list_book_ids
 from app.services.graph.cross_book import compute_cross_book_graph, rebuild_all_graph
 from app.services.graph.intra_book import build_intra_book_graph
 from app.services.graph_sync import link_domain_terms, link_graph_assets, sync_assets_for_relations
@@ -16,14 +17,19 @@ from app.tasks import update_progress
 
 
 def lazy_global_build() -> dict:
-    """懒构建后台任务：跨书关联计算（含 LLM 打分）+ 本地联动存根，独立会话执行。"""
+    """懒构建后台任务：跨书关联计算（含 LLM 打分）+ 本地联动存根，独立会话执行。
+
+    result 携带构建时的书籍数（终审 F7：空关系时供路由判定「书籍未变化则
+    不再重提」，避免每次 GET /api/graph/books 都触发全量重建 + LLM 打分）。
+    """
     with SessionLocal() as session:
         update_progress(20, "计算跨书关联")
         compute_cross_book_graph(session)
         update_progress(80, "补本地联动存根")
         link_graph_assets(session)
+        book_ids = list_book_ids(session)
         update_progress(100, "图谱构建完成")
-    return {"built": True}
+    return {"built": True, "books": len(book_ids), "book_ids": book_ids}
 
 
 def build_intra_task(book_id: int) -> dict:

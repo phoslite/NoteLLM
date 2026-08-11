@@ -112,7 +112,7 @@ def resolve_chat_chapter(db: Session, book_id: int, chapter_id: int | None) -> t
 def _cross_book_rag_block(chunks: list[dict]) -> str:
     """跨书 chunks → 检索片段块：出处统一【《书名》第X章 第Y段】（决策 34）。"""
     return "\n".join(
-        f"【《{c.get('book_title', '')}》第{c['chapter_index']}章 第{c.get('para_pos', '-')}段】{c.get('text', '')}"
+        f"【《{c.get('book_title', '')}》第{c.get('chapter_index', '-')}章 第{c.get('para_pos', '-')}段】{c.get('text', '')}"
         for c in chunks
     )
 

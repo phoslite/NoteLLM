@@ -185,6 +185,14 @@ def test_fallback_keeps_null_feedback_relations(client, monkeypatch):
         c = _upload(client, "忽略书C")
         for bid in (a, b, c):
             _add_rag_skill(db, bid, rag_summary="摘要", skill_name="技巧")
+        # 清除导入自动建的概念共现边（三本书共用「摘要/技巧」词会触发自动建边），
+        # 保证 c 的唯一关联是手动「忽略」边，回归断言不被自动边污染
+        from sqlalchemy import or_
+        for rel in db.query(BookRelation).filter(
+            or_(BookRelation.book_a_id == c, BookRelation.book_b_id == c)
+        ).all():
+            db.delete(rel)
+        db.flush()
         # 默认 NULL 反馈（多数边）与显式「忽略」各一条
         db.add_all([
             BookRelation(book_a_id=min(a, b), book_b_id=max(a, b), strength=90.0,
@@ -226,7 +234,7 @@ def test_session_cache_cap_sweeps_oldest(client, monkeypatch):
 
 
 def test_session_cache_reuses_within_chapter(client, monkeypatch):
-    """会话内缓存：同 session+章节复用挑选结果（不再调 LLM）；跨章节重新挑选。"""
+    """会话内缓存（决策 34 §9.3.1-② / F3 回归）：同 session+章节复用挑选结果（不再调 LLM）；跨章节重新挑选。"""
     _configure(client)
     db = SessionLocal()
     try:
@@ -245,7 +253,7 @@ def test_session_cache_reuses_within_chapter(client, monkeypatch):
         r1 = select_knowledge(db, book, ch1, "q1", session_id="sess-1")
         assert r1["source"] == "llm"
         r2 = select_knowledge(db, book, ch1, "q2-不同问题", session_id="sess-1")
-        assert r2["source"] == "cache"  # 同章复用
+        assert r2["source"] == "cache"  # 同章复用：挑选结果缓存，chunks 按当前问题重取（F3）
         r3 = select_knowledge(db, book, ch2, "q3", session_id="sess-1")
         assert r3["source"] == "llm"  # 跨章重挑
         r4 = select_knowledge(db, book, ch2, "q4", session_id="sess-2")
@@ -314,3 +322,42 @@ def test_cross_book_citation_parsing():
         {"chapter": 2, "para": "1"},
         {"chapter": 7, "para": "页"},
     ]
+
+
+def test_delete_book_and_asset_clear_selection_cache(client, monkeypatch):
+    """P2 接线回归（2026-08-11）：删资产/删书后挑选会话缓存失效，避免回放已删除内容。
+
+    对应 books_service.delete_book 与 routes/assets.delete_book_asset 的
+    clear_session_cache() 接线（第 7 轮 B2）。
+    """
+    _configure(client)
+    db = SessionLocal()
+    try:
+        a = _upload(client, "缓存书", text="# 第一章\n\n一\n")
+        _add_rag_skill(db, a, rag_summary="摘要", skill_name="技巧")
+        calls = []
+
+        def fake_chat(self, messages):
+            calls.append(messages)
+            return json.dumps({"selected_books": [], "selected_skills": [], "reasons": ""})
+
+        monkeypatch.setattr(LLMClient, "chat", fake_chat)
+        book = db.get(Book, a)
+        ch1 = db.query(Chapter).filter_by(book_id=a, index=1).first()
+        # 填充缓存：首次挑选 source=llm，同章同会话二次命中 cache
+        assert select_knowledge(db, book, ch1, "q1", session_id="sess-x")["source"] == "llm"
+        assert select_knowledge(db, book, ch1, "q2", session_id="sess-x")["source"] == "cache"
+        assert _SESSION_CACHE, "挑选缓存应非空"
+        # 删资产（rag）→ 缓存清空
+        r = client.delete(f"/api/books/{a}/asset", params={"kind": "rag"})
+        assert r.status_code == 200
+        assert not _SESSION_CACHE, "删资产后挑选缓存应清空"
+        # 重新填充 → 删书 → 缓存清空
+        assert select_knowledge(db, book, ch1, "q3", session_id="sess-x")["source"] == "llm"
+        assert _SESSION_CACHE
+        r = client.delete(f"/api/books/{a}")
+        assert r.status_code == 200
+        assert not _SESSION_CACHE, "删书后挑选缓存应清空"
+    finally:
+        db.close()
+        clear_session_cache()

@@ -1,4 +1,4 @@
-import { nextTick, ref, type ComputedRef, type Ref } from 'vue'
+import { nextTick, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { generateMindmap } from '@/api/mindmap'
 import type { ChapterItem, MindMapResult } from '@/types'
 
@@ -25,23 +25,37 @@ export function useReaderMindmap(opts: {
   const mindmapLoading = ref(false)
   const mindmapError = ref('')
   const mindmapData = ref<MindMapResult | null>(null)
+  let mindmapSeq = 0 // I-14 修复：请求序号守卫，丢弃旧章节的迟到响应
+
+  // 审查 I-2：切章（未重开脑图）时自增代际——旧章节的迟到响应不得写入新章节视图
+  watch(currentChapterId, () => {
+    mindmapSeq += 1
+    if (mindmapOpen.value) {
+      mindmapOpen.value = false
+      mindmapData.value = null
+    }
+  })
 
   async function openMindmap(selection?: string) {
     if (!currentChapterId.value) return
+    const seq = ++mindmapSeq
     closeSelection()
     mindmapOpen.value = true
     mindmapLoading.value = true
     mindmapError.value = ''
     mindmapData.value = null
     try {
-      mindmapData.value = await generateMindmap(bookId.value, {
+      const data = await generateMindmap(bookId.value, {
         chapter_id: currentChapterId.value,
         selection: selection || undefined,
       })
+      if (seq !== mindmapSeq) return // 已有更新的请求，丢弃本次结果
+      mindmapData.value = data
     } catch (err) {
+      if (seq !== mindmapSeq) return
       mindmapError.value = (err as Error).message
     } finally {
-      mindmapLoading.value = false
+      if (seq === mindmapSeq) mindmapLoading.value = false
     }
   }
 

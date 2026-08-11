@@ -52,10 +52,15 @@ def _meta_path(book) -> Path:
 
 
 def _signature() -> dict:
+    # I-4 修复：OCR 引擎/语言/可执行文件纳入签名——切换 OCR 配置后旧 page_*.txt 缓存
+    # 必须失效重建，否则旧引擎/旧语言文本继续进 RAG（F7 在 OCR 维度复发）。
     return {
         "max_width": settings.vision_image_max_width,
         "quality": settings.vision_image_quality,
         "trim": settings.vision_image_trim,
+        "ocr_engine": (settings.vision_ocr_engine or "").strip(),
+        "ocr_lang": (settings.vision_ocr_lang or "").strip(),
+        "ocr_bin": (settings.vision_ocr_bin or "").strip(),
     }
 
 
@@ -79,10 +84,12 @@ def _write_meta(book) -> None:
 
 
 def _purge_vlm(book) -> None:
-    """删除整目录压缩图（参数变更重建；meta 由调用方重写）。"""
+    """删除整目录压缩图与 OCR 文本缓存（参数变更重建；meta 由调用方重写）。"""
     root = Path(book.file_path).parent / VLM_DIR
     if root.is_dir():
         for f in root.glob("page_*.jpg"):
+            f.unlink(missing_ok=True)
+        for f in root.glob("page_*.txt"):
             f.unlink(missing_ok=True)
 
 
@@ -96,10 +103,12 @@ def _load_gray(path: Path):
     pix_orig = pymupdf.Pixmap(str(path))
     orig_w, orig_h = pix_orig.width, pix_orig.height
     doc = pymupdf.open(str(path))
-    page = doc[0]
-    zoom = ANALYZE_WIDTH / page.rect.width if page.rect.width > ANALYZE_WIDTH else 1.0
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY)
-    doc.close()
+    try:
+        page = doc[0]
+        zoom = ANALYZE_WIDTH / page.rect.width if page.rect.width > ANALYZE_WIDTH else 1.0
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY)
+    finally:
+        doc.close()  # 审查 I-2：异常路径不再泄漏文档句柄
     w, h = pix.width, pix.height
     gray = bytearray(pix.samples)
     if pix.stride != w:
@@ -189,11 +198,12 @@ def _detect_spread(gray, w, h, col_ink, row_ink):
     return True, gap_start, gap_end
 
 
-def _trim_bbox(row_ink, col_ink, w, h, scale, mode: str):
+def _trim_bbox(row_ink, col_ink, w, h, scale, mode: str, is_spread: bool = False):
     """返回裁边 bbox（分析坐标，原图坐标由调用方乘以 scale 换算）；无内容返回 None。
 
     mode: conservative（只裁 >=MIN_BAND_PX 且完全无墨迹的边带）| aggressive
     （内容边界 + 保护带墨迹外扩 + padding）| none（不裁）。
+    is_spread: 双页扫描（_detect_spread 判定）——中间空带永不裁，保留左右两页完整区间。
     scale = 原图宽 / 分析宽，MIN_BAND_PX 等阈值以原图像素计。
     """
     if mode == "none":
@@ -249,6 +259,9 @@ def _trim_bbox(row_ink, col_ink, w, h, scale, mode: str):
             top = top0
         if _zone_ink(row_ink, bottom0, h) == 0 and (h - bottom0) * scale >= MIN_BAND_PX:
             bottom = bottom0
+    if is_spread:
+        # 双页扫描：左右内容页区间已由 span 保底，防御性显式恢复，中间空带永不裁
+        left, right = left0, right0
     return (left, top, right, bottom)
 
 
@@ -307,9 +320,12 @@ def prep_page_image(book, page_index: int) -> dict:
             return {"path": vlm, "source": "cached", "blank": False, "trimmed": False}
         if not _meta_valid(book) and any(vlm.parent.glob("page_*.jpg")):
             _purge_vlm(book)
+    # B-I1：CPU 密集的灰阶/裁边/空白预判在锁外执行（原实现整段持全局锁，
+    # 4 线程并行渲染被串行化且每页两次 glob 使整批退化为 O(N²) 目录遍历）
     gray, w, h, scale, orig_w, orig_h = _load_gray(src)
     row_ink, col_ink = _ink_stats(gray, w, h)
-    bbox = _trim_bbox(row_ink, col_ink, w, h, scale, settings.vision_image_trim)
+    is_spread, _, _ = _detect_spread(gray, w, h, col_ink, row_ink)  # 双页扫描判定（v1.120 接线）
+    bbox = _trim_bbox(row_ink, col_ink, w, h, scale, settings.vision_image_trim, is_spread=is_spread)
     if bbox is None:
         return {"path": src, "source": "blank", "blank": True, "trimmed": False}
     left, top, right, bottom = bbox
@@ -324,11 +340,14 @@ def prep_page_image(book, page_index: int) -> dict:
     if not trimmed and orig_w <= settings.vision_image_max_width:
         return {"path": src, "source": "original", "blank": False, "trimmed": False}
     with _meta_lock:
-        if not _meta_valid(book):
+        # F7 修正：仅当存在旧压缩图时才 purge（连带清 OCR txt）；无旧图时保留已写入的 OCR 缓存
+        if not _meta_valid(book) and any(vlm.parent.glob("page_*.jpg")):
             _purge_vlm(book)  # 并发窗口内参数变更兜底（批量入口已串行 purge）
-        _render_cropped(src, bbox_orig, vlm,
-                        settings.vision_image_max_width, settings.vision_image_quality)
+        # meta 先写再渲染：渲染在锁外（幂等，同参同源输出相同文件），
+        # 锁内保持短临界区；渲染失败时 meta 已就绪但 vlm 缺失 → 下次调用自然重渲染
         _write_meta(book)
+    _render_cropped(src, bbox_orig, vlm,
+                    settings.vision_image_max_width, settings.vision_image_quality)
     return {"path": vlm, "source": "new", "blank": False, "trimmed": trimmed}
 
 

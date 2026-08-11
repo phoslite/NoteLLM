@@ -10,6 +10,8 @@
 import hashlib
 import json
 import re
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -160,22 +162,53 @@ def read_asset_content(db: Session, book_id: int, kind: str) -> dict:
     return content
 
 
+_asset_write_locks: "OrderedDict[int, threading.Lock]" = OrderedDict()
+_asset_write_locks_guard = threading.Lock()
+# M-2 修复：per-book 锁表有界（LRU 上限），超限淘汰**未被持有**的锁（持锁中跳过，
+# 避免同书并发互斥失效）；长运行服务随书量不再无界增长。
+_ASSET_WRITE_LOCK_MAX = 128
+
+
+def _asset_write_lock(book_id: int) -> threading.Lock:
+    """同书资产写互斥（终审 §6.9 + M-2）：归档 vs 手动总结并发时防「读-改-写」丢失更新。
+
+    锁序约定：**永远单锁、不嵌套**——持锁期间不得再获取其他 _asset_write_lock 或外部锁；
+    唯一例外是 merge_duplicate_assets 的跨书批量合并（按 book_id 升序取锁，见其 docstring）。
+    """
+    with _asset_write_locks_guard:
+        lock = _asset_write_locks.get(book_id)
+        if lock is None:
+            lock = threading.Lock()
+            _asset_write_locks[book_id] = lock
+        else:
+            _asset_write_locks.move_to_end(book_id)
+        if len(_asset_write_locks) > _ASSET_WRITE_LOCK_MAX:
+            for victim_id, victim in list(_asset_write_locks.items()):
+                if len(_asset_write_locks) <= _ASSET_WRITE_LOCK_MAX:
+                    break
+                if victim.acquire(blocking=False):
+                    victim.release()
+                    del _asset_write_locks[victim_id]
+        return lock
+
+
 def upsert_asset(db: Session, book_id: int, kind: str, content: dict) -> BookAsset:
     """写入/更新资产；已存在则 version + 1（保留历史约定，见技术栈规范 AI 接入规范）。
 
     写入前对列表条目按 hash 去重；若该书原为共享成员（无独立行），先解除共享引用再新建。
     """
     content = _normalize_content(content, kind)
-    asset = db.query(BookAsset).filter(BookAsset.book_id == book_id, BookAsset.kind == kind).first()
-    if asset:
-        asset.version += 1
-    else:
-        _detach_shared(db, book_id, kind)
-        asset = BookAsset(book_id=book_id, kind=kind, version=1)
-        db.add(asset)
-    asset.content_json = json.dumps(content, ensure_ascii=False)
-    db.commit()
-    db.refresh(asset)
+    with _asset_write_lock(book_id):  # 终审 §6.9：同书并发写（归档 vs 手动总结）防 version/内容丢失
+        asset = db.query(BookAsset).filter(BookAsset.book_id == book_id, BookAsset.kind == kind).first()
+        if asset:
+            asset.version += 1
+        else:
+            _detach_shared(db, book_id, kind)
+            asset = BookAsset(book_id=book_id, kind=kind, version=1)
+            db.add(asset)
+        asset.content_json = json.dumps(content, ensure_ascii=False)
+        db.commit()
+        db.refresh(asset)
     return asset
 
 
@@ -292,7 +325,28 @@ def merge_duplicate_assets(db: Session) -> dict:
     （及原主资产的成员书）并入主资产 merged_book_ids；已合并成员书内容 hash 与主书
     不一致时自动解除引用（内容更新后不再共享）。返回 {kind: 合并条数}。
     删除书籍时主资产自动转移（delete_assets）。
+
+    M-2 修复：并发互斥下沉到仓储内部——先收集全部资产行涉及的 book_id，按升序获取
+    per-book 写锁（与 upsert_asset 共用 _asset_write_lock）后整体执行，路由层不再需要
+    外部锁；并发 merge/upsert 同书时互斥。锁序：跨书批量合并是唯一「多锁」例外，
+    按 book_id 升序获取保证并发 merge 锁序一致无死锁；其余路径遵循「永远单锁、不嵌套」。
     """
+    lock_ids = {
+        row.book_id
+        for row in db.query(BookAsset.book_id).filter(BookAsset.kind.in_(("rag", "skill"))).all()
+    }
+    locks = [_asset_write_lock(bid) for bid in sorted(lock_ids)]
+    for lock in locks:
+        lock.acquire()
+    try:
+        return _merge_duplicate_assets_locked(db)
+    finally:
+        for lock in reversed(locks):
+            lock.release()
+
+
+def _merge_duplicate_assets_locked(db: Session) -> dict:
+    """merge_duplicate_assets 执行体（M-2：由外层获取 per-book 写锁后调用）。"""
     stats: dict[str, int] = {"rag": 0, "skill": 0}
     for kind in ("rag", "skill"):
         rows = (

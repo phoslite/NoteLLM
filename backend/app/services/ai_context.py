@@ -1,20 +1,6 @@
 """AI 阅读上下文组装：章节段落编号、PDF 页窗口文本与 RAG/Skill 上下文块。"""
-import base64
 
 from app.services.html_util import chapter_plain_text
-from app.services.media_service import page_image_path
-
-
-def page_image_data_uri(book, chapter, send_enabled: bool) -> str | None:
-    """扫描版 PDF：读取当前页图片并编码为 data URI；未启用/非扫描/无页面文件时返回 None。"""
-    page_index = chapter.get("page_index") if isinstance(chapter, dict) else getattr(chapter, "page_index", None)
-    if not send_enabled or not getattr(book, "is_scanned", False) or not page_index:
-        return None
-    path = page_image_path(book, page_index)
-    if not path.exists():
-        return None
-    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:image/jpeg;base64,{b64}"
 
 
 def paragraph_numbered(text: str) -> str:

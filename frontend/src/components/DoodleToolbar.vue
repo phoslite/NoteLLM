@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="doodle-toolbar" @mousedown.stop>
     <button
       v-for="t in tools"
@@ -26,12 +26,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 
 type DoodleTool = 'pen' | 'highlight' | 'eraser' | 'text'
 
-const props = defineProps<{
+defineProps<{
   modelValue: DoodleTool
   canUndo: boolean
 }>()
@@ -83,25 +83,26 @@ async function clearAll() {
   border: 1px solid var(--border-color, #dcdfe6);
   border-radius: 8px;
   background: #fff;
-  font-size: 12px;
+  font-size: 13px;
 }
 .mini-btn {
   border: 1px solid var(--border-color, #dcdfe6);
   background: #fff;
   color: var(--text-color, #303133);
-  font-size: 12px;
-  padding: 1px 5px;
+  font-size: 13px;
+  padding: 3px 6px;
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
+  min-height: 24px;
 }
-.mini-btn:hover { border-color: var(--primary-color, #409eff); color: var(--primary-color, #409eff); }
-.mini-btn.active { border-color: var(--primary-color, #409eff); color: var(--primary-color, #409eff); background: rgba(64, 158, 255, 0.08); }
-.mini-btn.danger:hover { border-color: #f56c6c; color: #f56c6c; }
+.mini-btn:hover { border-color: var(--primary-color, #2f6fb0); color: var(--primary-color, #2f6fb0); }
+.mini-btn.active { border-color: var(--primary-color, #2f6fb0); color: var(--primary-color, #2f6fb0); background: color-mix(in srgb, var(--primary-color) 8%, transparent); }
+.mini-btn.danger:hover { border-color: var(--status-err, #e0382e); color: var(--status-err, #e0382e); }
 .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .sep { width: 1px; height: 12px; background: var(--border-color, #dcdfe6); }
 .ctl { display: inline-flex; align-items: center; gap: 3px; color: var(--text-secondary, #909399); }
-.color-input { width: 22px; height: 18px; padding: 0; border: none; background: none; cursor: pointer; }
+.color-input { width: 24px; height: 24px; padding: 0; border: none; background: none; cursor: pointer; } /* E2E 四轮 m7：色板点击目标 >= 24px */
 .range-input { width: 36px; }
 .val { min-width: 12px; text-align: center; }
 .doodle-toolbar::-webkit-scrollbar { display: none; }

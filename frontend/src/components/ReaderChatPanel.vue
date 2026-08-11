@@ -154,7 +154,8 @@ function onChip(value: string) {
 .ai-chips { flex: none; display: flex; gap: 4px; flex-wrap: wrap; padding: 0 0 6px; border-bottom: 1px solid var(--border-color); }
 .chip {
   border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary);
-  font-size: 12px; padding: 3px 9px; border-radius: 12px; cursor: pointer; white-space: nowrap;
+  font-size: 13px; padding: 5px 10px; border-radius: 12px; cursor: pointer; white-space: nowrap;
+  min-height: 24px; display: inline-flex; align-items: center;
 }
 .chip:hover:not(:disabled) { border-color: var(--primary-color); color: var(--primary-color); }
 .chip.active { border-color: var(--primary-color); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 10%, transparent); font-weight: 600; }
@@ -163,26 +164,27 @@ function onChip(value: string) {
 .chip-mind { border-style: dashed; }
 
 .chat-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px; }
-.chat-empty { color: var(--text-secondary); font-size: 12px; line-height: 1.8; padding: 6px 2px; }
+.chat-empty { color: var(--text-secondary); font-size: 13px; line-height: 1.8; padding: 6px 2px; }
 .chat-msg { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .chat-msg.user .chat-content { background: var(--primary-color); color: #fff; padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; }
-.chat-msg.assistant .chat-content { background: var(--panel-bg); padding: 8px 10px; border-radius: 8px; }
+.chat-msg.assistant .chat-content { background: var(--panel-bg); padding: 8px 10px; border-radius: 8px; overflow-x: auto; min-width: 0; } /* 三审 Moderate-2：长 KaTeX 公式横向可滚动，不再被面板裁剪 */
+.chat-content :deep(.katex) { display: inline-block; max-width: 100%; overflow-x: auto; } /* E2E 五轮 #1：聊天区 Markdown 列表内行内公式收缩为 inline-block 并内部滚动，ul/li 不再横向溢出 */
 .chat-msg.streaming .chat-content::after { content: '▍'; animation: blink 1s step-start infinite; color: var(--primary-color); }
 @keyframes blink { 50% { opacity: 0; } }
-.chat-role { font-size: 11px; color: var(--text-secondary); font-weight: 600; }
+.chat-role { font-size: 13px; color: var(--text-secondary); font-weight: 600; }
 .chat-thinking { margin: 2px 0; border: 1px solid var(--border-color); border-radius: 6px; background: color-mix(in srgb, var(--panel-bg) 60%, transparent); }
-.chat-thinking-summary { cursor: pointer; font-size: 11px; color: var(--text-secondary); padding: 4px 8px; user-select: none; }
+.chat-thinking-summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); padding: 5px 10px; user-select: none; min-height: 24px; display: flex; align-items: center; }
 .chat-thinking-summary:hover { color: var(--primary-color); }
-.chat-thinking-body { max-height: 160px; overflow-y: auto; padding: 0 10px 8px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
+.chat-thinking-body { max-height: 160px; overflow-y: auto; padding: 0 10px 8px; font-size: 13px; line-height: 1.7; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
 .chat-citations { display: flex; gap: 4px; flex-wrap: wrap; }
 .citation-chip { font-size: 11px; color: var(--primary-color); border: 1px solid var(--primary-color); border-radius: 10px; padding: 1px 8px; }
-.chat-error { color: #f56c6c; font-size: 12px; padding: 4px 2px; }
+.chat-error { color: var(--status-err); font-size: 13px; padding: 4px 2px; }
 .chat-msg-head { display: flex; align-items: center; justify-content: space-between; }
 .chat-cached { font-size: 11px; color: var(--primary-color); border: 1px solid var(--primary-color); border-radius: 4px; padding: 0 6px; opacity: 0.85; }
-.chat-copy { border: none; background: transparent; color: #909399; font-size: 12px; cursor: pointer; padding: 0 2px; }
+.chat-copy { border: none; background: transparent; color: #909399; font-size: 13px; cursor: pointer; padding: 0 2px; min-height: 24px; display: inline-flex; align-items: center; } /* E2E 五轮 #2：复制按钮可点击高度 >= 24px */
 .chat-copy:hover { color: var(--primary-color); }
 .chat-toolbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.chat-context { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-secondary); }
+.chat-context { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-secondary); }
 .ai-input-row { flex: none; display: flex; gap: 6px; align-items: flex-end; }
 .ai-input {
   flex: 1; height: 64px; resize: none;
@@ -202,13 +204,13 @@ function onChip(value: string) {
 }
 .ai-collapsed:hover { color: var(--primary-color); border-left-color: var(--primary-color); }
 .ai-collapsed-icon { font-size: 18px; line-height: 1; }
-.ai-collapsed-label { writing-mode: vertical-rl; text-orientation: mixed; font-size: 12px; letter-spacing: 3px; }
+.ai-collapsed-label { writing-mode: vertical-rl; text-orientation: mixed; font-size: 13px; letter-spacing: 3px; }
 .ai-collapsed-arrow { font-size: 11px; line-height: 1; margin-top: auto; }
-.ai-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #67c23a; animation: livePulse 1.2s ease-in-out infinite; }
+.ai-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-ok); animation: livePulse 1.2s ease-in-out infinite; }
 @keyframes livePulse { 50% { opacity: 0.3; } }
 .ai-unread {
   position: absolute; top: 8px; right: 3px;
   min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-  background: #f56c6c; color: #fff; font-size: 11px; line-height: 16px; text-align: center;
+  background: var(--status-err); color: #fff; font-size: 11px; line-height: 16px; text-align: center;
 }
 </style>

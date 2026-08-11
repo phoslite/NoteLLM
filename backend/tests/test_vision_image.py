@@ -257,3 +257,48 @@ def test_prepare_book_vlm_images_stats(client, tmp_path):
         assert stats2["ok"] == 0 and stats2["skipped"] == 3
     finally:
         db.close()
+
+
+def test_meta_signature_includes_ocr_params(monkeypatch):
+    """I-4：OCR 引擎/语言/可执行文件必须纳入 meta 签名，切换后旧 OCR 文本缓存失效。"""
+    import app.services.vision_image as vision_image
+    from app.core.config import settings
+
+    base = vision_image._signature()
+    assert "ocr_engine" in base and "ocr_lang" in base and "ocr_bin" in base, f"签名缺少 OCR 参数: {sorted(base)}"
+    monkeypatch.setattr(settings, "vision_ocr_engine", "tesseract", raising=False)
+    monkeypatch.setattr(settings, "vision_ocr_lang", "chi_sim", raising=False)
+    changed = vision_image._signature()
+    assert changed != base, "切换 OCR 参数后签名必须变化"
+
+
+def test_prep_page_image_renders_outside_meta_lock(client, tmp_path):
+    """B-I1：CPU 密集的页图重渲染在 _meta_lock 之外执行（4 线程并行不被串行化）。"""
+    import app.services.vision_image as vision_image
+
+    pdf = tmp_path / "lock.pdf"
+    _make_pdf(pdf, pages=1)
+    data = _import(client, pdf, "lock.pdf")
+    db = SessionLocal()
+    try:
+        book = _book(db, data["id"])
+        _purge_vlm(book)
+        outside = {"render": False}
+        orig_render = vision_image._render_cropped
+
+        def spy_render(*a, **kw):
+            # 若此刻锁可被立即获取 → 渲染发生在锁外
+            if vision_image._meta_lock.acquire(blocking=False):
+                vision_image._meta_lock.release()
+                outside["render"] = True
+            return orig_render(*a, **kw)
+
+        vision_image._render_cropped = spy_render
+        try:
+            res = vision_image.prep_page_image(book, 1)
+        finally:
+            vision_image._render_cropped = orig_render
+        assert res["source"] == "new"
+        assert outside["render"] is True, "页图重渲染应在锁外执行（B-I1）"
+    finally:
+        db.close()

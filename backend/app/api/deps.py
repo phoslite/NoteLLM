@@ -2,7 +2,6 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db  # noqa: F401
 from app.repositories import books as book_repo
 
 

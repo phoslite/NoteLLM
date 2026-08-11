@@ -34,11 +34,6 @@ export interface BookDetail extends BookItem {
   chapters: ChapterItem[]
 }
 
-export interface FolderItem {
-  id: number
-  name: string
-  parent_id: number | null
-}
 export interface RagChunk {
   chapter_index: number
   chapter_title: string

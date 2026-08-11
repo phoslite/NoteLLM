@@ -4,11 +4,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MdRender from '@/components/MdRender.vue'
 import { deleteAssetItem, getBookAsset, summarizeBook } from '@/api/rag'
-import { waitForTask } from '@/utils/task'
+import { useTaskPoll } from '@/composables/useTaskPoll'
+import { TASK_TIMEOUT_MS } from '@/utils/constants'
 import { deleteBook, getBook } from '@/api/books'
 import type { AssetEntry, BookAssetView, BookDetail } from '@/types'
 
 const route = useRoute()
+const poll = useTaskPoll()
 const router = useRouter()
 const bookId = Number(route.params.bookId)
 const bookIdValid = Number.isFinite(bookId) && bookId > 0
@@ -56,13 +58,17 @@ async function runSummarize() {
   taskMsg.value = 'AI 总结中…'
   try {
     const { task_id } = await summarizeBook(bookId)
-    // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 pollTask 180s 超时保持一致）
-    await waitForTask(task_id, { timeoutMs: 180000 })
+    // 审查 B-4：轮询收敛到 useTaskPoll（utils/task.ts::waitForTask，原 pollTask 180s 超时保持一致）
+    // C-I3：failed 必须报错；卸载由 useTaskPoll 顶层 onBeforeUnmount 自动中止轮询（三审修复：原写在函数体内的 onBeforeUnmount 被 Vue 静默丢弃）
+    const task = await poll.run(task_id, { timeoutMs: TASK_TIMEOUT_MS })
+    if (task.status === 'failed') {
+      throw new Error(`总结任务失败：${task.error ?? '未知错误'}`)
+    }
     await refresh()
     active.value = ['rag-summary', 'rag-keypoints', 'skill-list']
     ElMessage.success('总结完成')
   } catch (err) {
-    ElMessage.error((err as Error).message)
+    if ((err as Error).name !== 'AbortError') ElMessage.error((err as Error).message)
   } finally {
     busy.value = false
     taskMsg.value = ''
@@ -172,7 +178,7 @@ onMounted(refresh)
           </template>
           <div v-for="(c, i) in asset.rag?.content.chunks || []" :key="i" class="chunk-item">
             <div class="chunk-head">
-              <span class="chunk-pos">第 {{ c.chapter_index }} 章 · {{ c.chapter_title }} · {{ c.para_pos }}</span>
+              <span class="chunk-pos">第 {{ c.chapter_index }} 章 · <MdRender :source="c.chapter_title" inline /> · {{ c.para_pos }}</span>
               <div class="chunk-actions">
                 <el-button type="primary" size="small" link @click="toggleChunk(i)">
                   {{ expandedChunks.has(i) ? '收起' : '展开' }}
@@ -224,9 +230,9 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.rag-detail { padding: 24px 28px; overflow-y: auto; height: 100%; }
+
 .detail-card { max-width: 1200px; margin: 0 auto; border-radius: var(--radius-lg); }
-.rag-detail { padding: 24px 28px; overflow-y: auto; height: 100%; background: var(--bg-color); }
+.rag-detail { padding: 24px 28px; min-height: 100%; background: var(--bg-color); } /* E2E 七轮 #1：仅文档级滚动（与 RagView 口径统一），去除内部滚动条 */
 .detail-head {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px;
   position: sticky; top: -24px; z-index: 5;
@@ -236,12 +242,12 @@ onMounted(refresh)
 .detail-title { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 200px; }
 .detail-title .name { font-size: 16px; font-weight: 700; }
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.fmt { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: var(--panel-bg); border: 1px solid var(--border-color); }
+.fmt { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: var(--panel-bg); border: 1px solid var(--border-color); }
 .busy-tip { margin: 4px 0 10px; color: var(--primary-color); font-size: 13px; }
 .collapse { border-top: none; }
 .item-title { margin-right: 10px; font-weight: 600; font-size: 14px; }
 .item-icon { margin-right: 6px; font-size: 13px; }
-.chunk-hint { font-size: 11px; color: var(--text-secondary); font-weight: 400; }
+.chunk-hint { font-size: 13px; color: var(--text-secondary); font-weight: 400; }
 
 /* 阅读排版：统一字号与行高 */
 .read-area { font-size: 14px; line-height: 1.95; }
@@ -274,13 +280,15 @@ onMounted(refresh)
 }
 .chunk-item:hover { border-color: color-mix(in srgb, var(--primary-color) 35%, var(--border-color)); box-shadow: var(--shadow-sm); }
 .chunk-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.chunk-pos { font-size: 12px; color: var(--text-secondary); }
+.chunk-pos { font-size: 13px; color: var(--text-secondary); }
 .chunk-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.kp-item :deep(.el-button), .chunk-actions :deep(.el-button), .skill-head :deep(.el-button), .head-actions :deep(.el-button) { min-height: 24px; } /* E2E 四轮 #15：link 删除/展开按钮可点击区域 >= 24px */
 .chunk-text {
   font-size: 14px; line-height: 1.95;
   max-height: 168px; overflow: hidden; transition: max-height .25s ease;
 }
 .chunk-text.open { max-height: none; }
+.chunk-text :deep(.katex), .read-area :deep(.katex) { max-width: 100%; overflow-x: auto; } /* E2E 五轮 #3：窄容器内行内公式内部滚动，不再横向溢出（display 块公式布局不受影响） */
 .chunk-fade {
   position: absolute; left: 16px; right: 16px; bottom: 0; height: 56px;
   background: linear-gradient(transparent, var(--panel-bg));
@@ -302,5 +310,5 @@ onMounted(refresh)
   padding: 1px 8px; border-radius: 10px; margin-bottom: 6px;
 }
 .skill-sources { font-size: 13px; color: var(--text-secondary); }
-.empty-tip { color: var(--text-secondary); font-size: 12px; padding: 8px 0; }
+.empty-tip { color: var(--text-secondary); font-size: 13px; padding: 8px 0; }
 </style>

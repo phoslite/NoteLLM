@@ -8,7 +8,7 @@
 
 降级：LLM 未配置 / 调用失败 / 输出无法解析 → 规则化候选（当前书 + 暖画像相关 top3 +
 谱系关联 top2 + 关键词检索，即决策 34 定义的降级方案）。
-会话缓存：按 session_id + chapter_id 缓存挑选结果（TTL 可配，0=不缓存）。
+会话缓存：按 session_id + chapter_id 缓存挑选结果（决策 34 §9.3.1-② / F3 回归，TTL 可配，0=不缓存）；缓存仅含挑选结果，chunks 按当前问题重取（F3）。
 
 决策 37（主页全局 AI 对话）：`select_global_knowledge` 无当前书/章节，从全库目录挑选
 （LLM 全局提示词 → 规则降级：摘要/内容关键词相关 top3 书 + 全局 Skill 相关性 top N）；
@@ -41,6 +41,7 @@ from app.repositories.assets import (
     retrieve_rag_chunks,
 )
 from app.repositories.graph import list_active_relations
+from app.services.graph.keywords import sanitize_cluster_name
 from app.services.profile_service import get_all_profiles
 
 # 候选目录与注入控制
@@ -78,7 +79,10 @@ def _book_domain(book: Book, folder_names: dict[int, str]) -> str:
     except (TypeError, ValueError):
         tags = []
     if tags:
-        return str(tags[0])
+        # 二轮复审（2026-08-11）：与聚类消费端同一清洗出口（clean_tags 保留原样 → 领域标签再清洗），
+        # 避免带标点的 tag（如「高数-强化」）原样进入挑选器目录；清洗为空则兜底原值（与 clustering.py 同策略）
+        first = str(tags[0])
+        return sanitize_cluster_name(first) or first
     if book.folder_id:
         name = folder_names.get(book.folder_id)
         if name:
@@ -290,7 +294,31 @@ def _select_fallback(db: Session, book: Book, question: str) -> SelectionResult:
 
 # ---------------------------------------------------------------- 会话缓存
 
-def _cache_key(session_id: str, chapter_id: int) -> str:
+def _result_to_cached(result: SelectionResult) -> dict:
+    """挑选结果序列化：仅存「选择」，不存按问题检索出的 chunks/skills（F3 修复）。"""
+    return {
+        "source": result.source,
+        "book_ids": result.book_ids,
+        "skill_refs": result.skill_refs,
+        "reasons": result.reasons,
+    }
+
+
+def _result_from_cached(cached: dict) -> SelectionResult:
+    """缓存命中 → 重建挑选结果；chunks 由调用方按当前问题重新检索（F3 修复）。"""
+    return SelectionResult(
+        source=str(cached.get("source") or "fallback"),
+        book_ids=list(cached.get("book_ids") or []),
+        skill_refs=list(cached.get("skill_refs") or []),
+        reasons=str(cached.get("reasons") or ""),
+    )
+
+
+
+# F3 回归：挑选缓存键 = session + chapter（决策 34 §9.3.1-②，同章内换问题复用挑选结果；
+# 注入内容不陈旧——命中缓存后 chunks 仍按当前问题重取，仅省一次挑选 LLM 调用）。
+def _cache_key(session_id: str, chapter_id: int, question: str = "") -> str:
+    """挑选缓存键：session + chapter（question 保留形参以兼容调用点）。"""
     return f"{session_id}:{chapter_id}"
 
 
@@ -332,7 +360,9 @@ def clear_session_cache(session_id: str | None = None) -> int:
     removed = 0
     with _SESSION_LOCK:
         if session_id:
-            for k in [k for k in _SESSION_CACHE if k.startswith(f"{session_id}:")]:
+            g_prefix = f"global:{session_id}"
+            for k in [k for k in _SESSION_CACHE
+                      if k.startswith(f"{session_id}:") or k == g_prefix or k.startswith(g_prefix + ":")]:
                 del _SESSION_CACHE[k]
                 removed += 1
         else:
@@ -458,7 +488,8 @@ def select_global_knowledge(
         key = f"global:{session_id}"
         cached = _cache_get(key)
         if cached is not None:
-            return {**cached, "source": "cache"}
+            # F3 修复：缓存仅含挑选结果，chunks 按当前问题重新检索，避免回放旧问题片段
+            return _selection_payload(_result_from_cached(cached), db, question) | {"source": "cache"}
     profiles = get_all_profiles(db)
     result: SelectionResult | None = None
     if settings.ai_rag_select_enabled:
@@ -467,7 +498,7 @@ def select_global_knowledge(
         result = _select_fallback_global(db, question)
     payload = _selection_payload(result, db, question)
     if key:
-        _cache_put(key, payload)
+        _cache_put(key, _result_to_cached(result))
     return payload
 
 
@@ -487,11 +518,13 @@ def select_knowledge(
     返回 {"chunks": [...], "skills": [...], "selection": {...}, "source": "llm"|"fallback"|"cache"}。
     chunks 每项含 book_id/book_title，出处格式【《书名》第X章 第Y段】由 chat_service 组装。
     """
-    key = _cache_key(session_id, chapter.id) if session_id else None
+    chapter_id = chapter.id if chapter is not None else None
+    key = _cache_key(session_id, chapter_id, question) if session_id else None
     if key:
         cached = _cache_get(key)
         if cached is not None:
-            return {**cached, "source": "cache"}
+            # F3 修复：缓存仅含挑选结果，chunks 按当前问题重新检索，避免回放旧问题片段
+            return _selection_payload(_result_from_cached(cached), db, question) | {"source": "cache"}
     profiles = get_all_profiles(db)
     result: SelectionResult | None = None
     if settings.ai_rag_select_enabled:
@@ -500,5 +533,5 @@ def select_knowledge(
         result = _select_fallback(db, book, question)
     payload = _selection_payload(result, db, question)
     if key:
-        _cache_put(key, payload)
+        _cache_put(key, _result_to_cached(result))
     return payload

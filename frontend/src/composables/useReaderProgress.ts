@@ -37,7 +37,7 @@ export function useReaderProgress(opts: {
 
   const progressCache = ref<ReadingProgressCache | null>(null)
   let saveTimer: ReturnType<typeof setTimeout> | null = null
-  let lastPos = { chapterId: 0, position: 0 }
+  let lastPos = { bookId: 0, chapterId: 0, position: 0 }  // F14：绑定书 id，防切书窗口期旧进度写入新书
   let visibleAccumMs = 0
   /** 本章已累计的「页面可见」阅读时长（ms），隐藏/最小化期间不增长。 */
   let visibleSinceAt: number | null = null
@@ -73,10 +73,10 @@ export function useReaderProgress(opts: {
       const saved = progressCache.value
       const pos = saved?.chapter_id === chapterId ? saved.position : 0
       el.scrollTop = pos * (el.scrollHeight - el.clientHeight)
-      lastPos = { chapterId, position: pos }
+      lastPos = { bookId: bookId.value, chapterId, position: pos }
     } else {
       el.scrollTop = 0
-      lastPos = { chapterId, position: 0 }
+      lastPos = { bookId: bookId.value, chapterId, position: 0 }
     }
   }
 
@@ -85,13 +85,14 @@ export function useReaderProgress(opts: {
     if (!el || !currentChapterId.value) return
     const max = el.scrollHeight - el.clientHeight
     const position = max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 0
-    lastPos = { chapterId: currentChapterId.value, position }
+    lastPos = { bookId: bookId.value, chapterId: currentChapterId.value, position }
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => void saveNow(), 600)
   }
 
   async function saveNow() {
     if (!lastPos.chapterId) return
+    if (lastPos.bookId !== bookId.value) return  // F14：切书窗口期旧书位置不写入新书
     const { chapterId, position } = lastPos
     try {
       const p = await saveProgress(bookId.value, { chapter_id: chapterId, position })
@@ -136,6 +137,7 @@ export function useReaderProgress(opts: {
     autoMarkedChapter = new Set()
     visibleAccumMs = 0
     visibleSinceAt = null
+    lastPos = { bookId: 0, chapterId: 0, position: 0 }  // F14：切书清空旧进度缓存
   }
 
   function dispose() {

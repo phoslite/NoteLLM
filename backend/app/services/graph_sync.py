@@ -17,6 +17,7 @@ from app.core.time import utcnow
 from app.models.book import Book
 from app.models.graph import BookRelation
 from app.repositories.assets import read_asset_content, save_asset_content, upsert_asset
+from app.repositories.books import get_book
 from app.repositories.graph import list_active_relations, list_books
 from app.services.graph.clustering import post_classify_book
 from app.services.graph.keywords import extract_keywords
@@ -115,8 +116,8 @@ def link_relation_stubs(db: Session, rel: BookRelation) -> int:
     """为单条关联的两本书补本地 RAG 存根，返回新增条目数。"""
     if not rel or rel.user_feedback == "忽略" or rel.strength < LINK_MIN_STRENGTH:
         return 0
-    a = db.get(Book, rel.book_a_id)
-    b = db.get(Book, rel.book_b_id)
+    a = get_book(db, rel.book_a_id)
+    b = get_book(db, rel.book_b_id)
     if not a or not b:
         return 0
     reasons = load_reasons(rel)

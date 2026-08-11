@@ -8,6 +8,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.core.time import utcnow
 from app.models.activity import ChatMessage, Note
 from app.models.book import Book, Chapter
 from app.services.graph.keywords import extract_keywords
@@ -54,7 +55,7 @@ def _weak_concepts(db: Session) -> list[dict]:
 
 def _review_reminders(warm: dict, review_days: int = REVIEW_AFTER_DAYS) -> list[dict]:
     """复习提醒：最近归档书按间隔，超过 review_days 天标为到期（默认 1 天，按用户习惯学习）。"""
-    now = datetime.now()
+    now = utcnow()
     out: list[dict] = []
     for r in warm.get("recent_books") or []:
         try:

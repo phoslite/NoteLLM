@@ -478,12 +478,13 @@ defineExpose({ undo, resetUndo })
   border: 1px solid var(--border-color, #dcdfe6);
   background: #fff;
   color: var(--text-color, #303133);
-  font-size: 12px;
-  padding: 2px 8px;
+  font-size: 13px;
+  padding: 3px 8px;
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
+  min-height: 24px;
 }
-.mini-btn:hover { border-color: var(--primary-color, #409eff); color: var(--primary-color, #409eff); }
-.mini-btn.ai { color: var(--primary-color, #409eff); }
+.mini-btn:hover { border-color: var(--primary-color, #2f6fb0); color: var(--primary-color, #2f6fb0); }
+.mini-btn.ai { color: var(--primary-color, #2f6fb0); }
 </style>

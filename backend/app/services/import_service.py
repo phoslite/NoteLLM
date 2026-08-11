@@ -20,13 +20,13 @@ from app.parsers import SUPPORTED_EXT, parse_book
 from app.parsers.epub import extract_epub_cover
 from app.parsers.pdf import extract_pdf_cover, render_pdf_pages
 from app.repositories import books as book_repo
-from app.repositories.books import add_chapters, create_book
-from app.repositories.settings import vision_configured
+from app.repositories.books import create_book_with_chapters
+from app.repositories.settings import load_ai_overrides, vision_configured
 from app.services.graph.cross_book import incremental_cross_book_graph
 from app.services.html_util import html_to_text
 from app.services.media_service import copy_markdown_images
 from app.services.vision_extract import extract_book_pages_task
-from app.tasks import submit, update_progress
+from app.tasks import VISION_TASK_PREFIX, submit, submit_dedupe, update_progress
 
 _FORMAT_MAP = {".md": "md", ".markdown": "md", ".txt": "txt", ".pdf": "pdf", ".epub": "epub"}
 
@@ -112,8 +112,14 @@ def import_book_file(
                     local_text_dir.mkdir(parents=True, exist_ok=True)
                     (local_text_dir / f"page_{i:03d}.txt").write_text(page_text, encoding="utf-8")
 
-        book = create_book(
+        # EPUB 方案 A：正文为消毒后 HTML，字数按纯文本统计（避免标签计入）
+        word_counts = [len(html_to_text(c.content)) for c in parsed.chapters] if suffix == ".epub" else None
+        # m-6 修复：建书+写章合并为单事务仓储函数——add_chapters 失败整体回滚，
+        # 不再留下「create_book 已 commit」的孤儿书行（except 只需清理文件目录）
+        book = create_book_with_chapters(
             db,
+            [(c.index, c.title, c.content, c.page_index) for c in parsed.chapters],
+            word_counts=word_counts,
             title=book_title,
             content_hash=content_hash,
             author=author or parsed.author or None,
@@ -123,14 +129,6 @@ def import_book_file(
             is_scanned=parsed.is_scanned,
             page_count=parsed.page_count,
             total_chapters=len(parsed.chapters),
-        )
-        # EPUB 方案 A：正文为消毒后 HTML，字数按纯文本统计（避免标签计入）
-        word_counts = [len(html_to_text(c.content)) for c in parsed.chapters] if suffix == ".epub" else None
-        add_chapters(
-            db,
-            book.id,
-            [(c.index, c.title, c.content, c.page_index) for c in parsed.chapters],
-            word_counts=word_counts,
         )
     except Exception:
         # 审查 C-问题2：解析/入库失败清理孤儿目录，防磁盘垃圾累积与 hash 去重干扰
@@ -165,9 +163,15 @@ def _import_background(book_id: int) -> dict:
         incremental_cross_book_graph(db, book.id)
         # M7 批量预提取：导入 PDF 作为知识库时补齐全书页缓存；
         # 受「发送书籍内容至模型」隐私开关与多模态配置约束。
-        if path.suffix.lower() == ".pdf" and settings.ai_enable_body_send and vision_configured(db):
-            update_progress(80, "视觉预提取页缓存")
-            extract_book_pages_task(book.id)
+        if path.suffix.lower() == ".pdf" and load_ai_overrides(db).get("ai_enable_body_send", settings.ai_enable_body_send) and vision_configured(db):
+            # 终审 §6.9：预提取改独立 vision 任务（不再占用 render 配额线程阻塞导入）；
+            # 与「重建页缓存」共用防重键（同书同时只跑一路提取，防双倍多模态费用）
+            update_progress(80, "提交视觉预提取任务")
+            submit_dedupe(
+                "vision", "vision-import-extract",
+                lambda: extract_book_pages_task(book.id),
+                related_id=book.id, name_prefix=VISION_TASK_PREFIX,
+            )
         update_progress(100, "导入完成")
         return {"book_id": book.id, "rendered": True}
     finally:

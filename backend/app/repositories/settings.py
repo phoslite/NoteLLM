@@ -189,8 +189,22 @@ def vision_configured(db: Session) -> bool:
     return bool(kwargs.get("base_url") and kwargs.get("api_key") and kwargs.get("model"))
 
 
+def _strip_inline_comment(value: str | None) -> str:
+    """E2E #9：.env 行内注释被 dotenv 整段解析为值（`KEY= # 注释`）→ 清洗为空串。
+
+    以 # 开头或含 "# " 视为注释残留；仅挑选器 mode 等字符串键生效（空=跟随主模型）。
+    """
+    text = str(value or "").strip()
+    if not text or text.startswith("#") or "# " in text:
+        return ""
+    return text
+
+
 def load_ai_overrides(db: Session) -> dict:
-    """读取运行时 AI 配置（仅返回 DB 中已覆盖的项），未覆盖项沿用 .env。"""
+    """读取运行时 AI 配置（仅返回 DB 中已覆盖的项），未覆盖项沿用 .env。
+
+    E2E #9：rag_select_mode 的 DB 覆盖值若为行内注释残留（旧 reload 写入）→ 读取时清洗为空串。
+    """
     rows = db.scalars(select(Setting).where(Setting.key.in_(AI_OVERRIDE_KEYS))).all()
     overrides: dict = {}
     for row in rows:
@@ -209,7 +223,7 @@ def load_ai_overrides(db: Session) -> dict:
             except ValueError:
                 continue
         else:
-            overrides[key] = raw
+            overrides[key] = _strip_inline_comment(raw) if key == "rag_select_mode" else raw
     return overrides
 
 
@@ -332,7 +346,7 @@ def reload_ai_overrides_from_env(db: Session, env_path: Path | None = None) -> d
                 db.delete(row)
                 changed = True
             continue
-        text = str(raw).strip()
+        text = _strip_inline_comment(raw) if settings_key == "rag_select_mode" else str(raw).strip()
         if row is None:
             db.add(Setting(key=settings_key, value=text))
             changed = True

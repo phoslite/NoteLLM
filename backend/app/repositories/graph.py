@@ -4,7 +4,7 @@
 服务层不再直接拼 SQLAlchemy 查询；写入路径（delete/add/update）在测试全绿后第二步搬移。
 """
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.activity import Note
 from app.models.asset import BookAsset
@@ -13,8 +13,8 @@ from app.models.graph import BookRelation, KnowledgePoint, KpRelation
 
 
 def list_books(db: Session) -> list[Book]:
-    """全部书籍（id 升序，图谱域默认遍历顺序）。"""
-    return db.query(Book).order_by(Book.id).all()
+    """全部书籍（id 升序，图谱域默认遍历顺序；预载 chapters 防 N+1，终审 §6.9）。"""
+    return db.query(Book).options(selectinload(Book.chapters)).order_by(Book.id).all()
 
 
 def list_books_except(db: Session, book_id: int) -> list[Book]:
@@ -40,9 +40,29 @@ def count_books(db: Session) -> int:
     return db.query(Book).count()
 
 
+def list_book_ids(db: Session) -> list[int]:
+    """全部书籍 id（升序；懒构建「书籍集合未变」真值指纹用，终审 §6.9 由数量改集合）。"""
+    return [b.id for b in db.query(Book.id).order_by(Book.id).all()]
+
+
 def list_relations(db: Session) -> list[BookRelation]:
     """全部书籍关联（id 升序）。"""
     return db.query(BookRelation).order_by(BookRelation.id).all()
+
+
+def list_feedback_relations(db: Session) -> list[BookRelation]:
+    """带人工反馈的书籍关联（全量重建回填用户反馈用；id 升序）。"""
+    return (
+        db.query(BookRelation)
+        .filter(BookRelation.user_feedback.isnot(None))
+        .order_by(BookRelation.id)
+        .all()
+    )
+
+
+def get_relation(db: Session, relation_id: int) -> BookRelation | None:
+    """按 id 取单条书籍关联（路由反馈/联动共用）。"""
+    return db.get(BookRelation, relation_id)
 
 
 def list_active_relations(

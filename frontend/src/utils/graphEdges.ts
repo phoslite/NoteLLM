@@ -14,7 +14,7 @@ export function isDarkCanvas(): boolean {
  * - 最密切关联（isBest）：红色（暗色下用亮红）
  */
 export function edgeStrokeColor(strength: number, isBest: boolean): string {
-  const alpha = Math.round((0.55 + Math.min(0.4, strength / 50)) * 100) / 100
+  const alpha = Math.round((0.68 + 0.27 * Math.min(1, strength / 100)) * 100) / 100 // 三审 Minor-4：基线 alpha 0.55 白底 2.6~3.0:1 → 0.68 起 >=3.6:1，强度仍随 strength 递增
   if (isBest) return isDarkCanvas() ? '#ff6b5e' : '#e0382e'
   return isDarkCanvas() ? `rgba(102, 172, 255, ${alpha})` : `rgba(31, 92, 205, ${alpha})`
 }

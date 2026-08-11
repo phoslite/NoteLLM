@@ -3,12 +3,15 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_book
 from app.core.database import get_db
+from app.models.book import Book, Folder
 from app.repositories import books as repo
 from app.repositories.reading import book_reading_summary, books_reading_summary
-from app.schemas.common import fail, ok
+from app.schemas.common import ok
 from app.schemas.serializers import book_to_dict, chapter_to_dict
 from app.services.book_pages import get_or_render_page
 from app.services.books_service import clean_tags
@@ -38,6 +41,11 @@ def _book_out(db: Session, book) -> dict:
     """书籍序列化 + 阅读概况（已读章节数 / 最新章节）。"""
     read_chapters, latest_chapter = book_reading_summary(db, book)
     return book_to_dict(book, read_chapters=read_chapters, latest_chapter=latest_chapter)
+
+
+def _get_book(book_id: int, db: Session = Depends(get_db)) -> Book:
+    """路由注入包装：复用 require_book 的「查书 + 404」逻辑（终审 §6.9 复用缺口收敛）。"""
+    return require_book(db, book_id)
 
 
 @router.get("")
@@ -73,7 +81,8 @@ async def upload_book(
             db, tmp, file.filename or "untitled", title=title, author=author, content_hash=content_hash
         )
     except ValueError as exc:
-        return fail(400, str(exc))
+        # 审查 I-5：错误契约统一为 HTTP 400（此前 fail() 返回 HTTP 200，与同模块其余端点不一致）
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({**_book_out(db, book), "task_id": task_id}, "已提交导入任务")
 
 
@@ -98,47 +107,50 @@ def books_assets_brief(db: Session = Depends(get_db)):
 
 
 @router.get("/{book_id}")
-def get_book(book_id: int, db: Session = Depends(get_db)):
-    book = repo.get_book(db, book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="书籍不存在")
+def get_book(book: Book = Depends(_get_book), db: Session = Depends(get_db)):
     data = _book_out(db, book)
-    data["chapters"] = [chapter_to_dict(c) for c in repo.list_chapters(db, book_id)]
+    data["chapters"] = [chapter_to_dict(c) for c in repo.list_chapters(db, book.id)]
     return ok(data)
 
 
 @router.patch("/{book_id}")
-def update_book(book_id: int, body: BookUpdate, db: Session = Depends(get_db)):
+def update_book(book_id: int, body: BookUpdate, book: Book = Depends(_get_book), db: Session = Depends(get_db)):
+    if body.folder_id is not None and db.get(Folder, body.folder_id) is None:
+        # 终审 §6.9：无效 folder_id 与全库「资源不存在→404」契约统一
+        raise HTTPException(status_code=404, detail=f"文件夹不存在：{body.folder_id}")
     tags = clean_tags(body.tags) if body.tags is not None else None
-    book = repo.update_book(
-        db,
-        book_id,
-        title=body.title,
-        author=body.author,
-        status=body.status,
-        progress=body.progress,
-        folder_id=body.folder_id,
-        tags=tags,
-        position=body.position,
-    )
+    try:
+        book = repo.update_book(
+            db,
+            book_id,
+            title=body.title,
+            author=body.author,
+            status=body.status,
+            progress=body.progress,
+            folder_id=body.folder_id,
+            tags=tags,
+            position=body.position,
+        )
+    except IntegrityError as exc:
+        # m-7 修复：FK 冲突拆两类——folder 并发删除（资源消失）→ 404「文件夹不存在」；
+        # 其他数据冲突（如并发修改引用）→ 409 Conflict（与 folders.delete_folder 语义统一）
+        if body.folder_id is not None:
+            raise HTTPException(status_code=404, detail=f"文件夹不存在：{body.folder_id}") from exc
+        raise HTTPException(status_code=409, detail="更新失败：数据引用冲突，请刷新后重试") from exc
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
     return ok(_book_out(db, book))
 
 
 @router.delete("/{book_id}")
-def delete_book(book_id: int, db: Session = Depends(get_db)):
-    if not delete_book_service(db, book_id):
-        raise HTTPException(status_code=404, detail="书籍不存在")
+def delete_book(book_id: int, book: Book = Depends(_get_book), db: Session = Depends(get_db)):
+    delete_book_service(db, book_id)
     return ok(None, "已删除")
 
 
 @router.get("/{book_id}/cover")
-def get_book_cover(book_id: int, db: Session = Depends(get_db)):
+def get_book_cover(book: Book = Depends(_get_book), db: Session = Depends(get_db)):
     """返回书籍封面图片文件；缺封面时按需提取（PDF 渲染第 1 页 / EPUB OPF 封面）。"""
-    book = repo.get_book(db, book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="书籍不存在")
     path = book_cover_file(db, book)
     if not path:
         raise HTTPException(status_code=404, detail="该书没有封面")
@@ -146,11 +158,8 @@ def get_book_cover(book_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{book_id}/pages/{page_index}")
-def get_book_page(book_id: int, page_index: int, db: Session = Depends(get_db)):
+def get_book_page(book: Book = Depends(_get_book), page_index: int = 0, db: Session = Depends(get_db)):
     """返回扫描版 PDF 的原始页图片；页图缺失或分辨率低于内嵌原图时按需重渲染（升级低清页）。"""
-    book = repo.get_book(db, book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="书籍不存在")
     path = get_or_render_page(book, page_index)
     if not path:
         raise HTTPException(status_code=404, detail="页面图片不存在")
@@ -158,11 +167,8 @@ def get_book_page(book_id: int, page_index: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{book_id}/media/{filename}")
-def get_book_media(book_id: int, filename: str, db: Session = Depends(get_db)):
+def get_book_media(book: Book = Depends(_get_book), filename: str = "", db: Session = Depends(get_db)):
     """Markdown 内嵌本地图片（决策 31）：白名单扩展名 + 防越越；缺失返回占位 SVG。"""
-    book = repo.get_book(db, book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="书籍不存在")
     path = resolve_book_media(book, filename)
     if not path:
         return Response(content=PLACEHOLDER_SVG, media_type="image/svg+xml")

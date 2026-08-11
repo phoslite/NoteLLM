@@ -62,3 +62,26 @@ def test_reload_env_endpoint(client, monkeypatch, tmp_path):
     monkeypatch.setattr("app.api.routes.settings.reload_ai_overrides_from_env", boom)
     r2 = client.post("/api/settings/ai/reload-env")
     assert r2.status_code == 404
+
+def test_rag_select_mode_inline_comment_cleaned():
+    """E2E #9：.env 行内注释被 dotenv 整段解析为值时，Settings 清洗为空串。"""
+    from app.core.config import Settings
+
+    comment = "# 空=复用主模型接口格式（responses/chat/anthropic）"
+    assert Settings(rag_select_mode=comment).rag_select_mode == ""
+    assert Settings(rag_select_mode="chat # 行内注释残留").rag_select_mode == ""
+    assert Settings(rag_select_mode="chat").rag_select_mode == "chat"
+    assert Settings(rag_select_mode="").rag_select_mode == ""
+
+
+def test_load_ai_overrides_cleans_inline_comment_value(client):
+    """E2E #9：DB 覆盖中的行内注释残留（旧 reload 写入）读取时清洗为空串。"""
+    from app.repositories.settings import load_ai_overrides, save_ai_overrides
+
+    db = SessionLocal()
+    try:
+        comment = "# 空=复用主模型接口格式（responses/chat/anthropic）"
+        save_ai_overrides(db, {"rag_select_mode": comment})
+        assert load_ai_overrides(db)["rag_select_mode"] == ""
+    finally:
+        db.close()

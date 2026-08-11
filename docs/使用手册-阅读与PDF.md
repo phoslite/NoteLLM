@@ -238,7 +238,7 @@
 - 辅助函数：
   - `render_pdf_page(path, page_index, out_path)`：把指定页渲染为 `page_XXX.jpg`（默认 1000px 宽、quality 88）；
   - `extract_pdf_cover(path, out_path)`：渲染第 1 页为封面图（无元数据封面时兜底）；
-  - `render_pdf_pages(path, out_dir)`：渲染全部页到 `pages/page_001.jpg`…。
+  - `render_pdf_pages(path, out_dir, workers=None)`：渲染全部页到 `pages/page_001.jpg`…（workers=None 串行，>1 并发）。
 - `backend/app/parsers/epub.py` 新增 `extract_epub_cover`：优先取 OPF `<meta name="cover">` / `<meta name="cover-image">` 指向的资源，写入 `cover.{ext}`。
 
 ### 5.2 数据模型与旧库迁移（`backend/app/models/` + `backend/app/core/database.py`）
@@ -250,7 +250,7 @@
 
 - 导入 PDF/EPUB 时提取封面并写入 `book.cover`（书架展示用 `cover_url`）。
 - 每本书使用独立子目录 `data/books/<file_id>/`（书文件 + `cover.jpg` + `pages/`），避免封面/页图跨书共享覆盖。
-- 扫描版 PDF 渲染 `pages/` 目录；章节按页写入，`add_chapters` 接收 `(index, title, content, page_index)` 元组。
+- 扫描版 PDF 渲染 `pages/` 目录；章节按页写入，`create_book_with_chapters`（m-6 单事务，建书+写章一次提交）接收 `(index, title, content, page_index)` 元组。
 - 书籍序列化（`backend/app/schemas/serializers.py`）新增 `is_scanned` / `page_count` / `cover_url`；章节序列化新增 `page_index`。
 
 ### 5.4 新增 API（`backend/app/api/routes/books.py`）
@@ -261,9 +261,9 @@
 ### 5.5 聊天页图附件（`backend/app/api/routes/chat.py` + `backend/app/services/chat_service.py`）
 
 - 开关：设置页「发送页面图片」（键 `ai_send_page_image`，环境变量 `AI_SEND_PAGE_IMAGE`，默认关闭；需同时开启隐私开关「发送书籍正文」才生效）。
-- `chat.py::_page_image_data_uri(book, chapter, send_enabled)`：扫描版且当前章节带 `page_index` 时读取 `pages/page_XXX.jpg`，编码为 `data:image/jpeg;base64,...`。
-- `chat_service.py::build_messages(..., page_image=None)`：`enable_body_send` 为真且传入页图时，用户消息改为 parts 列表（文本 + `image_url` 部件）；隐私开关关闭时**不附带页图**。
-- `LLMClient`（`backend/app/ai/client.py`）：chat 模式原样传递 messages（含图片部件）；responses 模式经 `_content_text` 提取纯文本（图片隐式退化，多模态需模型与接口支持）。
+- **v1.129 已删除原图直发**（`page_image_data_uri`，决策 36）：主模型只收文本——PDF 页模式优先注入 [P-1,P,P+1] 窗口页缓存文本（`ensure_window_caches` 按需视觉提取，命中不重复调用）。
+- `chat_service.py::build_messages`：`ai_send_page_image` + 隐私开关开启时，页模式注入页缓存文本（出处「第 X 页」）；划线裁剪图（`crop_image`）与 Markdown 正文插图经 `extract_image_attachment` 视觉提取文本后注入（内容寻址缓存 `data/cache/attachment_text/`）；隐私关闭一律不注入。
+- `LLMClient`（`backend/app/ai/client.py`）：文本主模型只收文本消息；图片统一在 `vision_extract.extract_image_attachment` 内走多模态端点提取为文本后再注入主模型。
 
 ### 5.6 前端（`frontend/src/`）
 
@@ -325,7 +325,7 @@
 - **位置书签（适配所有格式）**：
   - 后端：`Bookmark` 表（`book_id/chapter_id/page_index/para_pos/title/note/group_name/created_at`，随书删除级联清理）；仓储 `repositories/bookmarks.py`；路由 `api/routes/bookmarks.py`。
   - API：`GET/POST /api/books/{id}/bookmarks`（列表默认时间倒序 / 新增）、`PATCH/DELETE /api/bookmarks/{id}`（改标题/备注/分组 / 删除）。
-  - 前端：`BookmarkDrawer.vue` 书签抽屉（倒序平铺 + 分组视图、新增当前章节/页书签、编辑/删除、点击定位跳转）；阅读页工具栏「🔖 书签」按钮。
+  - 前端：`BookmarkDrawer.vue` 书签抽屉（倒序平铺 + 分组视图、新增当前章节/页书签、编辑/删除、点击定位跳转）；阅读页工具栏「🔖 书签」按钮。**创建侧记录当前段落（I-9）**：ReaderView 用 `utils/viewport.ts::viewportTopPara` 维护视口顶部段落，新建文本书签时随请求写入 `para_pos`（此前恒 null，书签跳转失效）。
   - 跳转：PDF 书签按 `page_index` 找到对应页章节加载；文本书签按 `chapter_id + para_pos` 加载章节后滚动到 `[data-para]` 段落。
 - **PDF 页图涂鸦（按页阅读时）**：
   - 后端：`api/routes/annotations.py`——`GET/PUT /api/books/{id}/annotations?page_index=N`，读写 `data/books/<书目录>/annotations/page_XXX.json`；删除书籍时 `books_service._remove_book_files` 清理 `annotations/` 目录。
@@ -358,7 +358,7 @@
 | --- | --- |
 | `src/api/annotations.ts` | `listBookmarks/createBookmark/updateBookmark/deleteBookmark`（复用 `client.ts`，新增 `put` 封装） |
 | `src/components/BookmarkDrawer.vue` | 书签抽屉：时间倒序平铺 + 分组视图、添加当前章节/页书签（书名/分组）、编辑/删除、`jump` 事件 |
-| `src/views/ReaderView.vue` | 「🔖 书签」按钮 + `BookmarkDrawer` 集成；`jumpToBookmark`（PDF 按 `page_index` 定位页章节；文本书按 `chapter_id+para_pos` 滚动 `[data-para]`）；`scrollToPara` 段落滚动 |
+| `src/views/ReaderView.vue` | 「🔖 书签」按钮 + `BookmarkDrawer` 集成；`jumpToBookmark`（PDF 按 `page_index` 定位页章节；文本书按 `chapter_id+para_pos` 滚动 `[data-para]`）；`scrollToPara` 段落滚动；`currentParaIndex`（`viewportTopPara`）随滚动/换章更新并传入创建表单（I-9） |
 
 - 修改：`BookmarkDrawer` 的分组由 `group_name` 字符串表达；如需多级分组/文件夹树，在 `Bookmark` 表加 `parent_group_id` 并扩展抽屉分组树。
 
@@ -419,7 +419,7 @@
 | --- | --- | --- | --- |
 | `parse_pdf(path, title_hint=None)` | PDF（含文本型）统一按原始页切章：每页一章（标题「第 N 页」，content 为空，`page_index=N`），`is_scanned=True`；本地抽取文本按页放入 `ParsedBook.page_texts`（仅作全文检索索引） | 路径 | `ParsedBook` |
 | `render_pdf_page(path, page_index, out_path, max_width=0, quality=90, zoom=None)` | 渲染指定页为图片（默认按内嵌原图分辨率自动放大；封面用 max_width） | 路径/页号/输出路径 | `Path` |
-| `render_pdf_pages(path, out_dir, max_width=0, quality=90)` | 渲染全部页为 `page_XXX.jpg` | 路径/目录 | 页数 |
+| `render_pdf_pages(path, out_dir, max_width=0, quality=90, workers=None)` | 渲染全部页为 `page_XXX.jpg`（workers=None 串行；>1 按 `page_render_concurrency` 并发，三审订正） | 路径/目录 | 页数 |
 | `pdf_page_target_width / jpeg_width` | 目标像素宽度（原图）/ 已渲染页图宽度（低清升级判断） | — | int |
 
 **如何使用**：导入 PDF 时 `import_service.import_book_file` 自动渲染全部页到 `<书目录>/pages/`，并把本地抽取文本写入 `<书目录>/local_text/page_XXX.txt`；阅读页按「第 N 页」章节展示原图。
@@ -470,7 +470,7 @@
 ### 9.5 提问链路（对话 + 脑图）
 
 - `services/ai_context.py`：新增 `build_page_context_block(window_texts, enable_body_send)`（组装「【第 N 页】+ 文本」块）；`extract_citations` 支持【第X页】（para='页'）。
-- `api/routes/chat.py`：PDF 按页章节提问时，若已配置多模态且隐私开启，先 `ensure_window_caches` 提取窗口并注入页缓存文本（出处「第 X 页」）；提取失败/未配置时回退当前页原图附件（`page_image_data_uri`）。
+- `chat_service.build_messages`：PDF 按页章节提问时（`ai_send_page_image` + 隐私开启），先 `ensure_window_caches` 按需提取 [P-1,P,P+1] 窗口页缓存并注入文本（出处「第 X 页」）；提取失败仅降级纯文本，不再回退直发页图（决策 36，v1.129 删除 `page_image_data_uri`）。
 - `services/mindmap_service.py`：脑图生成同样优先页缓存文本。
 - 前端 `ReaderChatPanel.vue` 引用 chip 兼容「第X页」。
 

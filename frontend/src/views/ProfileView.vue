@@ -111,7 +111,7 @@
             <h3>冷画像</h3>
             <p>L3 · 长期偏好</p>
           </div>
-          <el-button v-if="!coldEditing" size="small" type="primary" plain @click="openColdEdit">?? ??</el-button>
+          <el-button v-if="!coldEditing" size="small" type="primary" plain @click="openColdEdit">✏️ 编辑</el-button>
         </header>
         <div class="layer-body">
           <template v-if="!coldEditing">
@@ -262,10 +262,10 @@ const hotProgress = computed(() => Math.round((Number(profiles.value.hot?.progre
 const chapterFlow = computed(() => ((profiles.value.hot?.chapter_titles as string[] | undefined) || []).join(' → ') || '—')
 
 const statCards = computed(() => [
-  { icon: '🔥', label: '热画像', value: profiles.value.hot?.current_title ? 1 : 0, color: '#f56c6c' },
-  { icon: '🌤️', label: '暖画像归档', value: Number(profiles.value.warm?.archived_count ?? 0), color: '#e6a23c' },
-  { icon: '🧊', label: '领域偏好', value: prefs.value.length, color: '#409eff' },
-  { icon: '📖', label: '已读章节', value: rec.value?.stats?.read_chapters ?? 0, color: '#67c23a' },
+  { icon: '🔥', label: '热画像', value: profiles.value.hot?.current_title ? 1 : 0, color: 'var(--status-err)' },
+  { icon: '🌤️', label: '暖画像归档', value: Number(profiles.value.warm?.archived_count ?? 0), color: 'var(--status-warn)' },
+  { icon: '🧊', label: '领域偏好', value: prefs.value.length, color: 'var(--accent)' },
+  { icon: '📖', label: '已读章节', value: rec.value?.stats?.read_chapters ?? 0, color: 'var(--status-ok)' },
   { icon: '⏰', label: '建议复习', value: dueReviewCount.value, color: '#9b59b6' },
 ])
 
@@ -398,7 +398,7 @@ onMounted(refresh)
 .head-left { display: flex; flex-direction: column; gap: 4px; }
 .page-head h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
 .title-ico { font-size: 20px; }
-.head-sub { color: var(--text-secondary); font-size: 12px; line-height: 1.6; max-width: 720px; margin: 0; }
+.head-sub { color: var(--text-secondary); font-size: 13px; line-height: 1.6; max-width: 720px; margin: 0; }
 .head-actions { display: flex; gap: 8px; }
 
 /* 统计卡片 */
@@ -407,14 +407,14 @@ onMounted(refresh)
 .stat-ico { font-size: 20px; }
 .stat-body { display: flex; flex-direction: column; line-height: 1.25; }
 .stat-body b { font-size: 19px; color: var(--sc, var(--primary-color)); }
-.stat-body span { font-size: 12px; color: var(--text-secondary); }
+.stat-body span { font-size: 13px; color: var(--text-secondary); }
 
 /* 三层画像 */
 .layers { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 16px; }
 .layer-card { background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
-.layer-hot { border-top: 4px solid #f56c6c; }
-.layer-warm { border-top: 4px solid #e6a23c; }
-.layer-cold { border-top: 4px solid #409eff; }
+.layer-hot { border-top: 4px solid var(--status-err); }
+.layer-warm { border-top: 4px solid var(--status-warn); }
+.layer-cold { border-top: 4px solid var(--accent); }
 .layer-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border-color); }
 .layer-ico { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--panel-bg); }
 .layer-hot .layer-ico { background: rgba(245, 108, 108, .12); }
@@ -422,7 +422,7 @@ onMounted(refresh)
 .layer-cold .layer-ico { background: rgba(64, 158, 255, .12); }
 .layer-id { flex: 1; min-width: 0; }
 .layer-id h3 { margin: 0; font-size: 15px; }
-.layer-id p { margin: 2px 0 0; font-size: 12px; color: var(--text-secondary); }
+.layer-id p { margin: 2px 0 0; font-size: 13px; color: var(--text-secondary); }
 .layer-body { padding: 12px 16px 14px; }
 .layer-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 0; color: var(--text-secondary); }
 .layer-empty p { margin: 0; font-size: 13px; }
@@ -430,23 +430,23 @@ onMounted(refresh)
 
 .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .kv-item { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--panel-bg); border-radius: 8px; }
-.kv-item span { font-size: 12px; color: var(--text-secondary); }
+.kv-item span { font-size: 13px; color: var(--text-secondary); }
 .kv-item b { font-size: 13px; line-height: 1.5; word-break: break-all; }
 .kv-row { margin-bottom: 8px; }
-.kv-row > span { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.kv-row > span { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
 .chapter-flow { font-size: 13px; line-height: 1.9; background: var(--panel-bg); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
 
 .sub-head { display: flex; align-items: center; justify-content: space-between; margin: 10px 0 6px; font-size: 13px; font-weight: 600; }
-.sub-count { font-size: 12px; color: var(--text-secondary); font-weight: 400; }
+.sub-count { font-size: 13px; color: var(--text-secondary); font-weight: 400; }
 .book-list { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .book-list li { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--panel-bg); border-radius: 8px; font-size: 13px; }
 .book-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.warm-dot { background: #e6a23c; }
-.cool-dot { background: #409eff; }
-.due-dot { background: #f56c6c; }
-.ok-dot { background: #67c23a; }
+.warm-dot { background: var(--status-warn); }
+.cool-dot { background: var(--accent); }
+.due-dot { background: var(--status-err); }
+.ok-dot { background: var(--status-ok); }
 .book-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rec-days { color: var(--text-secondary); font-size: 12px; }
+.rec-days { color: var(--text-secondary); font-size: 13px; }
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip-flow { font-size: 13px; line-height: 1.9; background: var(--panel-bg); border-radius: 8px; padding: 8px 10px; word-break: break-all; }
 .empty { color: var(--text-secondary); font-size: 13px; margin: 6px 0; }
@@ -455,36 +455,37 @@ onMounted(refresh)
 .panel { background: var(--reading-bg); border: 1px solid var(--border-color); border-radius: 14px; padding: 14px 18px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0, 0, 0, .03); }
 .panel-head { margin-bottom: 10px; }
 .panel-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
-.panel-head p { margin: 2px 0 0; font-size: 12px; color: var(--text-secondary); }
+.panel-head p { margin: 2px 0 0; font-size: 13px; color: var(--text-secondary); }
 
 /* 阈值 */
 .learn-banner { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 12px; margin-bottom: 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; }
 .learn-item { display: flex; flex-direction: column; gap: 6px; }
-.learn-label { font-size: 12px; color: var(--text-secondary); }
-.learn-val { font-size: 12px; }
+.learn-label { font-size: 13px; color: var(--text-secondary); }
+.learn-val { font-size: 13px; }
 .learn-text { justify-content: center; }
 .learn-text .learn-val { font-size: 13px; }
 .thr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .thr-item { display: flex; flex-direction: column; gap: 6px; font-size: 13px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--panel-bg); }
 .thr-item label { font-size: 13px; font-weight: 600; }
-.thr-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.thr-desc { color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
 .thr-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-.thr-hint { color: var(--text-secondary); font-size: 12px; }
+.thr-hint { color: var(--text-secondary); font-size: 13px; }
 
 /* 阅读建议 */
 .rec-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px; }
 .rec-stat { padding: 10px 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; text-align: center; }
 .rec-stat b { display: block; font-size: 18px; }
-.rec-stat span { font-size: 12px; color: var(--text-secondary); }
-.rec-stat .c1 { color: #f56c6c; }
-.rec-stat .c2 { color: #e6a23c; }
-.rec-stat .c3 { color: #67c23a; }
-.rec-stat .c4 { color: #409eff; }
+.rec-stat span { font-size: 13px; color: var(--text-secondary); }
+.rec-stat .c1 { color: var(--status-err); }
+.rec-stat .c2 { color: var(--status-warn); }
+.rec-stat .c3 { color: var(--status-ok); }
+.rec-stat .c4 { color: var(--accent); }
 .rec-stat .c5 { color: #909399; }
 .rec-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
 .rec-col { min-width: 0; }
 .cold-edit-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cold-edit-row .el-input { flex: 1; }
+.cold-edit-row :deep(.el-input-number__decrease), .cold-edit-row :deep(.el-input-number__increase), .thr-item :deep(.el-input-number__decrease), .thr-item :deep(.el-input-number__increase) { min-height: 24px; } /* E2E 五轮 #5：数字步进按钮可点击高度 >= 24px */
 .cold-edit-actions { display: flex; gap: 8px; margin-top: 12px; }
 .rhythm { padding: 10px 12px; background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 10px; font-size: 13px; line-height: 1.7; margin-top: 12px; }
 </style>

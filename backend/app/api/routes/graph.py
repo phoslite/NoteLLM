@@ -5,8 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
 from app.core.database import get_db
-from app.models.graph import BookRelation
-from app.repositories.graph import count_books, count_relations
+from app.repositories.graph import count_books, count_relations, get_relation, list_book_ids
 from app.schemas.common import ok
 from app.services.graph.cross_book import global_graph_payload
 from app.services.graph.cross_book import knowledge_appears_in as cross_book_knowledge_appears_in
@@ -18,7 +17,7 @@ from app.services.graph.tasks import (
     sync_assets_task,
 )
 from app.services.graph_sync import apply_relation_feedback
-from app.tasks import find_active, submit
+from app.tasks import find_recent_success, submit_dedupe
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -29,11 +28,9 @@ class FeedbackIn(BaseModel):
 
 
 def _submit_graph_task(task_type: str, name: str, fn, related_id: int | None = None) -> str:
-    """提交图谱类后台任务；同类型同目标进行中时复用已有任务（幂等，避免重复计算）。"""
-    existing = find_active(task_type, related_id=related_id, name_prefix=name)
-    if existing:
-        return existing
-    return submit(task_type, name, fn, related_id=related_id)
+    """提交图谱类后台任务；同类型同目标进行中时复用已有任务（原子防重，I-3 修复）。"""
+    task_id, _ = submit_dedupe(task_type, name, fn, related_id=related_id, name_prefix=name)
+    return task_id
 
 
 @router.get("/books")
@@ -45,6 +42,14 @@ def get_global_graph(db: Session = Depends(get_db)):
     """
 
     if count_relations(db) == 0 and count_books(db) > 0:
+        # 终审 F7：构建成功但关系数为 0（单书库等真值场景）时，submit_dedupe 只防
+        # 「进行中」任务，完成后每次 GET 都会重复提交全量重建+LLM 打分。若最近一次
+        # 成功构建时的书籍数未变 → 空图谱为真值，直接返回不重提；新书导入后书籍数
+        # 变化会自动触发重建。
+        recent = find_recent_success("text", "graph-global-build")
+        # 终审 §6.9：按书籍 id 集合指纹判定（数量判定会在「删书+导入同数量书」时误判为未变）
+        if recent is not None and (recent.get("result") or {}).get("book_ids") == list_book_ids(db):
+            return ok(global_graph_payload(db))
         task_id = _submit_graph_task("text", "graph-global-build", lazy_global_build)
         return ok({"building": True, "task_id": task_id}, "图谱构建中，稍后自动刷新")
     return ok(global_graph_payload(db))
@@ -105,7 +110,7 @@ def rebuild_book_graph(book_id: int, db: Session = Depends(get_db)):
 @router.post("/relations/{relation_id}/feedback")
 def relation_feedback(relation_id: int, body: FeedbackIn, db: Session = Depends(get_db)):
     """人工反馈：确认/忽略/修改强度，结果回写作为后续计算的修正层；确认/修改联动补 RAG 存根。"""
-    rel = db.get(BookRelation, relation_id)
+    rel = get_relation(db, relation_id)
     if not rel:
         raise HTTPException(status_code=404, detail="关联不存在")
     try:

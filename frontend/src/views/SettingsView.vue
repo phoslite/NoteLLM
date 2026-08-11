@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAiSettings, reloadEnvSettings, saveAiSettings, testAiSettings, testSelectorAiSettings, testVisionAiSettings } from '@/api/settings'
 import type { AiSettings } from '@/types'
 import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
+import { AI_TEST_TASK_TIMEOUT_MS } from '@/utils/constants'
 
 const loading = ref(false)
 const testing = ref(false)
@@ -307,7 +308,7 @@ async function test() {
     // 测试连接后台化（决策 35）：提交任务后轮询结果
     const { task_id } = await testAiSettings(toPayload())
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000, signal: taskAbort.signal })
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: AI_TEST_TASK_TIMEOUT_MS, signal: taskAbort.signal })
     if (t.status === 'failed') {
       ElMessage.error(t.error || '连接测试失败')
     } else {
@@ -328,7 +329,7 @@ async function testVision() {
   try {
     const { task_id } = await testVisionAiSettings(toPayload())
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000, signal: taskAbort.signal })
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: AI_TEST_TASK_TIMEOUT_MS, signal: taskAbort.signal })
     if (t.status === 'failed') {
       ElMessage.error(t.error || '视觉连接测试失败')
     } else {
@@ -349,7 +350,7 @@ async function testSelector() {
   try {
     const { task_id } = await testSelectorAiSettings(toPayload())
     notifyTaskSubmitted()
-    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: 120000, signal: taskAbort.signal })
+    const t = await waitForTask(task_id, { intervalMs: 1000, timeoutMs: AI_TEST_TASK_TIMEOUT_MS, signal: taskAbort.signal })
     if (t.status === 'failed') {
       ElMessage.error(t.error || '挑选器连接测试失败')
     } else {
@@ -462,18 +463,20 @@ onMounted(load)
 .head-left { display: flex; flex-direction: column; gap: 6px; }
 .page-head h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
 .title-ico { font-size: 20px; }
-.head-sub { color: var(--text-secondary); font-size: 12px; line-height: 1.7; max-width: 720px; margin: 0; }
+.head-sub { color: var(--text-secondary); font-size: 13px; line-height: 1.7; max-width: 720px; margin: 0; }
 .head-actions { display: flex; gap: 8px; }
 
 /* 页签 */
 .settings-tabs { margin-top: 6px; }
+.settings-tabs :deep(.el-tabs__item.is-active) { color: #2f6fb0; } /* E2E 二轮：激活 tab 蓝字对比度 2.78:1 → #2f6fb0（≥4.5:1） */
+.settings-tabs :deep(.el-tabs__item.is-active::after) { background-color: #2f6fb0; }
 .settings-tabs :deep(.el-tabs__header) { margin-bottom: 16px; }
 .settings-tabs :deep(.el-tabs__nav-wrap::after) { height: 1px; }
 .settings-tabs :deep(.el-tabs__item) { font-size: 14px; padding: 0 18px; height: 44px; }
 .tab-label { display: inline-flex; align-items: center; gap: 6px; }
 
 .tab-panel { display: flex; flex-direction: column; gap: 16px; }
-.panel-desc { color: var(--text-secondary); font-size: 12px; margin: 0; padding: 0 2px; }
+.panel-desc { color: var(--text-secondary); font-size: 13px; margin: 0; padding: 0 2px; }
 
 /* 分区面板 */
 .panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px 20px 6px; box-shadow: var(--shadow-sm); }
@@ -490,7 +493,7 @@ onMounted(load)
 .field-label { display: inline-flex; align-items: center; gap: 6px; }
 .key-tag { transform: scale(.86); transform-origin: left center; }
 .num-input, .sel-input { width: 100%; }
-.tip { color: var(--text-secondary); font-size: 12px; line-height: 1.6; display: block; margin-top: 5px; padding: 6px 10px; background: var(--panel-bg); border-radius: 8px; border-left: 3px solid var(--primary-soft); }
+.tip { color: var(--text-secondary); font-size: 13px; line-height: 1.6; display: block; margin-top: 5px; padding: 6px 10px; background: var(--panel-bg); border-radius: 8px; border-left: 3px solid var(--primary-soft); }
 .actions { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 0 16px; border-top: 1px dashed var(--border-color); margin-top: 2px; }
 
 @media (max-width: 720px) {

@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import type { MindMapNode } from '@/types'
+import { escapeHtml } from '@/utils/graphLabel'
 import { toPlainDisplayText } from '@/utils/text'
 
 const props = defineProps<{
@@ -22,7 +23,7 @@ const emit = defineEmits<{
 const el = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 
-const TYPE_COLOR: Record<string, string> = { 大纲: '#409eff', 细节: '#67c23a', 重要定理: '#f56c6c' }
+const TYPE_COLOR: Record<string, string> = { 大纲: '#2f6fb0', 细节: '#529b2e', 重要定理: '#e0382e' } // 四轮 MO1：与 theme.css 语义 token 同值（ECharts canvas 不支持 CSS var，用字面量）
 
 function buildTree(node: MindMapNode): Record<string, any> {
   return {
@@ -45,7 +46,7 @@ function render() {
         formatter: (p: any) => {
           const d = p.data ?? {}
           const ref = d.ref ? `【第${d.ref.chapter}章 第${d.ref.para}段】` : ''
-          return `<b>${d.name}</b><br/>类型：${d.value}${ref ? `<br/>出处：${ref}` : ''}`
+          return `<b>${escapeHtml(String(d.name ?? ''))}</b><br/>类型：${d.value}${ref ? `<br/>出处：${escapeHtml(ref)}` : ''}`
         },
       },
       series: [
@@ -137,9 +138,9 @@ watch(
       </div>
     </div>
     <div class="mindmap-legend">
-      <span><i class="dot" style="background:#409eff"></i>大纲</span>
-      <span><i class="dot" style="background:#67c23a"></i>细节</span>
-      <span><i class="dot" style="background:#f56c6c"></i>重要定理</span>
+      <span><i class="dot" style="background:#2f6fb0"></i>大纲</span>
+      <span><i class="dot" style="background:#529b2e"></i>细节</span>
+      <span><i class="dot" style="background:#e0382e"></i>重要定理</span>
       <span class="legend-tip">点击节点可跳转原文</span>
     </div>
     <div v-if="loading" class="mindmap-tip">生成中…（大章节可能需要几十秒，请稍候）</div>
@@ -155,13 +156,13 @@ watch(
 .mindmap-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mindmap-cached { font-size: 11px; color: var(--primary-color); border: 1px solid var(--primary-color); border-radius: 4px; padding: 0 6px; opacity: 0.85; flex: none; }
 .mindmap-actions { display: flex; gap: 6px; flex: none; flex-wrap: wrap; }
-.mindmap-legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; flex-wrap: wrap; }
+.mindmap-legend { display: flex; gap: 14px; align-items: center; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; flex-wrap: wrap; }
 .mindmap-legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
 .mindmap-legend .legend-tip { margin-left: auto; color: #909399; }
 .mindmap-canvas { flex: 1; min-height: 380px; }
 .mindmap-tip { color: var(--text-secondary); padding: 40px 0; text-align: center; }
-.mindmap-tip.error { color: #f56c6c; }
-.mini-btn { border: 1px solid var(--border-color); background: transparent; border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.mindmap-tip.error { color: var(--status-err); }
+.mini-btn { border: 1px solid var(--border-color); background: transparent; border-radius: 4px; padding: 5px 10px; font-size: 13px; cursor: pointer; min-height: 24px; display: inline-flex; align-items: center; }
 .mini-btn:hover:not(:disabled) { border-color: var(--primary-color); color: var(--primary-color); }
 .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

@@ -15,6 +15,7 @@ from app.repositories.graph import (
     list_books,
     list_books_by_ids,
     list_books_except,
+    list_feedback_relations,
     list_knowledge_points,
     list_notes,
     list_relations,
@@ -24,6 +25,8 @@ from app.services.graph.edges import pair_key
 from app.services.graph.intra_book import build_intra_book_graph
 from app.services.graph.keywords import book_keywords, extract_keywords
 from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
+from app.services.graph.similarity import idf_weights, pair_similarity
+from app.services.graph.terms import canonical_terms
 from app.services.graph_sync import link_graph_assets
 
 
@@ -53,53 +56,79 @@ def _note_weight(
 
 def _pair_score(
     db: Session, a: Book, b: Book, ka: dict[str, float], kb: dict[str, float],
-    notes_by_book: dict[int, list[Note]],
+    notes_by_book: dict[int, list[Note]], idf: dict[str, float],
 ) -> tuple[float, list[str]] | None:
-    """两书关联评分：关键词共现余弦分 + 笔记加权；低于阈值返回 None（不建边）。"""
-    if not ka or not kb:
+    """两书关联评分（L2）：IDF 加权余弦 ×100 + 笔记加权；低于 τ_edge 返回 None（不建边）。"""
+    result = pair_similarity(ka, kb, idf)
+    if result is None:
         return None
-    common = set(ka) & set(kb)
-    if not common:
-        return None
-    dot = sum(min(ka[t], kb[t]) for t in common)
-    denom = (sum(ka.values()) ** 0.5) * (sum(kb.values()) ** 0.5)
-    score = round(100.0 * (dot / denom if denom else 0.0), 1)
-    if score < 1.0:
-        return None
-    score = min(100.0, round(score + _note_weight(notes_by_book, a.id, b.id, common), 1))
-    reasons = sorted(common, key=lambda t: min(ka[t], kb[t]), reverse=True)[:5]
+    sim, reasons = result
+    score = round(100.0 * sim, 1)
+    score = min(100.0, round(score + _note_weight(notes_by_book, a.id, b.id, set(reasons)), 1))
     return score, reasons
+
+
+def _overlapping_pairs(books: list, keywords: dict[int, dict[str, float]]) -> set[tuple[int, int]]:
+    """倒排索引生成「有共同关键词」的书对集合（去重、规范序）。
+
+    与原全量两两枚举等价：无共同关键词的对在 _pair_score 中必然返回 None（不建边），
+    此处直接跳过；有共同词的对全部保留，评分逻辑不变（2026-08-06 性能优化）。
+    """
+    inverted: dict[str, list[int]] = {}
+    for b in books:
+        for term in keywords.get(b.id, {}):
+            inverted.setdefault(term, []).append(b.id)
+    pairs: set[tuple[int, int]] = set()
+    for ids in inverted.values():
+        if len(ids) < 2:
+            continue
+        uniq = sorted(set(ids))
+        for i in range(len(uniq)):
+            for j in range(i + 1, len(uniq)):
+                a_id, b_id = uniq[i], uniq[j]
+                pairs.add((a_id, b_id) if a_id < b_id else (b_id, a_id))
+    return pairs
 
 
 def compute_cross_book_graph(db: Session) -> dict:
     """重建全部书籍关联（先清空再计算）：关键词共现余弦分 + 笔记加权；同聚类低分「主题相似」边。"""
     books = list_books(db)
-    keywords = {b.id: book_keywords(b) for b in books}
+    books_by_id = {b.id: b for b in books}
+    keywords = {b.id: canonical_terms(book_keywords(b, db=db)) for b in books}
+    idf = idf_weights(keywords)
     notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载，_pair_score 直接查内存
+    # 终审 §6.9：重建保留人工反馈（确认/忽略/修改），避免用户反复处理同一关联
+    feedback: dict[tuple[int, int], dict] = {
+        pair_key(r.book_a_id, r.book_b_id): {"feedback": r.user_feedback, "strength": r.strength}
+        for r in list_feedback_relations(db)
+    }
     clear_relations(db)
     pairs: set[tuple[int, int]] = set()
     created: dict[tuple[int, int], BookRelation] = {}
     candidates: list[tuple[int, int, float]] = []
 
-    for i, a in enumerate(books):
-        for b in books[i + 1 :]:
-            result = _pair_score(db, a, b, keywords.get(a.id, {}), keywords.get(b.id, {}), notes_by_book)
-            if not result:
-                continue
-            score, reasons = result
-            key = pair_key(a.id, b.id)
-            rel = BookRelation(
-                book_a_id=key[0],
-                book_b_id=key[1],
-                strength=score,
-                direction="无",
-                relation_type="概念共现",
-                reasons_json=json.dumps(reasons, ensure_ascii=False),
-            )
-            db.add(rel)
-            created[key] = rel
-            pairs.add(key)
-            candidates.append((a.id, b.id, score))
+    # 倒排索引（2026-08-06）：只枚举有共同关键词的书对，稀疏场景 O(N²K) → O(Σ df(k)²)
+    pair_ids = _overlapping_pairs(books, keywords)
+    for a_id, b_id in pair_ids:
+        a = books_by_id[a_id]
+        b = books_by_id[b_id]
+        result = _pair_score(db, a, b, keywords.get(a_id, {}), keywords.get(b_id, {}), notes_by_book, idf)
+        if not result:
+            continue
+        score, reasons = result
+        key = pair_key(a.id, b.id)
+        rel = BookRelation(
+            book_a_id=key[0],
+            book_b_id=key[1],
+            strength=score,
+            direction="无",
+            relation_type="概念共现",
+            reasons_json=json.dumps(reasons, ensure_ascii=False),
+        )
+        db.add(rel)
+        created[key] = rel
+        pairs.add(key)
+        candidates.append((a.id, b.id, score))
 
     # 同聚类但关键词重叠不足的书：补「主题相似」低分边（同领域基础关联）
     clusters = assign_clusters(db, books)
@@ -119,9 +148,16 @@ def compute_cross_book_graph(db: Session) -> dict:
                     reasons_json=json.dumps([f"同属「{ca}」领域"], ensure_ascii=False),
                 )
             )
+    # 回填人工反馈：忽略/确认保持原状；「修改」保留用户指定强度
+    for key, rel in created.items():
+        saved = feedback.get(key)
+        if not saved:
+            continue
+        rel.user_feedback = saved["feedback"]
+        if saved["feedback"] == "修改" and saved["strength"] is not None:
+            rel.strength = saved["strength"]
     db.flush()
     db.commit()  # 审查 B-1（问题5）：清理与本地边先落库，避免 LLM 打分期间持有 SQLite 写锁（分钟级）
-    books_by_id = {b.id: b for b in books}
     llm_results = enrich_pairs_with_llm(db, books_by_id, keywords, candidates)
     for key, result in llm_results.items():
         rel = created.get(key)
@@ -140,7 +176,8 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
     others = list_books_except(db, book.id)
     if not others:
         return {"relations_added": 0, "linked": 0}
-    keywords = {b.id: book_keywords(b) for b in [book, *others]}
+    keywords = {b.id: canonical_terms(book_keywords(b, db=db)) for b in [book, *others]}
+    idf = idf_weights(keywords)
     notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载
     existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in list_relations(db)}
     added = 0
@@ -167,13 +204,14 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
         candidates.append((a.id, b.id, score))
 
     for other in others:
-        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book)
+        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book, idf)
         if result:
             score, reasons = result
             add_pair(book, other, score, reasons, "概念共现")
 
     # 同聚类低分边（新书归属簇与其它书一致时补「主题相似」）
-    clusters = assign_clusters(db, [book, *others])
+    # A-I3：增量补边必须用全量人口聚类（子集 IDF/簇与全局矛盾，且子集 persist 会写坏全量缓存）
+    clusters = assign_clusters(db, list_books(db))
     ca = clusters.get(book.id, "其他")
     if ca not in ("", "其他"):
         for other in others:
@@ -328,3 +366,4 @@ def rebuild_all_graph(db: Session, on_progress=None) -> dict:
         "knowledge_points": count_knowledge_points(db),
         "linked": linked["stubs"],
     }
+

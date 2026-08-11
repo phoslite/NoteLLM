@@ -41,9 +41,9 @@ const intraStats = computed(() => ({
 .stat-card.mini b { font-size: 17px; }
 .stat-body { display: flex; flex-direction: column; line-height: 1.25; }
 .stat-body b { font-size: 19px; color: var(--sc, var(--primary-color)); }
-.stat-body span { font-size: 12px; color: var(--text-secondary); }
+.stat-body span { font-size: 13px; color: var(--text-secondary); }
 .filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 0 12px; }
 .filter-label { color: var(--text-secondary); font-size: 13px; flex-shrink: 0; }
 .level-tags { display: flex; gap: 6px; flex-wrap: wrap; }
-.count-tip { color: var(--text-secondary); font-size: 12px; margin-left: auto; }
+.count-tip { color: var(--text-secondary); font-size: 13px; margin-left: auto; }
 </style>

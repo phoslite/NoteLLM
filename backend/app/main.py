@@ -1,9 +1,11 @@
 """应用入口：FastAPI + CORS + 启动建表。"""
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import app.models  # noqa: F401  注册全部 ORM 模型到 Base.metadata（init_db 建全量表）
 from app.api.routes import (
     ai_chat as ai_chat_routes,
 )
@@ -73,8 +75,7 @@ app.include_router(settings_routes.router)
 def migrate_book_media() -> None:
     """启动迁移：旧版扁平书籍目录 → 独立子目录 + 封面回填；失败不阻塞启动。"""
     try:
-
         with SessionLocal() as db:
             migrate_all_books(db)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 启动迁移失败不阻塞服务
+        logging.getLogger(__name__).warning("启动媒体迁移失败: %s", exc)

@@ -1,8 +1,8 @@
 """M9 三层画像：热画像回写、归档迁移（热→暖 / 暖→冷 / >3 沉淀）、暖记忆联动与画像 API。"""
 from app.core.database import SessionLocal
 from app.models.book import Book
+from app.services.profile_learning import DEFAULT_WARM_THRESHOLD
 from app.services.profile_service import (
-    WARM_TO_COLD_THRESHOLD,
     get_all_profiles,
     migrate_profiles_on_archive,
     reset_profiles,
@@ -74,7 +74,7 @@ def test_archive_migrates_hot_to_warm(client):
 
 def test_warm_to_cold_migration_at_threshold(client):
     """跨 3 本 → 暖画像归档至冷画像（domain_preferences / long_term_interests）。"""
-    ids = [_import_md(client, f"阈值书{i}.md", f"# 第一章\n\n第{i}章内容。\n") for i in range(WARM_TO_COLD_THRESHOLD)]
+    ids = [_import_md(client, f"阈值书{i}.md", f"# 第一章\n\n第{i}章内容。\n") for i in range(DEFAULT_WARM_THRESHOLD)]
     db = SessionLocal()
     try:
         for i, bid in enumerate(ids):
@@ -84,7 +84,7 @@ def test_warm_to_cold_migration_at_threshold(client):
         assert cold["domain_preferences"], "暖转冷后冷画像应有领域偏好"
         assert cold["long_term_interests"]
         warm = profiles["warm"]
-        assert warm["archived_count"] == WARM_TO_COLD_THRESHOLD
+        assert warm["archived_count"] == DEFAULT_WARM_THRESHOLD
         assert len(warm["recent_books"]) <= 2
     finally:
         db.close()
@@ -170,8 +170,9 @@ def test_recommendations_api(client):
 
 def test_recommendations_review_due_and_rhythm(client):
     """暖画像近期书超过复习间隔 -> due=True；沉淀 5 本 -> stable 节奏文案。"""
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
+    from app.core.time import utcnow
     from app.services.profile_service import COLD, WARM, _save
 
     db = SessionLocal()
@@ -179,7 +180,7 @@ def test_recommendations_review_due_and_rhythm(client):
         warm = get_all_profiles(db)["warm"]
         warm["archived_count"] = 5
         warm["recent_books"] = [
-            {"book_id": 1, "title": "旧书", "archived_at": (datetime.now() - timedelta(days=3)).isoformat()}
+            {"book_id": 1, "title": "旧书", "archived_at": (utcnow() - timedelta(days=3)).isoformat()}
         ]
         _save(db, WARM, "default", warm)
         _save(db, COLD, "default", {"domain_preferences": {"数学": 5, "统计学": 3}})
@@ -211,3 +212,25 @@ def test_update_cold_profile_edits_domains_and_interests(client):
     cold2 = r2.json()["data"]
     assert cold2["domain_preferences"] == {"解析数论": 1}
     assert cold2["long_term_interests"] == ["实分析", "参数论 不动点"]
+
+
+def test_archive_other_book_does_not_carry_hot_highlights(client):
+    """I-2：归档非热书时，暖画像条目不得携带热画像中其他书的划线与问题。"""
+    a_id = _import_md(client, "热书A.md", "# 第一章\n\n内容。\n")
+    b_id = _import_md(client, "归档书B.md", "# 第一章\n\n内容。\n")
+    book_a = _get_book(a_id)
+    book_b = _get_book(b_id)
+    db = SessionLocal()
+    try:
+        update_hot_profile(
+            db, book_a,
+            highlight={"chapter_id": 1, "type": "划线", "text": "A 书的划线"},
+            question="A 书的问题",
+        )
+        profiles = migrate_profiles_on_archive(db, book_b, rag=_rag("归档书B", ["主题词"]))
+        entry = profiles["warm"]["recent_books"][0]
+        assert entry["book_id"] == b_id
+        assert entry["highlights"] == [], "归档 B 书不应携带 A 书划线"
+        assert entry["questions"] == [], "归档 B 书不应携带 A 书问题"
+    finally:
+        db.close()

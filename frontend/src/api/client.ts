@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { HTTP_TIMEOUT_MS } from '@/utils/constants'
 
 /** 统一请求封装：/api 前缀 + 响应解包（{code, message, data}）。 */
-export const http = axios.create({ baseURL: '/api', timeout: 120000 })
+export const http = axios.create({ baseURL: '/api', timeout: HTTP_TIMEOUT_MS })
 
 http.interceptors.response.use(
   (resp) => {

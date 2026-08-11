@@ -95,16 +95,16 @@ def test_delete_asset_whole_kind(client):
         assert get_asset(db, book_id, "rag") is None
     finally:
         db.close()
-    # 再次删除（不存在）返回 deleted=False
+    # 终审 §6.9：再次删除（不存在）与全库「资源不存在→404」契约一致
     r2 = client.delete(f"/api/books/{book_id}/asset", params={"kind": "rag"})
-    assert r2.json()["data"]["deleted"] is False
+    assert r2.status_code == 404
 
 
 def test_delete_asset_rejects_bad_kind(client):
     book_id = _seed_asset(client, "rag")
     r = client.delete(f"/api/books/{book_id}/asset", params={"kind": "xxx"})
-    assert r.status_code == 200
-    assert "未知资产类型" in r.json()["message"]
+    assert r.status_code == 400
+    assert "未知资产类型" in r.json()["detail"]
 
 
 def test_delete_asset_item_updates_version(client):
@@ -123,9 +123,10 @@ def test_delete_asset_item_updates_version(client):
         assert get_asset(db, book_id, "skill").version == 2
     finally:
         db.close()
-    # 索引越界：不删、version 不变
+    # 索引越界：不删、version 不变（400 + detail，审查 I-2 契约统一）
     r2 = client.delete(f"/api/books/{book_id}/asset/skill/skills/9")
-    assert "资产项不存在" in r2.json()["message"]
+    assert r2.status_code == 400
+    assert "资产项不存在" in r2.json()["detail"]
     db = SessionLocal()
     try:
         assert get_asset(db, book_id, "skill").version == 2
@@ -145,7 +146,8 @@ def test_delete_asset_item_missing_asset(client):
     md = "# 第一章\n\n内容\n".encode()
     book_id = client.post("/api/books", files={"file": ("书.md", md, "text/markdown")}).json()["data"]["id"]
     r = client.delete(f"/api/books/{book_id}/asset/rag/key_points/0")
-    assert "没有 rag 资产" in r.json()["message"]
+    assert r.status_code == 400
+    assert "没有 rag 资产" in r.json()["detail"]
 
 def _book(client, name: str) -> int:
     md = ("# 第一章\n\n内容\n").encode()
@@ -362,13 +364,12 @@ def test_summarize_idempotent_reuses_active_task(client, monkeypatch):
     book_id = r0.json()["data"]["id"]
 
     calls: list = []
-    monkeypatch.setattr(assets_route, "find_active", lambda *a, **k: "existing-task-1")
-    monkeypatch.setattr(assets_route, "submit", lambda *a, **k: calls.append(a) or "new-task")
+    monkeypatch.setattr(assets_route, "submit_dedupe", lambda *a, **k: calls.append(a) or ("existing-task-1", False))
     r = client.post(f"/api/books/{book_id}/summarize")
     body = r.json()
     assert body["code"] == 0, body
     assert body["data"]["task_id"] == "existing-task-1"
-    assert calls == [], "已有进行中任务时不应重复提交"
+    assert len(calls) == 1, "幂等检查应经过 submit_dedupe 一次（内部防重，不创建新任务）"
 
 
 def test_archive_idempotent_reuses_active_task(client, monkeypatch):
@@ -379,10 +380,22 @@ def test_archive_idempotent_reuses_active_task(client, monkeypatch):
     book_id = r0.json()["data"]["id"]
 
     calls: list = []
-    monkeypatch.setattr(assets_route, "find_active", lambda *a, **k: "existing-archive-1")
-    monkeypatch.setattr(assets_route, "submit", lambda *a, **k: calls.append(a) or "new-task")
+    monkeypatch.setattr(assets_route, "submit_dedupe", lambda *a, **k: calls.append(a) or ("existing-archive-1", False))
     r = client.post(f"/api/books/{book_id}/archive")
     body = r.json()
     assert body["code"] == 0, body
     assert body["data"]["task_id"] == "existing-archive-1"
-    assert calls == [], "已有进行中归档任务时不应重复提交"
+    assert len(calls) == 1, "幂等检查应经过 submit_dedupe 一次（内部防重，不创建新任务）"
+
+
+def test_asset_write_locks_bounded():
+    """M-2：per-book 写锁表有界（LRU 上限），超限淘汰未被持有的锁。"""
+    from app.repositories.assets import _ASSET_WRITE_LOCK_MAX, _asset_write_lock, _asset_write_locks
+
+    base = 100_000  # 避开其他测试的 book_id，避免干扰既有锁
+    for i in range(base, base + _ASSET_WRITE_LOCK_MAX + 60):
+        _asset_write_lock(i)
+    assert len(_asset_write_locks) <= _ASSET_WRITE_LOCK_MAX, "锁表必须保持有界"
+    # 最新访问的锁必须保留；最旧的 60 把（本测试新造）应已被淘汰
+    assert all(i in _asset_write_locks for i in range(base + 60, base + _ASSET_WRITE_LOCK_MAX + 60))
+    assert all(i not in _asset_write_locks for i in range(base, base + 60))

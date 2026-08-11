@@ -1,6 +1,7 @@
 """应用配置：读取 .env / 环境变量，禁止硬编码密钥。"""
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -77,6 +78,8 @@ class Settings(BaseSettings):
 
 
     # 决策 34：LLM 自主挑选 RAG/Skill（挑选器独立模型配置；未填项回退主文本模型）
+    # 聚类成簇引擎（L4，A3 拍板）：LPA 默认关（连通分量基线）；30 本评估集后终评再决定默认开
+    cluster_use_lpa: bool = False
     ai_rag_select_enabled: bool = True  # 总开关；false=跳过 LLM 挑选，直接使用规则回退
     rag_select_base_url: str = ""  # 独立挑选器 base_url；空=复用主模型
     rag_select_api_key: str = ""  # 空=复用主模型
@@ -91,5 +94,19 @@ class Settings(BaseSettings):
     rag_select_max_books: int = 3  # 预算：最多注入书数（含当前书）
     rag_select_max_skills: int = 2  # 预算：最多注入 Skill 数
     rag_select_cache_ttl_minutes: int = 60  # session_id 会话挑选缓存 TTL；0=不缓存
+
+    @field_validator("rag_select_mode", mode="before")
+    @classmethod
+    def _clean_rag_select_mode(cls, value):
+        """E2E #9：.env 行内注释被 dotenv 整段解析为值（`RAG_SELECT_MODE= # 注释`）→ 清洗为空串。
+
+        空=复用主模型接口格式；以 # 开头或含 "# " 视为注释残留，不参与模式匹配。
+        """
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text or text.startswith("#") or "# " in text:
+            return ""
+        return text
 
 settings = Settings()

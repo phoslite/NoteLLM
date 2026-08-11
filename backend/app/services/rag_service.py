@@ -30,6 +30,7 @@ from app.repositories.assets import delete_asset, get_asset, read_asset_content,
 from app.repositories.chat import list_recent_messages
 from app.repositories.notes import list_notes
 from app.repositories.reading import set_all_chapters_read_flag
+from app.repositories.settings import load_ai_overrides
 from app.services.graph.clustering import merge_and_rename_clusters, post_classify_book
 from app.services.graph.keywords import sanitize_cluster_name
 from app.services.profile_service import migrate_profiles_on_archive
@@ -243,12 +244,15 @@ def generate_rag_skill(
         raise ValueError("未配置 AI_API_KEY：请在设置页或 backend/.env 填写后重试")
 
     chunk_chars = settings.rag_summary_chunk_chars
+    # 三审 Major-2：隐私开关以设置页 DB 覆盖为准（与 chat/vision/mindmap 一致），纯函数侧通过 enable_body 透传
+    overrides = load_ai_overrides(db)
+    enable_body = overrides.get("ai_enable_body_send", settings.ai_enable_body_send)
     if page_texts:
         chunks = page_chunks(page_texts)
-        blocks = chunk_page_texts_for_summary(page_texts, chunk_chars)
+        blocks = chunk_page_texts_for_summary(page_texts, chunk_chars, enable_body=enable_body)
     else:
         chunks = chunk_book(chapters, is_html=book.format == "epub")
-        blocks = chunk_chapters_for_summary(chapters, chunks, chunk_chars)
+        blocks = chunk_chapters_for_summary(chapters, chunks, chunk_chars, enable_body=enable_body)
 
     # 再次阅读归档：已有**实质**资产 → 增量增改模式（旧资产概要 + 新笔记/对话 + 正文）。
     # 图谱联动可能留下空存根（summary/key_points 为空，v1.68 起不 bump 版本）——

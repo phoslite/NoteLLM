@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { deleteBook, reorderBooks, searchBooks, updateBook, uploadBook } from '@/api/books'
+import { highlightSnippet } from '@/utils/searchHighlight'
 import { useBookStore } from '@/stores/book'
 import type { BookItem, SearchHit } from '@/types'
 import { chapterPercent } from '@/utils/progress'
@@ -44,13 +45,21 @@ onMounted(() => store.fetchBooks())
 
 /* ---------- 决策 37：主页全局 AI 对话（阅读之外，Skill/RAG 资产辅助） ---------- */
 const globalAi = useGlobalAi()
+
+onUnmounted(() => {
+  window.clearTimeout(searchTimer) // 终审 F7：卸载时清理搜索防抖定时器
+  window.clearTimeout(blurTimer) // 终审 §6.9：失焦定时器一并清理
+  globalAi.dispose() // I-11 修复：卸载时终止流式/轮询，避免同会话双实例泄漏
+})
 const aiPanelCollapsed = ref(true)
 const aiUnread = ref(0)
+let aiUnreadBaseline = 0  // F10：已读 assistant 消息基线（展开面板时更新）
 const aiInput = globalAi.input
 function toggleAiPanel() {
   aiPanelCollapsed.value = !aiPanelCollapsed.value
   if (!aiPanelCollapsed.value) {
     aiUnread.value = 0
+    aiUnreadBaseline = globalAi.messages.value.filter((m) => m.role === 'assistant' && !m.local).length
     void globalAi.refreshHistory() // 展开时载入该会话全部历史（需求 v1.73）
   }
 }
@@ -71,10 +80,14 @@ async function onDeleteAiSession() {
 
 /** 折叠期间统计新增 AI 回复数（assistant 非流式消息）。 */
 watch(globalAi.messages, (msgs) => {
+  // F10 修复：deep 监听（push/local=false 变异均触发）+ 增量计数（历史整体替换不虚增未读）
+  const doneCount = msgs.filter((m) => m.role === 'assistant' && !m.local).length
   if (aiPanelCollapsed.value) {
-    aiUnread.value = msgs.filter((m) => m.role === 'assistant' && !m.local).length
+    aiUnread.value = Math.max(0, doneCount - aiUnreadBaseline)
+  } else {
+    aiUnreadBaseline = doneCount
   }
-})
+}, { deep: true })
 
 /** 全部书籍的 tag 去重集合（用于筛选与补全候选） */
 const allTags = computed(() => {
@@ -97,29 +110,37 @@ const displayedBooks = computed(() => {
 const searchHits = ref<SearchHit[]>([])
 const showSearchHits = ref(false)
 let searchTimer: number | undefined
+let searchSeq = 0 // 终审 §6.9：防抖请求序号守卫（旧响应不覆盖新结果）
 
 watch(searchQuery, (kw) => {
   window.clearTimeout(searchTimer)
   const q = kw.trim()
   if (!q) {
+    searchSeq += 1
     searchHits.value = []
     showSearchHits.value = false
     return
   }
+  const seq = ++searchSeq
   searchTimer = window.setTimeout(async () => {
     try {
-      searchHits.value = await searchBooks(q)
+      const hits = await searchBooks(q)
+      if (seq !== searchSeq) return // 终审 §6.9：旧响应丢弃
+      searchHits.value = hits
       showSearchHits.value = true
     } catch {
+      if (seq !== searchSeq) return
       searchHits.value = []
       showSearchHits.value = false
     }
   }, 300)
 })
 
+let blurTimer: number | undefined // 终审 §6.9：失焦定时器纳入卸载清理
+
 function onSearchBlur() {
   // 延迟关闭，保证结果项 mousedown 先触发跳转
-  setTimeout(() => {
+  blurTimer = window.setTimeout(() => {
     showSearchHits.value = false
   }, 150)
 }
@@ -128,6 +149,7 @@ function goSearchHit(hit: SearchHit) {
   showSearchHits.value = false
   router.push(`/reader/${hit.book_id}`)
 }
+
 
 async function onFilePicked(e: Event) {
   const input = e.target as HTMLInputElement
@@ -185,7 +207,7 @@ function onDragEnd() {
 }
 
 /** dragleave 仅在真正离开卡片时清除高亮（避免移动到卡片子元素时误清除） */
-function onDragLeave(e: DragEvent, id: number) {
+function onDragLeave(e: DragEvent) {
   const rel = e.relatedTarget as Node | null
   if (!rel || !(e.currentTarget as Node).contains(rel)) {
     dragOverId.value = null
@@ -300,7 +322,7 @@ function toggleTagFilter(tag: string) {
                     {{ h.title }}
                     <span class="hit-chapter">第 {{ h.chapter_index ?? '?' }} 章 · {{ h.chapter_title }}</span>
                   </div>
-                  <div class="hit-snippet">{{ h.snippet }}</div>
+                  <div class="hit-snippet" v-html="highlightSnippet(h.snippet, searchQuery)"></div>
                 </div>
               </template>
               <div v-else class="search-hits-empty">未找到章节命中</div>
@@ -347,7 +369,7 @@ function toggleTagFilter(tag: string) {
           @dragstart="onDragStart(b, $event)"
           @dragend="onDragEnd"
           @dragover.prevent="dragOverId = b.id"
-          @dragleave="onDragLeave($event, b.id)"
+          @dragleave="onDragLeave($event)"
           @drop.prevent="onDrop(b)"
         >
           <span class="status-badge" :class="statusMeta[b.status]?.cls || 'todo'">
@@ -443,7 +465,7 @@ function toggleTagFilter(tag: string) {
 }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
 .panel-head h2 { margin: 0; font-size: 16px; }
-.panel-count { font-size: 12px; color: var(--text-secondary); }
+.panel-count { font-size: 13px; color: var(--text-secondary); }
 .recent-item {
   display: flex; gap: 12px; padding: 10px; border-radius: var(--radius-md);
   cursor: pointer; transition: background 0.15s, transform 0.1s; margin-bottom: 4px;
@@ -462,7 +484,7 @@ function toggleTagFilter(tag: string) {
   margin-bottom: 4px; font-weight: 600; font-size: 13px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.recent-line { margin-bottom: 6px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.recent-line { margin-bottom: 6px; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
 .recent-progress { width: 100%; }
 
 .shelf-panel { flex: 1; min-width: 0; padding: 18px 20px; overflow-y: auto; background: var(--bg-color); }
@@ -474,7 +496,7 @@ function toggleTagFilter(tag: string) {
 .toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .shelf-title { display: flex; align-items: baseline; gap: 10px; }
 .shelf-title h2 { margin: 0; font-size: 18px; }
-.stats-chip { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+.stats-chip { font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
 .stats-chip .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 2px; }
 .dot.done { background: var(--success); }
 .dot.reading { background: var(--primary-color); }
@@ -489,16 +511,16 @@ function toggleTagFilter(tag: string) {
 .search-hit { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--border-color); }
 .search-hit:last-child { border-bottom: none; }
 .search-hit:hover { background: var(--panel-bg); }
-.hit-title { font-size: 12.5px; font-weight: 700; color: var(--text-color); }
+.hit-title { font-size: 13px; /* 三审 Minor-6 */ font-weight: 700; color: var(--text-color); }
 .hit-chapter { font-weight: 400; color: var(--text-secondary); margin-left: 6px; }
 .hit-snippet {
-  font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.6;
+  font-size: 13px; color: var(--text-secondary); margin-top: 2px; line-height: 1.6;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.search-hits-empty { padding: 10px; font-size: 12.5px; color: var(--text-secondary); text-align: center; }
+.search-hits-empty { padding: 10px; font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); text-align: center; }
 .tag-filter { width: 150px; }
 .search-icon { font-size: 13px; }
-.drag-hint { font-size: 12px; color: var(--text-secondary); }
+.drag-hint { font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); }
 
 .shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 6px; }
 .book-card {
@@ -516,7 +538,7 @@ function toggleTagFilter(tag: string) {
 
 .status-badge {
   position: absolute; top: 8px; left: 8px; z-index: 4;
-  font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; /* 三审 Minor-6：10px → 11px */
   color: #fff; letter-spacing: 0.5px;
 }
 .status-badge.done { background: rgba(103, 194, 58, 0.9); }
@@ -545,7 +567,7 @@ function toggleTagFilter(tag: string) {
   background: linear-gradient(150deg, rgba(47, 111, 237, 0.18), rgba(47, 111, 237, 0.05) 55%, rgba(103, 194, 58, 0.08));
 }
 .cover-letter { font-size: 42px; font-weight: 800; color: color-mix(in srgb, var(--primary-color) 80%, #fff); line-height: 1; }
-.cover-fmt { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--text-secondary); }
+.cover-fmt { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--text-secondary); }
 .book-title {
   margin-top: 10px; font-weight: 600; font-size: 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none;
@@ -559,9 +581,9 @@ function toggleTagFilter(tag: string) {
 }
 .tag-chip:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
 .tag-chip.active { background: var(--primary-color); color: #fff; }
-.tag-empty { font-size: 12px; color: var(--text-secondary); }
+.tag-empty { font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); }
 
-.book-read-info { margin-top: 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.book-read-info { margin-top: 8px; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
 .read-chapters { font-weight: 600; color: var(--text-color); }
 .latest-chapter { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .book-progress { margin-top: 10px; }
@@ -577,5 +599,5 @@ function toggleTagFilter(tag: string) {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
 }
 .empty-icon { font-size: 40px; margin-bottom: 6px; opacity: 0.8; }
-.empty-sub { font-size: 12px; opacity: 0.75; }
+.empty-sub { font-size: 13px; opacity: 0.75; }
 </style>

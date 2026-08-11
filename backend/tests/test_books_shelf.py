@@ -80,3 +80,19 @@ def test_search_combined_with_folder(client):
     assert [x["id"] for x in only_folder] == [a]
     searched = client.get("/api/books", params={"folder_id": folder["id"], "q": "线性"}).json()["data"]
     assert searched == []
+
+
+def test_patch_book_invalid_folder_id_returns_404(client):
+    """终审 §6.9：PATCH 无效 folder_id 与全库「资源不存在→404」契约一致。"""
+    r = client.post("/api/books", files={"file": ("无效文件夹.md", "# 第一章\n\n正文\n".encode(), "text/markdown")})
+    book_id = r.json()["data"]["id"]
+    resp = client.patch(f"/api/books/{book_id}", json={"folder_id": 999999})
+    assert resp.status_code == 404
+
+def test_clean_tags_keeps_user_punctuation():
+    """E2E M-2（2026-08-11）：手动 tag 保留用户输入原样（含连字符等标点），只去空白/空值/重复。"""
+    from app.services.books_service import clean_tags
+
+    assert clean_tags(["e2e-tag-msnj2njl"]) == ["e2e-tag-msnj2njl"]
+    assert clean_tags(["  ABC-DEF  ", "abc def", "ABC-DEF"]) == ["ABC-DEF", "abc def"]
+    assert clean_tags(["", "   ", "有效标签"]) == ["有效标签"]

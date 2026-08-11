@@ -71,6 +71,47 @@ def test_global_graph_folder_cluster_fallback(client, wait_task):
     assert any(c["name"] == "数学分析" and c["book_count"] == 2 for c in data["clusters"])
 
 
+def test_global_graph_no_resubmit_when_empty(client, wait_task):
+    """终审 F7：构建成功但关系为 0（单书库）时，连续 GET 不重复提交构建任务。"""
+    _import_md(client, "书H.md", "# 第一章 独有主题\n\n独有主题内容。\n")
+    data = client.get("/api/graph/books").json()["data"]
+    assert data.get("building")
+    st = wait_task(client, data["task_id"])
+    assert st["status"] == "success"
+    for _ in range(2):
+        data = client.get("/api/graph/books").json()["data"]
+        assert not data.get("building")
+        assert len(data["edges"]) == 0
+    tasks = client.get("/api/tasks").json()["data"]
+    builds = [t for t in tasks if t["name"].startswith("graph-global-build")]
+    assert len(builds) == 1
+
+
+def test_global_graph_rebuild_when_book_set_changed(client, wait_task):
+    """终审 §6.9：删书+导入同数量书（数量不变但集合变化）→ 空关系时仍触发重建（指纹判定）。
+
+    构造：删除中间 id 的书（SQLite 不复用该 rowid）后导入一本，总数不变但 id 集合变化；
+    数量判定会误判「未变化」而漏触发重建。
+    """
+    _import_md(client, "书K.md", "# 第一章 量子引力\n\n量子引力与弦论研究。\n")
+    m = _import_md(client, "书M.md", "# 第一章 古罗马货币\n\n古罗马货币制度演变。\n")
+    _import_md(client, "书N.md", "# 第一章 敦煌壁画\n\n敦煌壁画颜料成分。\n")
+    data = client.get("/api/graph/books").json()["data"]
+    assert data.get("building")
+    st = wait_task(client, data["task_id"])
+    assert st["status"] == "success"
+    assert not client.get("/api/graph/books").json()["data"].get("building")
+
+    # 删中间 id + 导入（不夹 GET）：数量仍为 3，但书籍 id 集合已变化 → 应重新触发构建
+    assert client.delete(f"/api/books/{m}").status_code == 200
+    _import_md(client, "书P.md", "# 第一章 深海热泉\n\n深海热泉生态系统。\n")
+    data = client.get("/api/graph/books").json()["data"]
+    assert data.get("building"), "书籍集合变化后应触发重建"
+    st = wait_task(client, data["task_id"])
+    assert st["status"] == "success"
+    assert not client.get("/api/graph/books").json()["data"].get("building")
+
+
 def test_intra_book_graph_levels_and_dedup(client, wait_task):
     text = (
         "# 第一章 定义与定理\n\n"
@@ -117,7 +158,9 @@ def test_rebuild_all_and_relation_feedback(client, wait_task):
     assert stats["relations"] >= 1
     assert stats["knowledge_points"] >= 2
 
-    edge_id = _global_graph(client, wait_task)["edges"][0]["id"]
+    edges_before = _global_graph(client, wait_task)["edges"]
+    edge_id = edges_before[0]["id"]
+    edge_pair = {edges_before[0]["book_a"], edges_before[0]["book_b"]}
     r = client.post(f"/api/graph/relations/{edge_id}/feedback", json={"action": "修改", "strength": 95})
     assert r.status_code == 200
     assert r.json()["data"]["user_feedback"] == "修改"
@@ -126,6 +169,13 @@ def test_rebuild_all_and_relation_feedback(client, wait_task):
     edges = _global_graph(client, wait_task)["edges"]
     updated = next(e for e in edges if e["id"] == edge_id)
     assert updated["strength"] == 95 and updated["user_feedback"] == "修改"
+
+    # 终审 §6.9：重建保留人工反馈（边 id 重建后变化，按书对定位）
+    _task_result(client, wait_task, client.post("/api/graph/rebuild").json()["data"]["task_id"])
+    edges2 = _global_graph(client, wait_task)["edges"]
+    updated2 = next(e for e in edges2 if {e["book_a"], e["book_b"]} == edge_pair)
+    assert updated2["user_feedback"] == "修改"
+    assert updated2["strength"] == 95
 
     bad = client.post(f"/api/graph/relations/{edge_id}/feedback", json={"action": "未知"})
     assert bad.status_code == 400
@@ -152,12 +202,13 @@ def test_sanitize_cluster_name():
     assert sanitize_cluster_name("") == ""
 
 
-def test_tags_sanitized_on_save(client):
-    """保存书籍 tag 时清洗：特殊标点剔除、空 tag 丢弃、重复项去重。"""
-    a = _import_md(client, "标签清洗书.md", "# 第一章\n\n内容。\n")
+def test_tags_kept_raw_on_save(client):
+    """保存书籍 tag 时保留用户输入原样（E2E M-2，2026-08-11）：只去首尾空白/空值/重复，标点保留；
+    聚类消费端（assign_clusters 的 book_tags）在生成簇名时再按聚类规范清洗。"""
+    a = _import_md(client, "标签保留书.md", "# 第一章\n\n内容。\n")
     r = client.patch(f"/api/books/{a}", json={"tags": ["数学：分析", "Math, Vol.2", "！！！", "数学：分析"]})
     assert r.status_code == 200
-    assert r.json()["data"]["tags"] == ["数学分析", "Math Vol 2"]
+    assert r.json()["data"]["tags"] == ["数学：分析", "Math, Vol.2", "！！！"]
 
 
 def test_assign_clusters_sanitizes_tag_and_folder(client):
@@ -387,3 +438,160 @@ def test_cache_domain_term_atomic_write_no_tmp_residue(tmp_path):
         assert leftover == [], "原子替换不应残留 .tmp 临时文件"
     finally:
         _restore_lexicon(original)
+
+
+def test_posterior_keywords_filters_generic_terms():
+    """I-1：post_classify 后验特征必须剔除数学/学术泛词（F6 同根因）。"""
+    from app.services.graph.lexicon import _posterior_keywords
+
+    content = {
+        "summary": "定理与定义是证明的基础，矩阵的秩与特征值",
+        "key_points": ["引理与推论", "线性变换"],
+    }
+    kw = set(_posterior_keywords(content))
+    for generic in ("定理", "定义", "引理", "推论", "证明", "基础"):
+        assert generic not in kw, f"泛词 {generic} 不应出现在后验特征中"
+    assert "矩阵" in kw, "专业术语应保留"
+
+
+def test_generic_terms_include_latex_noise():
+    """A1 术语层：LaTeX 命令碎片进泛词表，聚类向量与命名候选均剔除。"""
+    from app.services.graph.lexicon import generic_domain_terms
+
+    generic = generic_domain_terms()
+    for noise in ("frac", "int", "infty", "mathbf", "lambda", "mathbb", "sum"):
+        assert noise in generic, f"LaTeX 噪声 {noise} 应进泛词表"
+
+
+def test_effective_bloat_factor_gating():
+    """O9 b：未达 30 本维持基值；≥30 本且簇内枢纽度超标时提档（0.8→1.0→1.2）。"""
+    from app.services.graph.clustering import effective_bloat_factor
+    from app.services.graph.thresholds import BLOAT_ADAPT_MIN_N, BLOAT_FACTOR
+
+    # 星形簇：4 节点（1 枢纽 + 3 叶），叶-叶仅共享 1 词不连边，叶-枢纽共享 2 词连边
+    vectors = {1: {"h": 1.0, "l1": 1.0}, 2: {"h": 1.0, "l2": 1.0},
+               3: {"h": 1.0, "l3": 1.0}, 4: {"h": 1.0, "l1": 1.0, "l2": 1.0, "l3": 1.0}}
+    idf = {"h": 1.0, "l1": 1.0, "l2": 1.0, "l3": 1.0}
+    groups = [[1, 2, 3, 4]]
+    # 门槛内（<30 本）：维持基值
+    assert effective_bloat_factor(groups, vectors, idf, 0.15, BLOAT_ADAPT_MIN_N - 1) == BLOAT_FACTOR
+    # 达标（≥30 本）：1/4 = 0.25 枢纽占比 > 0.15 → 提一档 1.0
+    assert effective_bloat_factor(groups, vectors, idf, 0.15, BLOAT_ADAPT_MIN_N) == 1.0
+    # 达标且枢纽占比 > 2×0.15（双枢纽星：2/4 = 0.5）→ 提满 1.2
+    vectors2 = {1: {"h": 1.0, "l1": 1.0}, 2: {"h": 1.0, "l2": 1.0},
+                3: {"h": 1.0, "l1": 1.0, "l2": 1.0}, 4: {"h": 1.0, "l1": 1.0, "l2": 1.0}}
+    groups2 = [[1, 2, 3, 4]]
+    assert effective_bloat_factor(groups2, vectors2, idf, 0.15, BLOAT_ADAPT_MIN_N) == 1.2
+    # 无枢纽（全连通均匀簇）：维持基值
+    uniform = {i: {"h": 1.0, f"x{i}": 1.0} for i in (1, 2, 3, 4)}
+    assert effective_bloat_factor([[1, 2, 3, 4]], uniform, idf, 0.15, BLOAT_ADAPT_MIN_N) == BLOAT_FACTOR
+
+
+def test_assign_clusters_does_not_absorb_on_generic_terms_only(client):
+    """F6 收敛：吸收判定过滤泛词——仅共享「定理/定义」的书不得误并为同一簇。"""
+    from app.core.database import SessionLocal
+    from app.services.graph import assign_clusters
+
+    a = _import_md(client, "泛词书A.md", "# 第一章 定理\n\n定理 定义 定理 定义\n")
+    b = _import_md(client, "泛词书B.md", "# 第一章 定义\n\n定义 定理 定义 定理\n")
+    db = SessionLocal()
+    try:
+        result = assign_clusters(db)
+    finally:
+        db.close()
+    assert result[a] and result[b]
+    assert result[a] != result[b], "仅共享泛词的书籍不应被吸收进同一簇"
+
+
+def test_assign_clusters_persist_false_no_lexicon_side_effect(client, tmp_path):
+    """A-I1：persist=False 只读链路不得写入专业术语词库（系统缓存区）。"""
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.services.graph import assign_clusters
+
+    lex = tmp_path / "lex_no_side.txt"
+    original = settings.domain_terms_file
+    settings.domain_terms_file = str(lex)
+    try:
+        lex.write_text("# 测试词库\n", encoding="utf-8")
+        _import_md(client, "无副作用书.md", "# 第一章 概率空间\n\n概率空间与随机变量。\n")
+        db = SessionLocal()
+        try:
+            result = assign_clusters(db, persist=False)
+            assert result  # 只读仍正常返回聚类结果
+        finally:
+            db.close()
+        assert lex.read_text(encoding="utf-8").strip() == "# 测试词库", "persist=False 不应写词库缓存区"
+    finally:
+        settings.domain_terms_file = original
+
+
+def test_cluster_cache_invalidates_on_lexicon_change(client, tmp_path):
+    """A-I2：用户区术语/同义词变化 → 算法签名变化 → 缓存自动失效重算。"""
+    from unittest import mock
+
+    from app.core.database import SessionLocal
+    from app.services.graph import assign_clusters
+    from app.services.graph import clustering as clustering_mod
+
+    _import_md(client, "词库缓存书.md", "# 第一章 变分法\n\n变分法研究泛函极值。\n")
+    db = SessionLocal()
+    try:
+        original = _write_lexicon(tmp_path / "lex_inv.txt", user_lines=["变分法"])
+        try:
+            assign_clusters(db)  # 落盘缓存（含当前词库签名）
+            with mock.patch.object(clustering_mod, "_build_sim_graph", wraps=clustering_mod._build_sim_graph) as spy:
+                assign_clusters(db, persist=False)
+                assert spy.call_count == 0, "词库未变时应命中缓存"
+            # 修改用户区词库 → 签名变化 → 缓存失效重算
+            _write_lexicon(tmp_path / "lex_inv.txt", user_lines=["变分法", "新术语"])
+            with mock.patch.object(clustering_mod, "_build_sim_graph", wraps=clustering_mod._build_sim_graph) as spy2:
+                assign_clusters(db, persist=False)
+                assert spy2.call_count > 0, "词库变化后缓存必须失效重算（A-I2）"
+        finally:
+            _restore_lexicon(original)
+    finally:
+        db.close()
+
+
+def test_weighted_lpa_star_and_determinism():
+    """A-I5：加权 LPA 星形中心吸收叶子、双边分量归并、结果确定性。"""
+    from app.services.graph.clustering import _weighted_lpa
+
+    # 星形：中心 1 连 2/3/4（权重 1.0），叶子间无连边 → 单簇
+    graph = {"nodes": [1, 2, 3, 4], "adj": {1: {2: 1.0, 3: 1.0, 4: 1.0}, 2: {1: 1.0}, 3: {1: 1.0}, 4: {1: 1.0}}}
+    groups = _weighted_lpa(graph, tau=0.1)
+    assert groups == [[1, 2, 3, 4]]
+
+    # 双边分量：2 节点互连 → 单簇
+    graph2 = {"nodes": [5, 6], "adj": {5: {6: 1.0}, 6: {5: 1.0}}}
+    groups2 = _weighted_lpa(graph2, tau=0.1)
+    assert len(groups2) == 1 and sorted(groups2[0]) == [5, 6]
+
+    # 确定性：同输入两次调用结果一致
+    graph3 = {"nodes": [7, 8, 9], "adj": {7: {8: 0.9, 9: 0.9}, 8: {7: 0.9}, 9: {7: 0.9}}}
+    assert _weighted_lpa(graph3, 0.1) == _weighted_lpa(graph3, 0.1)
+
+    # 无边节点独立成簇
+    graph4 = {"nodes": [10, 11], "adj": {}}
+    groups4 = _weighted_lpa(graph4, tau=0.1)
+    assert groups4 == [[10], [11]]
+
+
+def test_assign_clusters_lpa_mode_integration(monkeypatch, client):
+    """A-I5：cluster_use_lpa=True 时 assign_clusters 走加权 LPA，结果一致可复现。"""
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.services.graph import assign_clusters
+
+    a = _import_md(client, "LPA书A.md", "# 第一章 概率空间\n\n概率空间与随机变量。\n")
+    b = _import_md(client, "LPA书B.md", "# 第一章 概率论\n\n概率与随机变量理论。\n")
+    monkeypatch.setattr(settings, "cluster_use_lpa", True, raising=False)
+    db = SessionLocal()
+    try:
+        first = assign_clusters(db)
+        second = assign_clusters(db, persist=False)
+        assert first[a] == first[b], "LPA 模式下同领域书应同簇"
+        assert second == first
+    finally:
+        db.close()

@@ -155,6 +155,8 @@ def test_notes_crud_and_export(client):
 
     bad = client.post(f"/api/books/{book_id}/notes", json={"note_type": "乱写"})
     assert bad.status_code == 422
+    bad_patch = client.patch(f"/api/notes/{note_id}", json={"note_type": "乱写"})
+    assert bad_patch.status_code == 422
 
     patched = client.patch(f"/api/notes/{note_id}", json={"note_text": "改为精读步骤"})
     assert patched.json()["data"]["note_text"] == "改为精读步骤"

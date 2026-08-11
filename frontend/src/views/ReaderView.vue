@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { viewportTopPara } from '@/utils/viewport'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -99,7 +100,27 @@ function jumpToBookmark(bm: BookmarkItem) {
   }
 }
 
+/** 文本书当前视口顶部段落（书签段落定位 I-9）：滚动/换章时更新。 */
+const currentParaIndex = ref<number | null>(null)
+function updateCurrentPara() {
+  const el = scrollEl.value
+  if (!el || pageMode.value || epubMode.value) {
+    currentParaIndex.value = null
+    return
+  }
+  // 审查 I-9 修正 + 复审收尾：定位逻辑下沉 utils/viewport.ts（纯函数可单测）
+  currentParaIndex.value = viewportTopPara(
+    Array.from(el.querySelectorAll<HTMLElement>('[data-para]')),
+    el,
+  )
+}
+
 /** 文本书书签跳转：滚动到指定段落。 */
+function onReadScroll() {
+  progress.onScroll()
+  updateCurrentPara()
+}
+
 function scrollToPara(para: number) {
   void nextTick(() => {
     const el = scrollEl.value
@@ -113,7 +134,8 @@ function scrollToPara(para: number) {
 }
 
 /* ---------- 划词菜单 ---------- */
-const selection = useReaderSelection(scrollEl)
+const selMenuEl = ref<HTMLElement | null>(null)
+const selection = useReaderSelection(scrollEl, selMenuEl)
 const { selMenu, onMouseUp, onDocMouseDown, closeSelMenu, takeSelection } = selection
 
 /* ---------- 阅读进度 ---------- */
@@ -131,7 +153,7 @@ const progress = useReaderProgress({
     if (store.books.length) store.fetchBooks()
   },
 })
-const { onScroll, saveNow, checkAutoRead, markChapterOpened, applyRestore, setCache, resetForBook, dispose } = progress
+const { saveNow, checkAutoRead, markChapterOpened, applyRestore, setCache, resetForBook, dispose } = progress
 
 /* ---------- 笔记 ---------- */
 const notesApi = useReaderNotes({
@@ -202,7 +224,7 @@ const doodle = useReaderDoodle({
 const {
   doodleElements, doodleTool, doodleColor, doodleLineWidth, doodleCanvasRef,
   doodleCanUndo, doodleNoteDialog, pageDisplaySize,
-  onPageImgResize, loadDoodle, scheduleDoodleSave, onDoodleEditNote,
+  onPageImgResize, onDoodleEditNote,
   saveDoodleNote, askCropOnDoodle, switchPage: switchDoodlePage, dispose: disposeDoodle,
 } = doodle
 
@@ -229,6 +251,7 @@ async function loadChapter(chapterId: number, restore: boolean) {
     await nextTick()
     if (!pageMode.value) applyHighlights()
     applyRestore(chapterId, restore)
+    void nextTick(updateCurrentPara)
     if (currentChapterId.value && !currentChapter.value?.read_flag) {
       await saveNow()
     }
@@ -254,7 +277,12 @@ async function loadAll() {
     const target = savedProgress?.chapter_id && detail.chapters.some((c) => c.id === savedProgress.chapter_id)
       ? savedProgress.chapter_id
       : (detail.chapters[0]?.id ?? null)
-    await loadChapter(target!, true)
+    if (target != null) {
+      await loadChapter(target, true)
+    } else {
+      // C-M3：无章节的空书显示空态（模板已有 empty-tip），不再请求 /chapters/null
+      currentChapterId.value = null
+    }
   } catch {
     book.value = null
     loadError.value = true
@@ -451,7 +479,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
       </div>
-      <div ref="scrollEl" class="reading-scroll" @scroll="onScroll">
+      <div ref="scrollEl" class="reading-scroll" @scroll="onReadScroll">
         <div v-if="chapterLoading" class="loading-tip">章节加载中…</div>
         <div v-else-if="pageMode" class="page-view">
           <div class="page-scroll">
@@ -510,6 +538,7 @@ onBeforeUnmount(() => {
 
       <div
         v-if="selMenu.visible"
+        ref="selMenuEl"
         class="sel-menu"
         :style="{ top: selMenu.top + 'px', left: selMenu.left + 'px' }"
         @mousedown.stop
@@ -571,6 +600,7 @@ onBeforeUnmount(() => {
       :chapters="chapters"
       :current-chapter-id="currentChapterId"
       :current-page-index="pageIndex"
+      :current-para="currentParaIndex"
       @jump="jumpToBookmark"
     />
 
@@ -646,7 +676,7 @@ onBeforeUnmount(() => {
 .toolbar-actions .el-button { padding: 5px 8px; }
 .toolbar-tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .doodle-row { flex: 1; min-width: 0; }
-.toolbar-tools .el-button { height: 22px; padding: 2px 8px; }
+.toolbar-tools .el-button { min-height: 24px; padding: 2px 8px; } /* E2E 五轮 #2：重提/重建等工具栏小按钮可点击高度 >= 24px */
 .tool-tools-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .chapter-heading {
   margin: 0; font-size: 16px; line-height: 1.5;
@@ -657,15 +687,15 @@ onBeforeUnmount(() => {
 .reading-scroll { flex: 1; overflow-y: auto; padding: 18px 40px 48px; }
 .page-view { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .page-zoombar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.page-zoom-text { font-size: 12px; color: var(--text-secondary); min-width: 34px; text-align: center; }
+.page-zoom-text { font-size: 13px; color: var(--text-secondary); min-width: 34px; text-align: center; }
 .page-scroll { width: 100%; display: flex; justify-content: safe center; }
 .page-img { max-width: 100%; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12); border-radius: 4px; }
 .mini-btn.active { border-color: var(--primary-color); color: var(--primary-color); background: rgba(64, 158, 255, 0.08); }
 .reading-scroll :deep(.note-hl) { border-radius: 3px; padding: 0 1px; }
 .reading-scroll :deep(.note-hl-highlight) { background: rgba(250, 204, 21, 0.4); }
-.reading-scroll :deep(.note-hl-confuse) { background: rgba(245, 108, 108, 0.3); text-decoration: underline wavy #f56c6c; }
-.reading-scroll :deep(.note-hl-comment) { background: rgba(103, 194, 58, 0.22); border-bottom: 2px solid #67c23a; }
-.reading-scroll :deep(.note-hl-think) { background: rgba(64, 158, 255, 0.22); border-bottom: 2px solid #409eff; }
+.reading-scroll :deep(.note-hl-confuse) { background: color-mix(in srgb, var(--status-err) 30%, transparent); text-decoration: underline wavy var(--status-err); }
+.reading-scroll :deep(.note-hl-comment) { background: color-mix(in srgb, var(--status-ok) 22%, transparent); border-bottom: 2px solid var(--status-ok); }
+.reading-scroll :deep(.note-hl-think) { background: rgba(47, 111, 176, 0.22); border-bottom: 2px solid var(--accent, #2f6fb0); }
 .para { position: relative; padding: 2px 4px; border-radius: 6px; }
 .para:hover { background: rgba(47, 111, 237, 0.04); }
 .para-actions { position: absolute; right: 0; top: 0; display: flex; gap: 4px; z-index: 5; }
@@ -673,14 +703,15 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-color);
   background: #fff;
   color: var(--text-color);
-  font-size: 12px;
-  padding: 2px 8px;
+  font-size: 13px;
+  padding: 3px 8px;
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
+  min-height: 24px;
 }
 .mini-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
-.mini-btn.danger:hover { border-color: #f56c6c; color: #f56c6c; }
+.mini-btn.danger:hover { border-color: var(--status-err, #e0382e); color: var(--status-err, #e0382e); }
 
 .sel-menu {
   position: fixed;
@@ -697,7 +728,7 @@ onBeforeUnmount(() => {
 .sel-menu .mini-btn.ai:hover { background: var(--panel-bg); }
 .loading-tip { color: var(--text-secondary); font-size: 13px; padding: 20px 0; }
 .page-preload img { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0.01; }
-.empty-tip { color: var(--text-secondary); font-size: 12px; padding: 6px 2px; }
+.empty-tip { color: var(--text-secondary); font-size: 13px; padding: 6px 2px; }
 .epub-body { line-height: 1.9; word-break: break-word; }
 .epub-body :deep(img) { max-width: 100%; height: auto; }
 .epub-body :deep(table) { border-collapse: collapse; margin: 0.8em 0; }
@@ -708,12 +739,12 @@ onBeforeUnmount(() => {
 .export-link { font-size: 13px; color: var(--primary-color); text-decoration: none; }
 .note-item { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .note-head { display: flex; align-items: center; gap: 8px; }
-.note-loc { flex: 1; font-size: 12px; color: var(--text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-loc { flex: 1; font-size: 13px; color: var(--text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-actions { flex: none; }
-.note-quote { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--border-color); background: var(--panel-bg); font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
+.note-quote { margin: 8px 0; padding: 6px 10px; border-left: 3px solid var(--border-color); background: var(--panel-bg); font-size: 13px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
 .note-text { font-size: 13px; word-break: break-word; }
 .note-text :deep(p) { margin: 0.3em 0; }
 .dialog-field { margin-bottom: 12px; }
-.field-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
-.page-cache-status { font-size: 12px; color: var(--text-secondary); margin-right: 4px; }
+.field-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+.page-cache-status { font-size: 13px; color: var(--text-secondary); margin-right: 4px; }
 </style>

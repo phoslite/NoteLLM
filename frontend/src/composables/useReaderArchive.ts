@@ -1,7 +1,9 @@
 import { ref, type ComputedRef, type Ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { archiveBook } from '@/api/rag'
-import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
+import { notifyTaskSubmitted } from '@/utils/task'
+import { TASK_TIMEOUT_MS } from '@/utils/constants'
+import { useTaskPoll } from './useTaskPoll'
 import type { BookDetail } from '@/types'
 
 export interface ReaderArchive {
@@ -18,7 +20,8 @@ export function useReaderArchive(opts: {
 }): ReaderArchive {
   const { bookId, book, onDone } = opts
   const archiving = ref(false)
-  const pollAbort = new AbortController()
+  // 四轮 m1：轮询收敛 useTaskPoll（卸载由其上顶层 onBeforeUnmount 自动中止，替代手写 AbortController）
+  const poll = useTaskPoll()
 
   async function archiveAndSummarize() {
     if (!book.value) return
@@ -32,18 +35,20 @@ export function useReaderArchive(opts: {
       return
     }
     archiving.value = true
+    // 快照守卫（四轮 m1）：提交时的书 id——切书后迟到的完成回调不刷新新书视图
+    const submittedBookId = bookId.value
     try {
-      const { task_id } = await archiveBook(bookId.value)
+      const { task_id } = await archiveBook(submittedBookId)
       ElMessage.info('归档任务已提交，正在总结…')
       notifyTaskSubmitted()
       // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 120 次 × 1.5s = 180s 超时保持一致）
-      const st = await waitForTask(task_id, { intervalMs: 1500, timeoutMs: 180000, signal: pollAbort.signal })
+      const st = await poll.run(task_id, { intervalMs: 1500, timeoutMs: TASK_TIMEOUT_MS })
       if (st.status === 'failed') {
         ElMessage.error(`归档失败：${st.error || '未知错误'}`)
       } else {
         ElMessage.success('归档完成：RAG/Skill 资产已生成')
       }
-      await onDone()
+      if (bookId.value === submittedBookId) await onDone()
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
       const msg = (err as Error).message
@@ -54,9 +59,9 @@ export function useReaderArchive(opts: {
     }
   }
 
-  /** 卸载清理（审查 N-10）：中止归档任务轮询。 */
+  /** 卸载清理（审查 N-10）：轮询中止已由 useTaskPoll 顶层 onBeforeUnmount 处理，保留接口兼容。 */
   function dispose() {
-    pollAbort.abort()
+    /* no-op：useTaskPoll 顶层注册 onBeforeUnmount */
   }
 
   return { archiving, archiveAndSummarize, dispose }

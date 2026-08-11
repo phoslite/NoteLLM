@@ -215,3 +215,44 @@ def test_resolve_endpoint_empty_base_raises():
     except LLMError:
         return
     raise AssertionError("空 base_url 应抛 LLMError")
+
+# ---------- C-1 修复：responses 模式多轮历史 + thinking 映射 ----------
+def test_build_body_responses_keeps_assistant_history():
+    c = LLMClient(base_url="http://x", api_key="k", model="m", mode="responses", max_tokens=4096)
+    body = c._build_body([
+        {"role": "system", "content": "你是数学助手"},
+        {"role": "user", "content": "第一题：1+1=？"},
+        {"role": "assistant", "content": "42"},
+        {"role": "user", "content": "第二题呢？"},
+    ])
+    assert body["instructions"] == "你是数学助手"
+    assert body["input"] == [
+        {"role": "user", "content": "第一题：1+1=？"},
+        {"role": "assistant", "content": "42"},
+        {"role": "user", "content": "第二题呢？"},
+    ]
+
+
+def test_build_body_responses_thinking_params():
+    c = LLMClient(
+        base_url="http://x", api_key="k", model="m", mode="responses", max_tokens=4096,
+        thinking_type="enabled", reasoning_effort="high",
+    )
+    body = c._build_body([{"role": "user", "content": "hi"}])
+    assert body["reasoning"] == {"effort": "high"}
+    c2 = LLMClient(
+        base_url="http://x", api_key="k", model="m", mode="responses", max_tokens=4096,
+        thinking_type="disabled", reasoning_effort="high",
+    )
+    body2 = c2._build_body([{"role": "user", "content": "hi"}])
+    assert "reasoning" not in body2
+
+
+def test_build_body_responses_includes_sampling_params():
+    """B-I3：responses 模式必须透传 temperature/top_p（挑选器 RAG_SELECT_TEMPERATURE=0.0 确定性依赖）。"""
+    c = LLMClient(base_url="http://x", api_key="k", model="m", mode="responses",
+                  max_tokens=8192, temperature=0.0, top_p=0.9)
+    body = c._build_body([{"role": "user", "content": "hi"}])
+    assert body["max_output_tokens"] == 8192
+    assert body["temperature"] == 0.0
+    assert body["top_p"] == 0.9

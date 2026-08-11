@@ -1,5 +1,5 @@
 """RAG/Skill 资产 API：触发总结（后台任务）、任务状态、资产读取与删除。"""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_book
@@ -14,7 +14,7 @@ from app.schemas.common import ok
 from app.schemas.serializers import asset_to_dict
 from app.services.graph.tasks import run_summarize_task
 from app.services.rag_service import archive_book_task
-from app.tasks import find_active, submit
+from app.tasks import submit_dedupe
 
 router = APIRouter(prefix="/api", tags=["assets"])
 
@@ -23,13 +23,13 @@ router = APIRouter(prefix="/api", tags=["assets"])
 def summarize_book(book_id: int, db: Session = Depends(get_db)):
     """把书籍总结为 RAG + Skill 资产；后台任务执行，返回 task_id 供轮询。"""
     require_book(db, book_id)
-    existing = find_active("text", related_id=book_id, name_prefix="rag-skill-summarize")
-    if existing:  # 审查 C-问题4：幂等防护，防双击重复提交互相覆盖资产
-        return ok({"task_id": existing}, "已有进行中的总结任务，直接复用")
-    task_id = submit(
-        "text", "rag-skill-summarize", lambda: run_summarize_task(book_id=book_id)
+    # I-3 修复：submit_dedupe 原子「防重检查+提交」，消除并发双击的 TOCTOU 窗口
+    task_id, created = submit_dedupe(
+        "text", "rag-skill-summarize",
+        lambda: run_summarize_task(book_id=book_id),
+        related_id=book_id, name_prefix="rag-skill-summarize",
     )
-    return ok({"task_id": task_id}, "已提交总结任务")
+    return ok({"task_id": task_id}, "已提交总结任务" if created else "已有进行中的总结任务，直接复用")
 
 
 @router.post("/books/{book_id}/archive")
@@ -40,11 +40,13 @@ def archive_book(book_id: int, db: Session = Depends(get_db)):
     {book_id, version, rag, skill} 及 PDF 场景的 page_cache 提取统计。
     """
     require_book(db, book_id)
-    existing = find_active("text", related_id=book_id, name_prefix="book-archive")
-    if existing:  # 审查 C-问题4：幂等防护，防重复提交归档任务
-        return ok({"task_id": existing}, "已有进行中的归档任务，直接复用")
-    task_id = submit("text", "book-archive", lambda: archive_book_task(book_id), related_id=book_id)
-    return ok({"task_id": task_id}, "已提交归档任务")
+    # I-3 修复：submit_dedupe 原子「防重检查+提交」，消除并发双击的 TOCTOU 窗口
+    task_id, created = submit_dedupe(
+        "text", "book-archive",
+        lambda: archive_book_task(book_id),
+        related_id=book_id, name_prefix="book-archive",
+    )
+    return ok({"task_id": task_id}, "已提交归档任务" if created else "已有进行中的归档任务，直接复用")
 
 
 @router.get("/books/{book_id}/asset")
@@ -66,6 +68,9 @@ def dedupe_assets(db: Session = Depends(get_db)):
     """跨书资产去重合并：kind + 内容 hash 相同的整条资产合并为一条主资产。
 
     返回 {rag, skill} 合并条数；被合并书仍可透明读取共享资产（见资料页「共享 N 本书」）。
+    M-2 修复：并发互斥已下沉至 merge_duplicate_assets 内部（per-book 写锁，与
+    upsert_asset 共用 _asset_write_lock），路由层不再持有 _dedupe_lock——
+    未来其他调用方直呼仓储同样受保护；锁序见仓储 docstring（永远单锁、不嵌套）。
     """
     return ok(merge_duplicate_assets(db), "去重合并完成")
 
@@ -75,9 +80,17 @@ def delete_book_asset(book_id: int, kind: str, db: Session = Depends(get_db)):
     """删除指定 kind（rag / skill）的整条资产；kind 非法时拒绝。"""
     require_book(db, book_id)
     if kind not in {"rag", "skill"}:
-        return ok(None, f"未知资产类型：{kind}")
+        raise HTTPException(status_code=400, detail=f"未知资产类型：{kind}")
+    try:
+        from app.services.rag_router import clear_session_cache
+
+        clear_session_cache()
+    except Exception:  # noqa: BLE001 缓存清理失败不阻塞删除
+        pass
     removed = delete_asset(db, book_id, kind)
-    return ok({"deleted": removed}, "已删除" if removed else "资产不存在")
+    if not removed:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    return ok({"deleted": True}, "已删除")
 
 
 @router.delete("/books/{book_id}/asset/{kind}/{section}/{index}")
@@ -90,9 +103,15 @@ def delete_book_asset_item(
     """
     require_book(db, book_id)
     if kind not in {"rag", "skill"} or section not in {"key_points", "chunks", "skills"}:
-        return ok(None, "不支持的删除目标")
+        raise HTTPException(status_code=400, detail="不支持的删除目标")
+    try:
+        from app.services.rag_router import clear_session_cache
+
+        clear_session_cache()
+    except Exception:  # noqa: BLE001 缓存清理失败不阻塞删除
+        pass
     try:
         content = delete_asset_item(db, book_id, kind, section, index)
     except ValueError as exc:
-        return ok(None, str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ok({"content": content}, "已删除")

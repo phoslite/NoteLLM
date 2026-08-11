@@ -9,18 +9,22 @@ from app.models.activity import Bookmark, ChatMessage, Note, ReadingLog
 from app.models.graph import BookRelation, KnowledgePoint
 from app.repositories import books as repo
 from app.repositories.assets import delete_assets
-from app.services.graph.keywords import sanitize_cluster_name
 
 
 def clean_tags(raw_tags: list[str]) -> list[str]:
-    """清洗书籍 tag：去除非法字符/空值/重复（与图谱聚类标签同一规范，供 API 层复用）。"""
+    """清洗书籍 tag：去除首尾空白/空值/重复，保留用户输入原样（含连字符等标点）。
+
+    说明（E2E M-2，2026-08-11）：手动 tag 原样保留、与展示一致；聚类消费端
+    （clustering.py 的 book_tags）在生成簇名时再按聚类规范清洗，互不影响。
+    """
 
     seen: list[str] = []
     for raw in raw_tags:
-        clean = sanitize_cluster_name(raw)
+        clean = raw.strip()
         if clean and clean not in seen:
             seen.append(clean)
     return seen
+
 
 def _remove_book_files(file_path: Path) -> None:
     """删除书籍文件与媒体资源：新布局（<root>/<file_id>/）删除整个子目录；旧扁平布局尽力清理独立文件。"""
@@ -46,6 +50,13 @@ def delete_book(db: Session, book_id: int) -> bool:
     book = repo.get_book(db, book_id)
     if not book:
         return False
+    # P2 接线（2026-08-11）：删书后失效会话挑选缓存，避免回放已删书的挑选结果
+    try:
+        from app.services.rag_router import clear_session_cache
+
+        clear_session_cache()
+    except Exception:  # noqa: BLE001 缓存清理失败不阻塞删除
+        pass
     file_path = Path(book.file_path)
     db.execute(delete(ChatMessage).where(ChatMessage.ref_book_id == book_id))
     db.execute(delete(ReadingLog).where(ReadingLog.book_id == book_id))

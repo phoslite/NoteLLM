@@ -4,11 +4,14 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MdRender from '@/components/MdRender.vue'
 import { dedupeAssets, getBookAsset, listAssetBriefs, summarizeBook } from '@/api/rag'
-import { notifyTaskSubmitted, waitForTask } from '@/utils/task'
+import { notifyTaskSubmitted } from '@/utils/task'
+import { useTaskPoll } from '@/composables/useTaskPoll'
+import { TASK_TIMEOUT_MS } from '@/utils/constants'
 import { listBooks, uploadBook } from '@/api/books'
 import type { BookAssetBrief, BookAssetView, BookItem } from '@/types'
 
 const router = useRouter()
+const poll = useTaskPoll()
 
 const books = ref<BookItem[]>([])
 const assets = ref<Record<number, BookAssetBrief>>({})
@@ -39,9 +42,6 @@ function assetOf(bookId: number) {
   return assets.value[bookId] ?? null
 }
 
-function mergedCount(entry: BookAssetBrief | null | undefined) {
-  return entry?.merged_count ?? 0
-}
 
 const submittedBook = computed(() => books.value.find((b) => b.id === submittedId.value) ?? null)
 // 审查 A-6：列表 map 仅存摘要，提交总结成功后单独拉取完整资产展示详情
@@ -93,14 +93,18 @@ async function runSummarize(bookId: number) {
   try {
     const { task_id } = await summarizeBook(bookId)
     notifyTaskSubmitted()
-    // 审查 B-4：轮询收敛到 utils/task.ts::waitForTask（原 pollTask 180s 超时保持一致）
-    await waitForTask(task_id, { timeoutMs: 180000 })
+    // 审查 B-4：轮询收敛到 useTaskPoll（utils/task.ts::waitForTask，原 pollTask 180s 超时保持一致）
+    // C-I3：failed 必须报错；卸载由 useTaskPoll 顶层 onBeforeUnmount 自动中止轮询（三审修复：原写在函数体内的 onBeforeUnmount 被 Vue 静默丢弃）
+    const task = await poll.run(task_id, { timeoutMs: TASK_TIMEOUT_MS })
+    if (task.status === 'failed') {
+      throw new Error(`总结任务失败：${task.error ?? '未知错误'}`)
+    }
     await refresh()
     submittedId.value = bookId
     submittedAsset.value = await getBookAsset(bookId)
     ElMessage.success('总结完成')
   } catch (err) {
-    ElMessage.error((err as Error).message)
+    if ((err as Error).name !== 'AbortError') ElMessage.error((err as Error).message)
   } finally {
     busyId.value = null
     taskMsg.value = ''
@@ -296,7 +300,7 @@ onMounted(refresh)
 .upload-info { flex: 1; min-width: 0; }
 .card-title { margin: 0 0 3px; font-size: 15.5px; }
 .card-desc {
-  margin: 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5;
+  margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .upload-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -321,11 +325,11 @@ onMounted(refresh)
 .zone-icon { font-size: 20px; flex-shrink: 0; }
 .zone-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .zone-hint {
-  font-size: 12.5px; font-weight: 600;
+  font-size: 13px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .zone-file {
-  font-size: 11.5px; color: var(--text-secondary);
+  font-size: 13px; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .zone-file.muted { opacity: .75; }
@@ -340,13 +344,13 @@ onMounted(refresh)
 .upload-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .upload-actions .el-input { width: 200px; }
 .busy-tip {
-  margin-top: 8px; color: var(--primary-color); font-size: 12.5px;
+  margin-top: 8px; color: var(--primary-color); font-size: 13px;
   display: inline-block; padding: 3px 10px; border-radius: 999px; background: var(--primary-soft);
 }
 
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .card-head-title { font-size: 15px; font-weight: 700; }
-.head-sub { font-size: 12px; color: var(--text-secondary); }
+.head-sub { font-size: 13px; color: var(--text-secondary); }
 .head-actions { display: flex; gap: 8px; align-items: center; }
 
 .submitted-card { border-color: color-mix(in srgb, var(--success) 45%, var(--border-color)); border-radius: var(--radius-lg); }
@@ -355,6 +359,7 @@ onMounted(refresh)
 .submitted-icon { font-size: 15px; }
 .submitted-title { font-weight: 700; font-size: 15px; }
 .submitted-actions { display: flex; align-items: center; gap: 10px; }
+.submitted-actions :deep(.el-button) { min-height: 24px; } /* E2E 二轮：link 按钮可点击区域 ≥ 24px */
 .submitted-window {
   background: var(--panel-bg); border-radius: 8px; padding: 16px 18px;
   display: flex; flex-direction: column; gap: 16px;
@@ -373,13 +378,13 @@ onMounted(refresh)
 .skill-item { padding: 9px 11px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; }
 .skill-item + .skill-item { margin-top: 8px; }
 .skill-name { font-weight: 700; font-size: 13px; }
-.skill-sub { font-size: 12.5px; color: var(--text-secondary); margin-top: 4px; line-height: 1.7; }
-.skill-usage { font-size: 12.5px; color: var(--text-secondary); margin-top: 8px; line-height: 1.7; }
+.skill-sub { font-size: 13px; color: var(--text-secondary); margin-top: 4px; line-height: 1.7; }
+.skill-usage { font-size: 13px; color: var(--text-secondary); margin-top: 8px; line-height: 1.7; }
 .chunk-item { padding: 10px 12px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; }
 .chunk-item + .chunk-item { margin-top: 8px; }
-.chunk-meta { font-size: 11.5px; color: var(--text-secondary); margin-bottom: 4px; }
+.chunk-meta { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
 .chunk-text { font-size: 13px; line-height: 1.8; }
-.submitted-meta { margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
+.submitted-meta { margin-top: 10px; font-size: 13px; color: var(--text-secondary); }
 
 .asset-card { border-radius: var(--radius-lg); }
 .asset-row {
@@ -400,7 +405,7 @@ onMounted(refresh)
 }
 .asset-rail.has { background: var(--success); }
 .fmt {
-  font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 4px;
+  font-size: 11px; font-weight: 700; padding: 3px 7px; border-radius: 4px;
   background: var(--panel-bg); border: 1px solid var(--border-color); flex-shrink: 0;
   letter-spacing: 0.5px;
 }
@@ -414,4 +419,5 @@ onMounted(refresh)
 .brief :deep(p) { margin: 0; }
 .brief.muted { font-style: italic; }
 .row-actions { flex-shrink: 0; }
+.row-actions :deep(.el-button) { min-height: 24px; } /* E2E 四轮 #15：link 按钮可点击区域 >= 24px */
 </style>

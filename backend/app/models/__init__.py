@@ -6,3 +6,4 @@ from app.models.graph import BookRelation, KnowledgePoint, KpRelation  # noqa: F
 from app.models.llm_cache import LlmCache  # noqa: F401
 from app.models.profile import Setting, UserProfile  # noqa: F401
 from app.models.task import Task  # noqa: F401
+from app.models.term_alias import TermAlias  # noqa: F401

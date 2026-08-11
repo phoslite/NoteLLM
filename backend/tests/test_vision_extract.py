@@ -385,3 +385,27 @@ def test_missing_page_caches_lists_only_missing(tmp_path):
     (page_dir / "page_002.md").write_text("   ", encoding="utf-8")  # 空白视为缺失
     (page_dir / "page_003.md").write_text("", encoding="utf-8")  # 空文件视为缺失
     assert vision_extract.missing_page_caches(book) == [2, 3]
+
+
+def test_vision_rebuild_uses_submit_dedupe(client, monkeypatch, tmp_path):
+    """审查 I-2：页缓存重建路由走 submit_dedupe（防重入口），与 assets/graph 路由收敛。"""
+    from app.api.routes import vision as vision_route
+
+    pdf_path = tmp_path / "rebuild.pdf"
+    _make_pdf(pdf_path, pages=2)
+    data = _import(client, pdf_path, "重建.pdf")
+
+    monkeypatch.setattr(vision_route, "vision_configured", lambda db: True)
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        vision_route, "submit_dedupe",
+        lambda *a, **k: calls.append((a, k)) or ("fake-task-1", True),
+    )
+    r = client.post(f"/api/books/{data['id']}/page-text/rebuild")
+    assert r.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][0][0] == "vision" and calls[0][0][1] == "vision-rebuild"
+    assert calls[0][1]["related_id"] == data["id"]
+    # B-I2：非 force 重建与导入预提取共用 VISION_TASK_PREFIX（同书同时只跑一路全书提取）
+    from app.tasks import VISION_TASK_PREFIX
+    assert calls[0][1]["name_prefix"] == VISION_TASK_PREFIX

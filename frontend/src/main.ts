@@ -1,6 +1,7 @@
-﻿import { createApp } from 'vue'
+import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn' // 三审 Minor-9：确认框按钮中文化（取消/确定）
 import 'element-plus/dist/index.css'
 import App from './App.vue'
 import router from './router'
@@ -11,4 +12,4 @@ import { defuseHiddenReplaceState } from './utils/historyReplaceDefuse'
 // 调用 history.replaceState 保存滚动位置，会触发 Edge/Chromium 把最小化窗口恢复。
 defuseHiddenReplaceState()
 
-createApp(App).use(createPinia()).use(router).use(ElementPlus).mount('#app')
+createApp(App).use(createPinia()).use(router).use(ElementPlus, { locale: zhCn }).mount('#app')

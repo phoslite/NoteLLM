@@ -1,4 +1,6 @@
 """笔记 API：高亮/批注/思考/不理解 + Markdown/PDF 导出。"""
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -25,7 +27,7 @@ class NoteIn(BaseModel):
 
 class NoteUpdate(BaseModel):
     note_text: str | None = None
-    note_type: str | None = None
+    note_type: str | None = Field(default=None, pattern="^(高亮|批注|思考|不理解)$")
 
 
 
@@ -58,7 +60,8 @@ def create_note(book_id: int, body: NoteIn, db: Session = Depends(get_db)):
                 "text": (body.quote_text or body.note_text or "")[:200],
             },
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 热画像回写失败不影响笔记保存；补日志可观测
+        logging.getLogger(__name__).warning("热画像回写失败（笔记已保存）: %s", exc)
         db.rollback()
     return ok(note_to_dict(note), "已保存")
 

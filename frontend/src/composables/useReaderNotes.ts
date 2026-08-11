@@ -1,6 +1,7 @@
 import { nextTick, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createNote, deleteNote, updateNote } from '@/api/reading'
+import { findQuoteRange, type HlTextNode, type HlRange } from '@/utils/highlight'
 import type { ChapterItem, NoteItem, NoteType } from '@/types'
 import type { ReaderSelection } from './useReaderSelection'
 
@@ -53,37 +54,35 @@ export function useReaderNotes(opts: {
     思考: 'note-hl-think',
   }
 
-  /** 在容器 DOM 文本中精确匹配 quote 并包裹 <mark>（支持跨文本节点）。 */
-  function wrapQuoteInElement(el: HTMLElement, quote: string, cls: string): boolean {
-    if (!quote) return false
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
-    const nodes: Text[] = []
-    let full = ''
+  /** 本次会话内「引用文本 → 选区所在段落下标」，用于归一化匹配失败时回退整段高亮。 */
+  const quoteParaIdx = new Map<string, number>()
+
+  /** 收集容器内文本节点：跳过 .katex 公式与 .note-hl 内节点参与匹配（公式自动跳过、防嵌套 mark）。 */
+  function collectHlNodes(root: HTMLElement): HlTextNode[] {
+    const nodes: HlTextNode[] = []
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
     let node: Node | null
     while ((node = walker.nextNode())) {
       const t = node as Text
-      nodes.push(t)
-      full += t.data
+      const parent = t.parentElement
+      if (!parent) continue
+      const inKatex = parent.closest('.katex') != null
+      const inMark = parent.closest('.note-hl') != null
+      nodes.push({ node: t, text: t.data, matchable: !inKatex && !inMark, inMark })
     }
-    const idx = full.indexOf(quote)
-    if (idx < 0) return false
-    const start = idx
-    const end = idx + quote.length
+    return nodes
+  }
+
+  /** 把命中的区间切片包裹进同一个 <mark>（支持跨文本节点）。 */
+  function wrapHits(nodes: HlTextNode[], hits: HlRange[], cls: string) {
     const mark = document.createElement('mark')
     mark.className = `note-hl ${cls}`
-    let acc = 0
     let placed = false
-    for (const t of nodes) {
-      const len = t.data.length
-      const nodeStart = acc
-      const nodeEnd = acc + len
-      acc = nodeEnd
-      if (end <= nodeStart || start >= nodeEnd) continue
-      const cutStart = Math.max(start - nodeStart, 0)
-      const cutEnd = Math.min(end - nodeStart, len)
-      const before = cutStart > 0 ? document.createTextNode(t.data.slice(0, cutStart)) : null
-      const hit = document.createTextNode(t.data.slice(cutStart, cutEnd))
-      const after = cutEnd < len ? document.createTextNode(t.data.slice(cutEnd)) : null
+    for (const h of hits) {
+      const t = nodes[h.nodeIndex].node
+      const before = h.start > 0 ? document.createTextNode(t.data.slice(0, h.start)) : null
+      const hit = document.createTextNode(t.data.slice(h.start, h.end))
+      const after = h.end < t.data.length ? document.createTextNode(t.data.slice(h.end)) : null
       mark.appendChild(hit)
       const frag = document.createDocumentFragment()
       if (before) frag.appendChild(before)
@@ -94,7 +93,48 @@ export function useReaderNotes(opts: {
       if (after) frag.appendChild(after)
       t.replaceWith(frag)
     }
+  }
+
+  /** 整段回退：把段落内所有可匹配文本节点（跳过公式与已有 mark）包进一个 mark。 */
+  function highlightWholeParagraph(el: HTMLElement, cls: string): boolean {
+    const nodes = collectHlNodes(el).filter((n) => n.matchable)
+    if (!nodes.length) return false
+    const mark = document.createElement('mark')
+    mark.className = `note-hl ${cls}`
+    let placed = false
+    for (const n of nodes) {
+      const t = n.node
+      const hit = document.createTextNode(t.data)
+      mark.appendChild(hit)
+      if (!placed) {
+        const frag = document.createDocumentFragment()
+        frag.appendChild(mark)
+        t.replaceWith(frag)
+        placed = true
+      } else {
+        t.remove()
+      }
+    }
     return true
+  }
+
+  /**
+   * 在容器 DOM 中归一化匹配 quote 并包裹 <mark>。
+   * - 匹配剥离 KaTeX 数学文本与换行（空白归一化）后执行；
+   * - 命中已有 mark 内部（m4 防嵌套）视为成功但不包裹；
+   * - 其余失败（公式段落 / 选区可见文本与 DOM 文本不一致）返回 false，调用方回退整段高亮。
+   */
+  function wrapQuoteInElement(el: HTMLElement, quote: string, cls: string): boolean {
+    if (!quote) return false
+    const nodes = collectHlNodes(el)
+    const hits = findQuoteRange(nodes, quote)
+    if (hits) {
+      wrapHits(nodes, hits, cls)
+      return true
+    }
+    // 归一化后仅存在于已有 mark 内部 → 跳过（防止二次包裹嵌套 mark）
+    if (findQuoteRange(nodes.map((n) => ({ ...n, matchable: n.matchable || n.inMark })), quote)) return true
+    return false
   }
 
   /** 按当前章节笔记重新渲染正文高亮（先展开旧 mark 再包裹，保持幂等）。 */
@@ -111,8 +151,14 @@ export function useReaderNotes(opts: {
     el.querySelectorAll('.para').forEach((para) => {
       const box = para.querySelector('.md-render') as HTMLElement | null
       if (!box) return
+      const paraIdx = Number(para.getAttribute('data-para') ?? -1)
       for (const n of ordered) {
-        wrapQuoteInElement(box, n.quote_text, NOTE_HL_CLASS[n.note_type] ?? 'note-hl-highlight')
+        const cls = NOTE_HL_CLASS[n.note_type] ?? 'note-hl-highlight'
+        if (wrapQuoteInElement(box, n.quote_text, cls)) continue
+        // E2E 四轮 #1：含公式段落精确匹配失败 → 回退「整段高亮」
+        // （公式节点跳过、其余文本高亮，与手册「公式自动跳过、不影响其他高亮」一致）。
+        // 仅回退到本次会话内记录过选区的段落，避免旧笔记误伤整段。
+        if (quoteParaIdx.get(n.quote_text) === paraIdx) highlightWholeParagraph(box, cls)
       }
     })
   }
@@ -137,6 +183,7 @@ export function useReaderNotes(opts: {
   function quickNote(paraIdx: number, type: NoteType) {
     const paraEl = scrollEl.value?.querySelector(`[data-para="${paraIdx}"] .md-render`)
     const quote = (paraEl?.textContent ?? blocks.value[paraIdx] ?? '').trim()
+    quoteParaIdx.set(quote, paraIdx)
     if (type === '批注' || type === '思考') {
       noteDialog.value = { visible: true, type, quote, text: '', editingId: null }
       return
@@ -145,8 +192,10 @@ export function useReaderNotes(opts: {
   }
 
   async function addThinkList() {
+    const paraIdx = selection.selMenu.value.paraIdx
     const sel = selection.takeSelection()
     if (!sel || !currentChapterId.value) return
+    if (paraIdx != null) quoteParaIdx.set(sel, paraIdx)
     try {
       const note = await createNote(bookId.value, {
         chapter_id: currentChapterId.value,
@@ -162,7 +211,9 @@ export function useReaderNotes(opts: {
   }
 
   function selNote(type: NoteType) {
+    const paraIdx = selection.selMenu.value.paraIdx
     const quote = selection.takeSelection()
+    if (paraIdx != null) quoteParaIdx.set(quote, paraIdx)
     if (type === '批注' || type === '思考') {
       noteDialog.value = { visible: true, type, quote, text: '', editingId: null }
       return
@@ -225,7 +276,7 @@ export function useReaderNotes(opts: {
 
   watch(notes, () => {
     void nextTick().then(applyHighlights)
-  })
+  }, { deep: true })  // F9 修复：push/sort/下标赋值均触发高亮刷新
 
   function setNotes(list: NoteItem[]) {
     notes.value = list

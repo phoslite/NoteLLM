@@ -46,10 +46,10 @@ const globalStats = computed(() => {
 })
 
 const statCards = computed(() => [
-  { icon: '📚', label: '书籍', value: globalStats.value.books, color: '#409eff' },
-  { icon: '🔗', label: '关联', value: globalStats.value.edges, color: '#67c23a' },
-  { icon: '➡️', label: '有向传承', value: globalStats.value.directed, color: '#f56c6c' },
-  { icon: '🗂️', label: '领域', value: globalStats.value.clusters, color: '#e6a23c' },
+  { icon: '📚', label: '书籍', value: globalStats.value.books, color: '#2f6fb0' }, // 三审 Minor-5
+  { icon: '🔗', label: '关联', value: globalStats.value.edges, color: '#529b2e' }, /* E2E 二轮：#67c23a 白底 2.19:1 → #529b2e ≈ 3.9:1 */
+  { icon: '➡️', label: '有向传承', value: globalStats.value.directed, color: '#e0382e' }, // 三审 Minor-5
+  { icon: '🗂️', label: '领域', value: globalStats.value.clusters, color: '#b8821f' }, // 三审 Minor-5
   { icon: '✅', label: '已建图谱', value: globalStats.value.built, color: '#9b59b6' },
 ])
 </script>
@@ -60,7 +60,7 @@ const statCards = computed(() => [
 .stat-ico { font-size: 20px; }
 .stat-body { display: flex; flex-direction: column; line-height: 1.25; }
 .stat-body b { font-size: 19px; color: var(--sc, var(--primary-color)); }
-.stat-body span { font-size: 12px; color: var(--text-secondary); }
+.stat-body span { font-size: 13px; color: var(--text-secondary); }
 .filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 0 12px; }
 .filter-label { color: var(--text-secondary); font-size: 13px; flex-shrink: 0; }
 .cluster-tags { display: flex; gap: 6px; flex-wrap: wrap; max-height: 76px; overflow-y: auto; }

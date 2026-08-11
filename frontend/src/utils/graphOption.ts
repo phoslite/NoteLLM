@@ -11,9 +11,9 @@ import { LABEL_FONT_SIZE, labelRichFormatter, renderTooltipHtml } from './graphL
 import { bestEdgeSet, edgeDirLabel, edgeStrokeColor, kpEdgeColor, linkEndpoints } from './graphEdges'
 
 /** 领域调色板（10 色轮换，与图例/节点颜色共用）。 */
-export const PALETTE = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9b59b6', '#2ecc71', '#e74c3c', '#16a085', '#8e44ad']
+export const PALETTE = ['#2f6fb0', '#529b2e', '#b8821f', '#e0382e', '#6e7278', '#9b59b6', '#1f9d55', '#e74c3c', '#16a085', '#8e44ad'] // 三审 Minor-5：白底对比度均 >=3:1（原 #409eff/#67c23a/#e6a23c/#f56c6c/#909399 不达标）
 /** 书内知识点层级颜色。 */
-export const LEVEL_COLOR: Record<string, string> = { 章节级: '#409eff', 重要段落: '#f56c6c', 用户标记: '#e6a23c' }
+export const LEVEL_COLOR: Record<string, string> = { 章节级: '#2f6fb0', 重要段落: '#e0382e', 用户标记: '#b8821f' } // 三审 Minor-5：对比度 >=3:1
 
 export function truncateLabel(s: string, n: number): string {
   return (s || '').length > n ? `${(s || '').slice(0, n)}…` : s || ''

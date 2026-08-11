@@ -468,3 +468,30 @@ def test_text_summary_single_block_progress(client, fake_llm, monkeypatch):
     archive_book_task(book_id)
     assert any("单块" in s for _p, s in calls)
     assert any("块" in s and "单块" not in s for _p, s in calls) is False
+
+def test_rag_privacy_override_controls_body_send(client, monkeypatch):
+    """三审 Major-2：设置页关闭隐私（DB 覆盖）后，RAG 总结只发章节标题不发正文。"""
+    from app.repositories.settings import set_setting
+    from app.services.rag_service import generate_rag_skill
+
+    book_id = _import_md(client, "隐私书.md", "# 第一章\n\n变分法泛函极值内部正文。\n")
+    calls: list = []
+
+    class _CapClient:
+        def chat(self, messages):
+            calls.append(messages[-1]["content"])
+            return REPLY_VAR
+
+    monkeypatch.setattr("app.services.rag_service.is_configured", lambda db: True)
+    monkeypatch.setattr("app.services.rag_service.build_client", lambda db: _CapClient())
+
+    db = SessionLocal()
+    try:
+        set_setting(db, "ai_enable_body_send", "false")
+        generate_rag_skill(db, book_id)
+    finally:
+        db.close()
+    assert calls, "应产生一次 LLM 调用"
+    prompt = calls[0]
+    assert "第一章" in prompt
+    assert "变分法泛函极值内部正文" not in prompt, "隐私关闭时正文不得发送给 LLM"

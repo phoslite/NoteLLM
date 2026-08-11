@@ -34,6 +34,8 @@ def get_page_annotations(book_id: int, page_index: int, db: Session = Depends(ge
 def save_page_annotations(book_id: int, body: AnnotationIn, db: Session = Depends(get_db)):
     """整页保存涂鸦元素（覆盖式写文件）；随书删除时目录一并清理。"""
     book = require_book(db, book_id)
+    if (book.page_count or 0) > 0 and body.page_index > book.page_count:
+        raise HTTPException(status_code=400, detail=f"页号越界：{body.page_index} > {book.page_count}")
     try:
         count = persist_page_annotations(book, body.page_index, body.elements)
     except ValueError as exc:

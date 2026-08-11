@@ -97,6 +97,7 @@ function formatBadge(format: string) {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  overflow-x: auto; /* E2E 四轮 #15：长章节标题横向可滚动 */
   border-top: 1px solid var(--border-color);
   padding-top: 14px;
 }
@@ -108,11 +109,14 @@ function formatBadge(format: string) {
 .shelf-list li:hover, .chapter-list li:hover { background: var(--panel-bg); }
 .shelf-list li.active, .chapter-list li.active { background: var(--primary-color); color: #fff; }
 
-.shelf-badge { flex: none; font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 4px; background: var(--panel-bg); color: var(--text-secondary); border: 1px solid var(--border-color); }
+.shelf-badge { flex: none; font-size: 11px; font-weight: 700; padding: 2px 5px; border-radius: 4px; background: var(--panel-bg); color: var(--text-secondary); border: 1px solid var(--border-color); }
 .shelf-list li.active .shelf-badge { background: rgba(255,255,255,0.2); color: #fff; border-color: transparent; }
 .shelf-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.shelf-progress { flex: none; font-size: 11px; color: var(--text-secondary); }
+.shelf-progress { flex: none; font-size: 13px; color: var(--text-secondary); }
 .shelf-list li.active .shelf-progress { color: rgba(255,255,255,0.85); }
+.chapter-list li.active .chapter-idx,
+.chapter-list li.active .chapter-title,
+.chapter-list li.active .chapter-read-toggle { color: rgba(255,255,255,0.92); } /* E2E 二轮：蓝底灰字副标题对比度 1.44:1 → 白字 */
 
 .chapter-list li { align-items: flex-start; }
 .chapter-list li.read { color: var(--text-secondary); }
@@ -126,10 +130,16 @@ function formatBadge(format: string) {
   padding: 2px 4px;
   border-radius: 4px;
   color: var(--text-secondary);
+  /* E2E 四轮 #15：点击热区 >= 24x24 */
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .chapter-read-toggle:hover { background: var(--panel-bg); }
 .chapter-read-toggle.done { color: var(--primary-color); font-weight: 700; }
 .chapter-idx { flex: none; min-width: 20px; color: var(--text-secondary); }
-.chapter-title { flex: 1; min-width: 0; }
-.empty-tip { color: var(--text-secondary); font-size: 12px; padding: 6px 2px; }
+.chapter-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-tip { color: var(--text-secondary); font-size: 13px; padding: 6px 2px; }
 </style>

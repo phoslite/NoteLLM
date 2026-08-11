@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pymupdf
 
-from app.services.ai_context import page_image_data_uri
 from app.services.chat_service import build_messages
 
 
@@ -143,30 +142,3 @@ def test_build_messages_injects_attachment_texts():
     assert isinstance(msgs2[1]["content"], str)
     assert "划线内容" not in msgs2[1]["content"]
     assert "插图内容" not in msgs2[1]["content"]
-
-
-def testpage_image_data_uri(client, tmp_path):
-    from app.core.database import SessionLocal
-    from app.repositories import books as book_repo
-
-    pdf = tmp_path / "scan.pdf"
-    _make_scanned_pdf(pdf, pages=2)
-    data = _import(client, pdf, "scan.pdf")
-    detail = client.get(f"/api/books/{data['id']}").json()["data"]
-    ch = detail["chapters"][0]
-
-    db = SessionLocal()
-    try:
-        file_path = book_repo.get_book(db, data["id"]).file_path
-    finally:
-        db.close()
-    book = SimpleNamespace(is_scanned=True, file_path=file_path)
-
-    assert page_image_data_uri(book, ch, False) is None
-    assert page_image_data_uri(SimpleNamespace(is_scanned=False, file_path=file_path), ch, True) is None
-    no_page = SimpleNamespace(index=1, title="x", content_text="", page_index=None)
-    assert page_image_data_uri(book, no_page, True) is None
-
-    uri = page_image_data_uri(book, ch, True)
-    assert uri and uri.startswith("data:image/jpeg;base64,")
-    assert client.get(f"/api/books/{data['id']}/pages/{ch['page_index']}").status_code == 200

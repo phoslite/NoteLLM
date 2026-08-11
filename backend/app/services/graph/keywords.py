@@ -37,7 +37,8 @@ _keyword_cache: dict[str, tuple[tuple[str, float], ...]] = {}
 
 
 def clear_keyword_cache() -> None:
-    """清空关键词缓存（测试隔离 / 手动重置用）。"""
+    """清空关键词缓存（测试基础设施，m-1 说明）：生产侧无调用，
+    仅供测试隔离/对照（perf 基线、跨测试串扰消除）使用。"""
     _keyword_cache.clear()
 
 
@@ -75,11 +76,26 @@ def extract_keywords(text: str, top_n: int = 80) -> dict[str, float]:
     return dict(_cached_terms(text)[:top_n])
 
 
-def book_keywords(book, top_n: int = 80) -> dict[str, float]:
-    """整书关键词（共享缓存入口）：语料组装后走内容寻址抽取，供聚类/跨书相关度/图谱共用。"""
-    from app.services.graph.corpus import book_corpus
+def book_keywords(book, top_n: int = 80, db=None) -> dict[str, float]:
+    """整书加权关键词（共享缓存入口，L3 RAG 文本层）：
 
-    return extract_keywords(book_corpus(book), top_n)
+    - 语料按来源加权（章节标题 2.0 / 正文 1.0 / RAG 后验 3.0，扫描书回退页文本），
+      每片段走内容寻址抽取后按权重合并，再取 top_n；
+    - db 非空时注入 RAG 资产文本（聚类/跨书建边等有会话的调用方）；
+    - 供聚类/跨书相关度/推荐/画像共用；无 db 时退化为纯章节/正文语料。
+    """
+    from collections import Counter
+
+    from app.services.graph.corpus import book_weighted_rag, weighted_book_texts
+
+    rag_content = book_weighted_rag(db, book) if db is not None else None
+    counter: Counter = Counter()
+    for text, weight in weighted_book_texts(book, rag_content):
+        if not text:
+            continue
+        for term, freq in extract_keywords(text, 200).items():
+            counter[term] += freq * weight
+    return dict(counter.most_common(top_n))
 
 _FW_ALNUM: dict[int, int] = {}
 for _fw, _hw in (

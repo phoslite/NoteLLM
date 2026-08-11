@@ -40,13 +40,35 @@ def book_tags(book: Book) -> list[str]:
     return tags if isinstance(tags, list) else []
 
 
-def create_book(db: Session, **kwargs) -> Book:
-    """新建书籍；未显式指定 position 时追加到书架末尾（全局最大位 + 1）。"""
+def create_book_with_chapters(
+    db: Session,
+    chapters: list[tuple[int, str, str, int | None]],
+    word_counts: list[int] | None = None,
+    **kwargs,
+) -> Book:
+    """新建书籍并批量写入章节（m-6 修复）：单事务一次提交，任一步失败整体回滚。
+
+    import 链路「建书-写章」原为两次独立提交——create_book 先 commit 后 add_chapters
+    失败会留下孤儿书行（有行无文件）；合并为单事务后失败即无残留，
+    同时消除「commit 后 refresh」的重复。
+    """
     if "position" not in kwargs:
         top = db.scalar(select(func.max(Book.position)))
         kwargs["position"] = int(top or 0) + 1
     book = Book(**kwargs)
     db.add(book)
+    db.flush()  # 取得 book.id，尚未提交（失败整体回滚）
+    for i, (index, title, content, page_index) in enumerate(chapters):
+        db.add(
+            Chapter(
+                book_id=book.id,
+                index=index,
+                title=title,
+                content_text=content,
+                page_index=page_index,
+                word_count=word_counts[i] if word_counts is not None else len(content),
+            )
+        )
     db.commit()
     db.refresh(book)
     return book
@@ -97,31 +119,6 @@ def delete_book(db: Session, book_id: int) -> bool:
 
 def list_chapters(db: Session, book_id: int) -> list[Chapter]:
     return list(db.scalars(select(Chapter).where(Chapter.book_id == book_id).order_by(Chapter.index)))
-
-
-def add_chapters(
-    db: Session,
-    book_id: int,
-    chapters: list[tuple[int, str, str, int | None]],
-    word_counts: list[int] | None = None,
-) -> None:
-    """批量写入章节：(index, title, content, page_index)；page_index 供扫描版 PDF 按页阅读。
-
-    word_counts：可选显式字数——EPUB 方案 A 正文为消毒后 HTML，导入侧先 html_to_text 再计数，
-    避免标签计入字数（word_count 用于书架/章节信息展示）。
-    """
-    for i, (index, title, content, page_index) in enumerate(chapters):
-        db.add(
-            Chapter(
-                book_id=book_id,
-                index=index,
-                title=title,
-                content_text=content,
-                page_index=page_index,
-                word_count=word_counts[i] if word_counts is not None else len(content),
-            )
-        )
-    db.commit()
 
 
 def reorder_books(db: Session, ordered_ids: list[int]) -> None:

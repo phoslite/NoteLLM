@@ -436,7 +436,7 @@ onBeforeUnmount(() => {
 .head-left { display: flex; flex-direction: column; gap: 4px; min-width: 240px; }
 .head-left h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
 .title-ico { font-size: 20px; }
-.head-sub { color: var(--text-secondary); font-size: 12px; margin: 0; }
+.head-sub { color: var(--text-secondary); font-size: 13px; margin: 0; } /* 三审 Minor-6 */
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* 图表画布 */
@@ -448,13 +448,13 @@ onBeforeUnmount(() => {
 .rel-pair { display: flex; align-items: stretch; gap: 12px; padding: 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--reading-bg); }
 .rel-book-card { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--panel-bg); }
 .rel-book-card b { font-size: 14px; line-height: 1.5; }
-.rel-book-card span { font-size: 12px; color: var(--text-secondary); }
+.rel-book-card span { font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); }
 .rel-arrow { display: flex; align-items: center; color: var(--primary-color); font-size: 22px; font-weight: 700; }
 .rel-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 .dlg-block { margin-top: 14px; }
-.dlg-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.dlg-label { font-size: 13px; /* 三审 Minor-6 */ color: var(--text-secondary); margin-bottom: 6px; }
 .reason-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.reason-tag { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 9px; font-size: 12px; line-height: 1.7; }
+.reason-tag { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 3px 9px; font-size: 13px; line-height: 1.7; }
 .feedback-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border-color); flex-wrap: wrap; }
 .fb-strength { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
@@ -469,6 +469,6 @@ onBeforeUnmount(() => {
 .appear-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mini-list { margin: 6px 0 0 18px; font-size: 13px; line-height: 1.9; }
 .kp-level { margin-left: 6px; }
-.rag-hit { color: var(--text-secondary); font-size: 12px; margin: 6px 0 0; }
+.rag-hit { color: var(--text-secondary); font-size: 13px; margin: 6px 0 0; }
 .empty { color: var(--text-secondary); font-size: 13px; }
 </style>

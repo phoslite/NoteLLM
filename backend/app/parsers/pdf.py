@@ -12,7 +12,7 @@ import pymupdf
 
 from app.parsers.base import ParsedBook, ParsedChapter
 
-# 页图渲染：自动按内嵌原图分辨率放大（默认 72 DPI 太糊），下限 2.5x（≈180 DPI），上限 6x 防超大内存
+# 页图渲染：按内嵌原图原生宽度渲染（上限 6x 防超大内存）；无内嵌图时按页面宽 2.5x（≈180 DPI）兜底
 PAGE_AUTO_ZOOM_MIN = 2.5
 PAGE_AUTO_ZOOM_MAX = 6.0
 
@@ -20,10 +20,15 @@ PAGE_AUTO_ZOOM_MAX = 6.0
 def parse_pdf(path: str | Path, title_hint: str | None = None) -> ParsedBook:
     """解析 PDF：统一按原始页切章（page_index 从 1 开始，content 为空），阅读页按页读图。"""
     path = str(path)
-    doc = pymupdf.open(path)
+    try:
+        doc = pymupdf.open(path)
+    except Exception as exc:  # noqa: BLE001 审查 I-6：损坏 PDF 统一包装为 ValueError（路由映射 400，避免 500+孤儿文件）
+        raise ValueError(f"PDF 解析失败（文件损坏或非 PDF）：{exc}") from exc
     try:
         page_count = doc.page_count
         pages_text = [(page.get_text() or "") for page in doc]
+    except Exception as exc:  # noqa: BLE001 审查 I-6：文本抽取失败同样包装为 ValueError（路由映射 400，避免 500）
+        raise ValueError(f"PDF 解析失败（文本抽取异常）：{exc}") from exc
     finally:
         doc.close()
 
@@ -42,7 +47,7 @@ def _auto_page_zoom(page) -> float:
 
 
 def pdf_page_target_width(path: str | Path, page_index: int) -> int:
-    """该页应渲染到的目标像素宽度（内嵌原图宽度，至少 2.5x 页面宽）；页号越界返回 0。
+    """该页应渲染到的目标像素宽度（内嵌原图宽度；无内嵌图时按 2.5x 页面宽兜底）；页号越界返回 0。
 
     M10 性能优化：目标宽度按 (文件, 页号) 进程内缓存（书籍导入后 PDF 不变，
     页图仅在分辨率不足时按需升级），避免每次页图请求都重新打开 PDF。
@@ -119,14 +124,20 @@ def render_pdf_page(
 
 
 def extract_pdf_cover(path: str | Path, out_path: str | Path, max_width: int = 600, quality: int = 88) -> Path | None:
-    """提取 PDF 封面：渲染第 1 页；页数不足时返回 None。"""
-    doc = pymupdf.open(str(path))
+    """提取 PDF 封面：渲染第 1 页；页数不足/文件损坏时返回 None（封面为尽力而为，不 500）。"""
+    try:
+        doc = pymupdf.open(str(path))
+    except Exception:  # noqa: BLE001 封面提取尽力而为，损坏文件不阻塞书架渲染
+        return None
     try:
         if doc.page_count < 1:
             return None
     finally:
         doc.close()
-    return render_pdf_page(path, 1, out_path, max_width=max_width, quality=quality)
+    try:
+        return render_pdf_page(path, 1, out_path, max_width=max_width, quality=quality)
+    except Exception:  # noqa: BLE001 渲染失败同样按无封面处理
+        return None
 
 
 def _render_worker(

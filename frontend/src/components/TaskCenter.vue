@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { listTasks } from '@/api/tasks'
 import type { TaskItem } from '@/types'
-import { TASK_SUBMITTED_EVENT } from '@/utils/task'
+import { TASK_SUBMITTED_EVENT, latestFinishedTasks } from '@/utils/task'
 
 /** 全局任务中心（决策 35 + 性能优化 §8 任务中心优化）：
  * - 类型图标（text/vision/render/generic）与类型标签；
@@ -41,8 +41,9 @@ function fmtTime(iso: string | null) {
 
 function pushRecent(t: TaskItem) {
   if (recents.value.some((r) => r.id === t.id)) return
-  recents.value.unshift(t)
-  recents.value = recents.value.slice(0, 3)
+  // M-1（E2E 2026-08-11）：无论输入顺序，始终按 created_at 降序保留最新 3 条（unshift 会把最新排到最旧）
+  const next = [...recents.value, t].sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+  recents.value = next.slice(0, 3)
   visible.value = true
   if (recentTimer !== null) clearTimeout(recentTimer)
   recentTimer = window.setTimeout(() => {
@@ -56,9 +57,8 @@ async function pollOnce(): Promise<boolean> {
     const all = await listTasks()
     const active = all.filter((t) => t.status === 'queued' || t.status === 'running')
     items.value = active
-    for (const t of all) {
-      if (t.status === 'success' || t.status === 'failed') pushRecent(t)
-    }
+    // C-I4：按 created_at 降序取最近终态任务（原实现 unshift+slice(0,3) 保留的是最旧 3 条）
+    for (const t of latestFinishedTasks(all, 3)) pushRecent(t)
     return active.length > 0
   } catch {
     return false
@@ -106,6 +106,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener(TASK_SUBMITTED_EVENT, startPolling)
   if (recentTimer !== null) clearTimeout(recentTimer)
+  polling = false // I-12 修复：卸载后 while(polling) 立即退出，不再继续轮询
 })
 </script>
 
@@ -174,8 +175,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .task-center {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  left: 16px;
+  bottom: 16px; /* E2E 二轮：改左下锚定，避免遮挡右侧 AI 面板/全局 AI 侧栏 */
   width: 340px;
   max-height: 52vh;
   display: flex;
@@ -205,7 +206,7 @@ onBeforeUnmount(() => {
   height: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--primary-color, #409eff);
+  background: var(--primary-color, #2f6fb0);
   color: #fff;
   font-size: 11px;
   font-weight: 600;
@@ -218,6 +219,9 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: var(--text-color);
   opacity: 0.65;
+  /* E2E 二轮：可点击区域 ≥ 24px（原 23x21 不达标） */
+  min-width: 26px;
+  min-height: 24px;
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -230,17 +234,17 @@ onBeforeUnmount(() => {
 .task-title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-type {
   flex: none;
-  font-size: 11px;
+  font-size: 13px; /* 四轮 m6 */
   color: var(--text-secondary);
   background: var(--bg-color, #f5f7fa);
   border-radius: 4px;
   padding: 1px 6px;
   white-space: nowrap;
 }
-.task-related { flex: none; font-size: 11px; color: #909399; }
-.task-status { flex: none; font-size: 11px; border-radius: 4px; padding: 1px 6px; font-weight: 600; white-space: nowrap; }
-.task-status.ok { color: #67c23a; background: rgba(103, 194, 58, 0.12); }
-.task-status.bad { color: #f56c6c; background: rgba(245, 108, 108, 0.12); }
+.task-related { flex: none; font-size: 13px; color: #6e7278; } /* 三审 Minor-6/7 */
+.task-status { flex: none; font-size: 13px; /* 三审 Minor-6 */ border-radius: 4px; padding: 1px 6px; font-weight: 600; white-space: nowrap; }
+.task-status.ok { color: var(--status-ok); background: color-mix(in srgb, var(--status-ok) 12%, transparent); }
+.task-status.bad { color: var(--status-err); background: color-mix(in srgb, var(--status-err) 12%, transparent); }
 .task-bar {
   height: 6px;
   border-radius: 3px;
@@ -250,25 +254,25 @@ onBeforeUnmount(() => {
 .task-bar-fill {
   height: 100%;
   border-radius: 3px;
-  background: linear-gradient(90deg, var(--primary-color, #409eff), #79bbff);
+  background: linear-gradient(90deg, var(--primary-color, #2f6fb0), #79bbff);
   transition: width 0.4s ease;
 }
-.task-stage { margin-top: 3px; color: #888; font-size: 12px; }
+.task-stage { margin-top: 3px; color: #6e7278; font-size: 13px; } /* 三审 Minor-6/7 */
 .task-recents { border-top: 1px dashed var(--border-color); padding-top: 6px; }
 .task-recents-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   margin-bottom: 6px;
 }
 .task-item.recent { cursor: default; }
 .task-item.recent.failed { cursor: pointer; }
-.task-error-toggle { margin-top: 3px; font-size: 11px; color: #e6a23c; }
-.task-error { margin-top: 3px; color: #f56c6c; font-size: 12px; word-break: break-all; white-space: pre-wrap; }
-.ok { color: #67c23a; font-weight: 600; }
-.bad { color: #f56c6c; font-weight: 600; }
+.task-error-toggle { margin-top: 3px; font-size: 13px; color: var(--status-warn); } /* 三审 Minor-6/7 */
+.task-error { margin-top: 3px; color: var(--status-err); font-size: 13px; /* 三审 Minor-6/7 */ word-break: break-all; white-space: pre-wrap; }
+.ok { color: var(--status-ok); font-weight: 600; }
+.bad { color: var(--status-err); font-weight: 600; }
 @keyframes task-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.82; }

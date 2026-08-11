@@ -19,6 +19,10 @@ for _k in (
 for _k in ("AI_CONCURRENCY", "VISION_CONCURRENCY", "PAGE_RENDER_CONCURRENCY"):
     os.environ.setdefault(_k, "1")
 
+# 挑选预算收敛为文档默认（本地 .env 可能覆盖为更大值，预算裁剪断言依赖默认 3/2）
+for _k, _v in (("RAG_SELECT_MAX_BOOKS", "3"), ("RAG_SELECT_MAX_SKILLS", "2")):
+    os.environ.setdefault(_k, _v)
+
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -37,12 +41,20 @@ def _sync_tasks(monkeypatch):
     """
     # 注：books.py 不直接引用 submit（两段式经 import_service 提交），无需 patch；
     # settings 路由的连接测试经 settings_service.submit 提交（审查 P0-3 下沉后）。
+    from app.api.routes import assets as assets_route
     from app.api.routes import graph as graph_route
+    from app.api.routes import vision as vision_route
     from app.services import import_service, settings_service
-    from app.tasks import submit_sync
+    from app.tasks import submit_dedupe_sync, submit_sync
 
-    for _mod in (graph_route, settings_service, import_service):
+    # I-3 收尾：graph/assets/vision 路由已改原子防重提交（submit_dedupe），
+    # 此处同步化其防重+执行，防止测试内真实后台线程与 teardown drop_all 竞态
+    for _route in (graph_route, assets_route, vision_route):
+        monkeypatch.setattr(_route, "submit_dedupe", submit_dedupe_sync)
+    for _mod in (settings_service, import_service):
         monkeypatch.setattr(_mod, "submit", submit_sync)
+    # 终审 §6.9：导入内视觉预提取已改 submit_dedupe（独立 vision 任务），测试同步化防后台线程竞态
+    monkeypatch.setattr(import_service, "submit_dedupe", submit_dedupe_sync)
 
 
 @pytest.fixture()

@@ -91,31 +91,9 @@ def normalize_skills(raw: list) -> list[dict]:
             )
     return out
 
-
-def build_llm_input(chapters, chunks: list[dict]) -> str:
-    """按章节组织正文（chunks 由调用方一次性切好）；隐私开关关闭时仅发送章节标题。
-    预算取 settings.rag_summary_chunk_chars（方案 B：64K 字符），超长由调用方分块。"""
-    if not settings.ai_enable_body_send:
-        return "\n".join(f"第{ch.index}章 {ch.title}" for ch in chapters)
-
-    by_chapter: dict[int, list[str]] = {}
-    for c in chunks:
-        by_chapter.setdefault(c["chapter_index"], []).append(c["text"])
-
-    parts: list[str] = []
-    used = 0
-    for ch in chapters:
-        block = f"【第{ch.index}章 {ch.title}】\n" + "\n".join(by_chapter.get(ch.index, []))
-        if used + len(block) > settings.rag_summary_chunk_chars and parts:
-            break
-        parts.append(block)
-        used += len(block)
-    return "\n\n".join(parts) if parts else "(无可发送的正文内容)"
-
-
-def build_page_input(page_texts: dict[int, str]) -> str:
+def build_page_input(page_texts: dict[int, str], enable_body: bool | None = None) -> str:
     """PDF 页缓存 → LLM 输入正文（隐私开关关闭时仅发送页标题；超预算截断）。"""
-    if not settings.ai_enable_body_send:
+    if not (settings.ai_enable_body_send if enable_body is None else enable_body):
         return "\n".join(f"第 {n} 页" for n in sorted(page_texts))
     parts: list[str] = []
     used = 0
@@ -129,13 +107,13 @@ def build_page_input(page_texts: dict[int, str]) -> str:
         parts.append(block)
         used += len(block)
     return "\n\n".join(parts) if parts else "(无可发送的正文内容)"
-def chunk_page_texts_for_summary(page_texts: dict[int, str], chunk_chars: int) -> list[str]:
+def chunk_page_texts_for_summary(page_texts: dict[int, str], chunk_chars: int, enable_body: bool | None = None) -> list[str]:
     """PDF 页缓存 → 方案 B map 轮输入分块。
 
     按页号顺序组装「【第 N 页】\n文本」后按 chunk_chars 切块；单页超长时从行处切开并保留页标题。
     隐私开关关闭时仅返回页号标题（单块，走旧单次调用路径）。
     """
-    if not settings.ai_enable_body_send:
+    if not (settings.ai_enable_body_send if enable_body is None else enable_body):
         titles = "\n".join(f"第 {n} 页" for n in sorted(page_texts))
         return [titles or "(无可发送的正文内容)"]
     blocks = [
@@ -146,12 +124,12 @@ def chunk_page_texts_for_summary(page_texts: dict[int, str], chunk_chars: int) -
     return _split_blocks(blocks, chunk_chars)
 
 
-def chunk_chapters_for_summary(chapters, chunks: list[dict], chunk_chars: int) -> list[str]:
+def chunk_chapters_for_summary(chapters, chunks: list[dict], chunk_chars: int, enable_body: bool | None = None) -> list[str]:
     """章节正文 → 方案 B map 轮输入分块，按章节顺序组装。
 
     隐私开关关闭时仅返回章节标题（单块，走旧单次调用路径）。
     """
-    if not settings.ai_enable_body_send:
+    if not (settings.ai_enable_body_send if enable_body is None else enable_body):
         titles = "\n".join(f"第{ch.index}章 {ch.title}" for ch in chapters)
         return [titles or "(无可发送的正文内容)"]
     by_chapter: dict[int, list[str]] = {}

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <el-drawer v-model="visible" title="书签" size="420px" :append-to-body="false">
     <div class="bm-actions">
       <el-button size="small" type="primary" @click="addCurrent">＋ 添加当前页/章节书签</el-button>
@@ -49,6 +49,8 @@ const props = defineProps<{
   currentChapterId: number | null
   /** PDF 按页阅读时的当前页号。 */
   currentPageIndex: number | null
+  /** 文本书当前视口顶部段落索引（I-9 修复：书签段落定位）。 */
+  currentPara: number | null
 }>()
 
 const emit = defineEmits<{ (e: 'jump', bookmark: BookmarkItem): void }>()
@@ -100,7 +102,7 @@ async function addCurrent() {
     await createBookmark(props.bookId, {
       chapter_id: props.currentChapterId,
       page_index: props.currentPageIndex,
-      para_pos: null,
+      para_pos: props.currentPara != null ? String(props.currentPara) : null,
       title: title || (props.currentPageIndex != null ? `第 ${props.currentPageIndex} 页` : '当前章节'),
       group_name: group,
     })
@@ -160,13 +162,13 @@ watch(visible, (v) => {
   padding: 4px 2px;
   border-bottom: 1px solid var(--border-color, #ebeef5);
 }
-.bm-count { font-weight: 400; color: var(--text-secondary, #909399); font-size: 12px; }
+.bm-count { font-weight: 400; color: var(--text-secondary, #909399); font-size: 13px; }
 .bm-item { border: 1px solid var(--border-color, #ebeef5); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
 .bm-head { display: flex; align-items: center; gap: 8px; }
 .bm-title { flex: 1; font-size: 13px; font-weight: 500; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bm-title:hover { color: var(--primary-color, #409eff); }
+.bm-title:hover { color: var(--primary-color, #2f6fb0); }
 .bm-actions { flex: none; display: flex; }
-.bm-note { margin-top: 6px; font-size: 12px; color: var(--text-secondary, #909399); white-space: pre-wrap; word-break: break-word; }
-.bm-loc { margin-top: 4px; font-size: 12px; color: var(--text-secondary, #909399); display: flex; justify-content: space-between; }
+.bm-note { margin-top: 6px; font-size: 13px; color: var(--text-secondary, #909399); white-space: pre-wrap; word-break: break-word; }
+.bm-loc { margin-top: 4px; font-size: 13px; color: var(--text-secondary, #909399); display: flex; justify-content: space-between; }
 .bm-time { flex: none; }
 </style>

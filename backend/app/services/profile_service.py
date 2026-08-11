@@ -30,8 +30,7 @@ HOT = "hot"
 WARM = "warm"
 COLD = "cold"
 
-# 暖转冷跨书数阈值（需求 3.4.1 初值：3 本）
-WARM_TO_COLD_THRESHOLD = 3
+# 暖转冷跨书数阈值由 profile_learning.DEFAULT_WARM_THRESHOLD 提供（三审 Minor：移除重复死常量）
 # 暖画像保留最近书目数（近 1~2 本）
 KEEP_RECENT = 2
 
@@ -191,14 +190,17 @@ def migrate_profiles_on_archive(db: Session, book: Book, rag: dict | None = None
 
     summary = _asset_summary(rag)
     now = utcnow().isoformat()
+    # I-2 修复：仅当热画像属于当前归档书时才携带划线与问题，
+    # 避免书架直接归档非热书时把别本书的笔记写进档案（污染挑选器与相关度）。
+    own_notes = hot.get("current_book_id") == book.id
     entry = {
         "book_id": book.id,
         "title": book.title,
         "archived_at": now,
         "summary": summary.get("summary", ""),
         "key_points": summary.get("key_points", []),
-        "highlights": hot.get("highlights", []),
-        "questions": hot.get("questions", []),
+        "highlights": hot.get("highlights", []) if own_notes else [],
+        "questions": hot.get("questions", []) if own_notes else [],
     }
     recent = [r for r in warm.get("recent_books", []) if r.get("book_id") != book.id] + [entry]
     warm["recent_books"] = recent[-KEEP_RECENT:]
