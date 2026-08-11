@@ -7,9 +7,12 @@
 - 别名映射经 `lexicon.load_synonym_aliases` 读取（用户词库同义词区），mtime 缓存失效。
 """
 import re
+from collections import Counter
+
+import jieba
 
 from app.services.graph import lexicon as _lexicon
-from app.services.graph.keywords import _CJK_RE, extract_keywords
+from app.services.graph.keywords import _CJK_RE, _STOPWORDS
 from app.services.graph.lexicon import load_synonym_aliases
 
 
@@ -82,26 +85,54 @@ def _inner_bigrams(term: str) -> set[str]:
     return frags
 
 
+_JIEBA_SIGNATURE: tuple | None = None
+_JIEBA_READY = False
+
+
+def _ensure_jieba_lexicon() -> None:
+    """把用户/系统词库注入 jieba 词典（lazy；词库变更后重新注入，mtime 缓存已由 lexicon 层处理）。"""
+    global _JIEBA_READY, _JIEBA_SIGNATURE
+    user, cached = _lexicon.load_domain_lexicon()
+    signature = (user, cached)
+    if _JIEBA_READY and signature == _JIEBA_SIGNATURE:
+        return
+    jieba.setLogLevel(60)
+    for term in user | cached:
+        if term and _CJK_RE.search(term):
+            jieba.add_word(term)
+    _JIEBA_READY = True
+    _JIEBA_SIGNATURE = signature
+
+
 def extract_profile_terms(text: str, top_n: int = 10) -> dict[str, float]:
-    """画像术语抽取（冷/暖记忆关键词）：泛化词与虚词碎片过滤 → 别名折叠 → 词库整词提权与碎片抑制。"""
+    """画像术语抽取（v1.133 jieba 分词版，冷/暖记忆关键词）。
+
+    管线：LaTeX 清理 → jieba 整词切分（用户词库注入词典，整词不被切碎）→
+    泛化词/停用词/单字/数字过滤 → 别名折叠 → 词库整词提权。
+    修复二元组时代的跨词碎片（由度/度定/义坐）——jieba 按词边界切分天然不产生此类碎片；
+    聚类链路 `extract_keywords` 冻结不受影响。
+    """
     if not text:
         return {}
     clean = _strip_latex(str(text))
+    _ensure_jieba_lexicon()
     generic = _lexicon.generic_domain_terms() | _PROFILE_GENERIC_EXTRA
-    cands = {t: w for t, w in extract_keywords(clean, top_n * 4).items() if t not in generic}
-    cands = {t: w for t, w in cands.items() if not _is_fragment_term(t)}
-    cands = canonical_terms(cands)
+    counter: Counter = Counter()
+    for token in jieba.lcut(clean):
+        token = token.strip()
+        if len(token) < 2:
+            continue
+        if token in generic or token in _STOPWORDS:
+            continue
+        if not _CJK_RE.search(token):
+            if token in _PROFILE_LATEX_EXTRA or token.replace("-", "").isdigit():
+                continue
+        counter[token] += 1
+    cands = canonical_terms(dict(counter))
     user, cached = _lexicon.load_domain_lexicon()
     hits = _lexicon._lexicon_hits(clean, user | cached)
     for term in hits:
-        for frag in _inner_bigrams(term):
-            if frag in cands and frag not in user and frag not in cached:
-                del cands[frag]
-    for term in hits:
-        if term in cands:
-            cands[term] = cands[term] * 2 + 1
-        else:
-            cands[term] = max(cands.values(), default=0.0) + 1
+        cands[term] = cands.get(term, 0.0) * 2 + 1
     return dict(sorted(cands.items(), key=lambda kv: -kv[1])[:top_n])
 
 

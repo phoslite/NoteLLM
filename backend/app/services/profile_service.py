@@ -11,13 +11,19 @@
 """
 import json
 import re
+from collections import Counter
 
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.models.book import Book
 from app.models.profile import UserProfile
-from app.services.graph.terms import extract_profile_terms, sanitize_profile_term_freq
+from app.repositories.assets import list_assets_by_books
+from app.services.graph.terms import (
+    _inner_bigrams,
+    extract_profile_terms,
+    sanitize_profile_term_freq,
+)
 from app.services.profile_learning import (
     get_thresholds,
     learn_thresholds,
@@ -273,6 +279,35 @@ def migrate_profiles_on_archive(db: Session, book: Book, rag: dict | None = None
     return get_all_profiles(db)
 
 PROFILE_REFRESH_TOP_N = 40  # 重新生成画像：暖主题聚合上限（v1.132）
+PROFILE_PREF_TOP_N = 60  # 领域偏好重建上限（v1.133）
+PROFILE_PREF_PER_BOOK = 15  # 领域偏好重建：每本书抽取上限（v1.133）
+
+
+def _rebuild_domain_preferences(db: Session) -> tuple[dict[str, float], set[str]]:
+    """从有 RAG 资产的书重建冷画像领域偏好（v1.133）：每本 top15 → 聚合 top60。
+
+    修复旧二元组时代的跨词碎片（由度/度定/义坐）：jieba 整词切分 + 词库注入，
+    重建结果全部可溯源到书的 RAG 内容。
+    返回 (偏好词频, 全部书级抽取词的内部二元组)——后者用于抑制长期兴趣中的残留碎片。
+    """
+    counter: Counter = Counter()
+    fragments: set[str] = set()
+    for _book_id, kinds in list_assets_by_books(db).items():
+        rag = kinds.get("rag")
+        if not rag:
+            continue
+        texts = [str(rag.get("summary") or "")]
+        for kp in rag.get("key_points") or []:
+            if isinstance(kp, str):
+                texts.append(kp)
+            else:
+                texts.append(str(kp.get("title") or kp.get("point") or ""))
+        terms = extract_profile_terms(" ".join(texts), PROFILE_PREF_PER_BOOK)
+        for term, weight in terms.items():
+            counter[term] += weight
+        for term in terms:
+            fragments |= _inner_bigrams(term)
+    return dict(counter.most_common(PROFILE_PREF_TOP_N)), fragments
 
 
 def refresh_profiles(db: Session) -> dict:
@@ -305,13 +340,15 @@ def refresh_profiles(db: Session) -> dict:
 
     prefs_before = dict(cold.get("domain_preferences") or {})
     interests_before = list(cold.get("long_term_interests") or [])
-    cold["domain_preferences"] = sanitize_profile_term_freq(
-        {str(k): float(v) for k, v in prefs_before.items()}
-    )
-    if interests_before:
-        cold["long_term_interests"] = list(
-            sanitize_profile_term_freq({str(t): 1.0 for t in interests_before})
-        )
+    # v1.133：领域偏好从书库 RAG 重建（非仅清洗）
+    cold["domain_preferences"], fragments = _rebuild_domain_preferences(db)
+    # 长期兴趣 = 重建 top10 + 旧词中「非书级整词内部碎片」的整词（保护手动编辑，剔除残留碎片）
+    old_interests = list(sanitize_profile_term_freq({str(t): 1.0 for t in interests_before}))
+    kept_old = [
+        term for term in old_interests
+        if not (len(term) == 2 and term in fragments and term not in cold["domain_preferences"])
+    ]
+    cold["long_term_interests"] = list(dict.fromkeys([*list(cold["domain_preferences"])[:10], *kept_old]))
 
     removed = sorted(
         set(themes_before) - set(warm["themes"]), key=lambda k: -float(themes_before.get(k, 0))

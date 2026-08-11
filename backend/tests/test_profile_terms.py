@@ -9,7 +9,7 @@ def test_extract_profile_terms_filters_generic_and_stopchars(monkeypatch):
     terms = extract_profile_terms(text, 30)
     for bad in ("定义", "理论", "的稳", "德的", "证明"):
         assert bad not in terms
-    assert "变分" in terms
+    assert "变分法" in terms  # jieba 整词切分（v1.133）
     assert "泛函" in terms
 
 
@@ -31,9 +31,8 @@ def test_extract_profile_terms_lexicon_whole_word_suppresses_fragments(monkeypat
     terms = extract_profile_terms(text, 30)
     assert "线性代数" in terms
     assert "泛函分析" in terms
-    assert "性代" not in terms
-    assert "线性" not in terms
-    assert "代数" not in terms
+    assert "性代" not in terms  # jieba 不产生跨词碎片
+    assert "映射" in terms  # 「线性映射」的独立实义词保留
 
 
 def test_sanitize_profile_term_freq_cleans_legacy_data(monkeypatch):
@@ -56,3 +55,13 @@ def test_sanitize_profile_term_freq_cleans_legacy_data(monkeypatch):
     assert "Hilbert" in cleaned
     assert "Banach" in cleaned
     assert "函数" in cleaned  # 数学核心术语不属于泛化词
+
+
+def test_extract_profile_terms_no_cross_word_fragments(monkeypatch):
+    monkeypatch.setattr(_lexicon, "load_domain_lexicon", lambda: (frozenset(), frozenset()))
+    text = "自由度与广义坐标的确定是变分法核心"
+    terms = extract_profile_terms(text, 30)
+    for bad in ("由度", "义坐", "度定", "问题"):
+        assert bad not in terms  # 旧二元组会从「自由度/广义坐标」产生跨词碎片，jieba 不会
+    assert "自由度" in terms
+    assert "广义坐标" in terms
