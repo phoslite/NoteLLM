@@ -28,6 +28,12 @@ const input = defineModel<string>('input', { required: true })
 const chatBodyEl = ref<HTMLElement | null>(null)
 
 /** 流式输出期间把聊天区滚到底部（父级在消息变化时调用）。 */
+/** Enter 发送（P1-1 v1.138）：中文输入法组词确认键（isComposing/keyCode 229）不触发发送。 */
+function onEnterKey(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return
+  emit('send')
+}
+
 function scrollToBottom() {
   void nextTick(() => {
     if (chatBodyEl.value) chatBodyEl.value.scrollTop = chatBodyEl.value.scrollHeight
@@ -90,7 +96,7 @@ watch(
         class="ai-input"
         :disabled="streaming"
         placeholder="输入问题…（Enter 发送）"
-        @keydown.enter.exact.prevent="emit('send')"
+        @keydown.enter.exact.prevent="onEnterKey"
       ></textarea>
       <el-button v-if="streaming" size="small" @click="emit('abort')">停止</el-button>
       <el-button v-else type="primary" size="small" :disabled="!input.trim()" @click="emit('send')">发送</el-button>

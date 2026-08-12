@@ -104,6 +104,25 @@ def test_html_util_text_and_scrub():
     assert "<p>a</p>" in cleaned and "<a href=\"javascript:evil()\">b</a>" not in cleaned
 
 
+def test_scrub_html_entity_quote_injection_blocked():
+    """审查 P1 回归：&quot; 实体注入不能绕过 on* 事件属性过滤（重解析后无 on* 属性）。"""
+    from html.parser import HTMLParser
+
+    class _AttrCollector(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.attrs: list = []
+
+        def handle_starttag(self, tag, attrs):
+            self.attrs = list(attrs)
+
+    cleaned = scrub_html('<img src="x&quot; onerror=&quot;alert(1)&quot;">')
+    parser = _AttrCollector()
+    parser.feed(cleaned)
+    assert not any(name.lower().startswith("on") for name, _ in parser.attrs), cleaned
+    assert "&quot;" in cleaned, "属性值内引号应被实体转义保留"
+
+
 def test_chapter_plain_text_by_format():
     """epub 格式转纯文本；md/txt 原样返回。"""
     assert chapter_plain_text("epub", "<p>甲</p><p>乙</p>") == "甲\n乙"

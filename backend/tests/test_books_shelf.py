@@ -51,6 +51,20 @@ def test_patch_position_single_book(client):
     assert _ids(client) == [ids[2], ids[0], ids[1]]
 
 
+def test_delete_folder_recursively_with_children(client):
+    """审查 P1 回归：删除含子文件夹的文件夹不再 409（子文件夹一并删除，书籍转未归类）。"""
+    parent = client.post("/api/folders", json={"name": "父文件夹"}).json()["data"]
+    child = client.post("/api/folders", json={"name": "子文件夹", "parent_id": parent["id"]}).json()["data"]
+    a = _import_md(client, "子夹书.md", "# 子夹书\n\n内容。\n")
+    client.patch(f"/api/books/{a}", json={"folder_id": child["id"]})
+    r = client.delete(f"/api/folders/{parent['id']}")
+    assert r.status_code == 200
+    folder_ids = {f["id"] for f in client.get("/api/folders").json()["data"]}
+    assert parent["id"] not in folder_ids and child["id"] not in folder_ids
+    book = next(b for b in client.get("/api/books").json()["data"] if b["id"] == a)
+    assert book["folder_id"] is None
+
+
 def test_search_books_by_title_author_tag(client):
     """q 搜索书名 / 作者 / 标签。"""
     a = _import_md(client, "概率论与数理统计.md", "# 概率论与数理统计\n\n内容。\n")

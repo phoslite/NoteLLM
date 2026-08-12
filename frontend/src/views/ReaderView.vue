@@ -240,6 +240,8 @@ let chapterSeq = 0
 
 async function loadChapter(chapterId: number, restore: boolean) {
   if (!book.value) return
+  // P2-4（v1.138）：切章中断基于旧章节上下文的流式回答，避免面板上下文标题与回答内容不一致
+  if (streaming.value) abortChat()
   const seq = ++chapterSeq
   chapterLoading.value = true
   try {

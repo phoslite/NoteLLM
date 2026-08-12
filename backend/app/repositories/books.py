@@ -157,12 +157,25 @@ def rename_folder(db: Session, folder_id: int, name: str) -> Folder | None:
 
 
 def delete_folder(db: Session, folder_id: int) -> bool:
-    """删除文件夹，其中书籍转为未归类（folder_id=None）。"""
+    """删除文件夹（递归）：书籍转为未归类（folder_id=None），子文件夹一并删除。
+
+    审查 P1 修复：旧实现仅置空本层书籍，含子文件夹时 Folder.parent_id 自引用
+    FK 冲突被路由包装为 409「书籍引用冲突」，文件夹永远删不掉。
+    """
     folder = db.get(Folder, folder_id)
     if not folder:
         return False
-    for book in db.scalars(select(Book).where(Book.folder_id == folder_id)):
-        book.folder_id = None
-    db.delete(folder)
+    # 自底向上收集后代文件夹 id（含自身）
+    ids: list[int] = [folder_id]
+    stack = [folder_id]
+    while stack:
+        fid = stack.pop()
+        for child_id in db.scalars(select(Folder.id).where(Folder.parent_id == fid)):
+            ids.append(child_id)
+            stack.append(child_id)
+    for fid in reversed(ids):
+        for book in db.scalars(select(Book).where(Book.folder_id == fid)):
+            book.folder_id = None
+        db.delete(db.get(Folder, fid))
     db.commit()
     return True

@@ -54,6 +54,12 @@ function onChip(value: string) {
   }
   emit('preset', value)
 }
+
+/** Enter 发送（P1-1 v1.138）：中文输入法组词确认键（isComposing/keyCode 229）不触发发送。 */
+function onEnterKey(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return
+  emit('send')
+}
 </script>
 
 <template>
@@ -77,7 +83,7 @@ function onChip(value: string) {
     </div>
     <div ref="chatBodyEl" class="chat-body">
       <div v-if="!messages.length" class="chat-empty">
-        基于当前章节问答：点上方能力按钮一键生成，或输入问题回车发送。<br />回复支持 Markdown / LaTeX，引用出处自动标注。
+        基于当前章节问答：点上方能力按钮切换模式并预填提示词，编辑后回车发送。<br />回复支持 Markdown / LaTeX，引用出处自动标注。
       </div>
       <div
         v-for="m in messages"
@@ -111,7 +117,7 @@ function onChip(value: string) {
         class="ai-input"
         :disabled="streaming"
         placeholder="输入问题…（Enter 发送）"
-        @keydown.enter.exact.prevent="emit('send')"
+        @keydown.enter.exact.prevent="onEnterKey"
       ></textarea>
       <el-button v-if="streaming" size="small" @click="emit('abort')">停止</el-button>
       <el-button v-else type="primary" size="small" :disabled="!input.trim()" @click="emit('send')">发送</el-button>

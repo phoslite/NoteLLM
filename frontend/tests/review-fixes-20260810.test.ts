@@ -139,6 +139,19 @@ describe('I-13 · 轮询不再重复文本（useGlobalAi）', () => {
   })
 })
 
+describe('审查 P1 · 全局 AI 清空二次确认（useGlobalAi）', () => {
+  it('取消确认不清空；确认后才清空', async () => {
+    const { ElMessageBox } = await import('element-plus')
+    const ai = useGlobalAi()
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+    await ai.clear()
+    expect(mocks.clearGlobalChatMessages).not.toHaveBeenCalled()
+    vi.mocked(ElMessageBox.confirm).mockResolvedValueOnce(true as never)
+    await ai.clear()
+    expect(mocks.clearGlobalChatMessages).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('I-14 · 脑图迟到响应不覆盖新章节（useReaderMindmap）', () => {
   it('旧请求后到但已发起新请求 → mindmapData 保留新结果', async () => {
     let releaseOld!: (v: unknown) => void

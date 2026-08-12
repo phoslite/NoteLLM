@@ -106,7 +106,7 @@ class LLMClient:
         self.timeout = timeout or settings.ai_timeout
         self.verify_ssl = settings.ai_verify_ssl if verify_ssl is None else verify_ssl
         self.temperature = temperature if temperature is not None else getattr(settings, "ai_temperature", None)
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens if max_tokens is not None else getattr(settings, "ai_max_tokens", None)
         self.top_p = top_p if top_p is not None else getattr(settings, "ai_top_p", None)
         self.frequency_penalty = (
             frequency_penalty if frequency_penalty is not None else getattr(settings, "ai_frequency_penalty", None)

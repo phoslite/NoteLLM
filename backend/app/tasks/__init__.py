@@ -321,6 +321,26 @@ def find_recent_success(
     return _row_to_dict(task) if task else None
 
 
+def find_recent_finished(
+    task_type: str,
+    name_prefix: str | None = None,
+    within_minutes: float | None = None,
+) -> dict | None:
+    """查找最近一次已结束（success/failed）的任务（审查 P1：失败风暴防护）。
+
+    与 find_recent_success 互补：路由层在「无成功记录」时据此判断最近是否失败，
+    避免构建持续失败时每次请求都重提全量重建 + LLM 打分（失败风暴）。"""
+    with SessionLocal() as db:
+        q = db.query(Task).filter(Task.type == task_type, Task.status.in_(["success", "failed"]))
+        if name_prefix:
+            q = q.filter(Task.name.like(f"{name_prefix}%"))
+        if within_minutes is not None:
+            deadline = utcnow() - timedelta(minutes=within_minutes)
+            q = q.filter(Task.finished_at.isnot(None), Task.finished_at >= deadline)
+        task = q.order_by(Task.finished_at.desc()).first()
+    return _row_to_dict(task) if task else None
+
+
 def get_status(task_id: str) -> dict:
     """查询任务状态：{status, progress, stage, result, error}；不存在返回 not_found。"""
     with SessionLocal() as db:

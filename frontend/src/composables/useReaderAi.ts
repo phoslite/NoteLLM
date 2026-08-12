@@ -154,12 +154,18 @@ export function useReaderAi(opts: {
       思考逻辑: `${ctx} 请梳理本章的思考逻辑：论证链条、关键假设与可追问的问题，引用须标注出处。`,
     }
     aiInput.value = prompts[kind] ?? ''
-    void sendChat() // 一键生成：切换模式池后立即发起标准提示词（交互优化）
+    // 方案 A（v1.138）：芯片仅切池并预填标准提示词，由用户确认后手动发送——
+    // 避免误触直接消耗 token，也便于发送前编辑提示词
   }
 
   async function sendChat(opts?: { crop_image?: string; crop_label?: string }) {
     const question = aiInput.value.trim()
-    if (!question || streaming.value || !currentChapterId.value) return
+    if (!question || streaming.value) return
+    if (!currentChapterId.value) {
+      // P2-3（v1.138）：无章节（空书/章节加载中）时给出明确反馈，不再静默失败
+      ElMessage.warning('请先选择章节后再向 AI 提问')
+      return
+    }
     aiInput.value = ''
     const selection = pendingSelection || currentSelection() || undefined
     pendingSelection = ''

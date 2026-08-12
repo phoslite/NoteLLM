@@ -35,6 +35,15 @@ def test_build_body_thinking_disabled_skips_effort():
     assert "reasoning_effort" not in body
 
 
+def test_max_tokens_falls_back_to_env(monkeypatch):
+    """审查 P1 回归：未显式传 max_tokens 时回退 settings.ai_max_tokens（与其余采样参数同语义）。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ai_max_tokens", 4096)
+    body = _chat()
+    assert body["max_tokens"] == 4096
+
+
 def test_build_body_bare_chat_no_extra_fields():
     assert set(_chat()) == {"model", "messages"}
 

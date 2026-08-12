@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy import delete, or_
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.activity import Bookmark, ChatMessage, Note, ReadingLog
 from app.models.graph import BookRelation, KnowledgePoint
 from app.repositories import books as repo
@@ -31,7 +32,10 @@ def _remove_book_files(file_path: Path) -> None:
     if not file_path.exists():
         return
     parent = file_path.parent
-    if parent.name == file_path.stem:
+    # 审查 P2 加固：仅当父目录是书籍根目录的直接子目录（新布局 <books_root>/<file_id>/<file_id><suffix>）
+    # 且目录名与文件主名一致时才 rmtree 父目录；防止极端布局（如书库根目录名恰等于书文件主名）误删整个书库
+    books_root = settings.data_dir / "books"
+    if parent.name == file_path.stem and parent.parent == books_root:
         shutil.rmtree(parent, ignore_errors=True)
         return
     for candidate in (file_path, parent / "cover.jpg", parent / "pages", parent / "pages_vlm", parent / "annotations"):

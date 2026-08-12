@@ -73,12 +73,35 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
   let lastFlushAt = 0
   let streamSeq = 0 // 流代际守卫（审查 I-2）：abort/切书后在途轮询响应直接丢弃
   let lastSseActivityAt = 0 // 最近一次 SSE 事件时刻；活跃期（<SSE_ACTIVE_GUARD_MS）不做 DB 补差，防尾部重放重复
+  // P2-5（v1.138）：当前在途流的轮询上下文——页面隐藏时暂停 2s 轮询，恢复可见后自动续跑（省电/减后端压力）
+  let pollCtx: { assistant: StreamAssistant; streamKey: string; seq: number } | null = null
 
   function stopPolling() {
     if (activePollTimer != null) {
       clearInterval(activePollTimer)
       activePollTimer = null
     }
+  }
+
+  function startPolling() {
+    if (activePollTimer != null) return
+    if (!pollCtx) return
+    const ctx = pollCtx
+    activePollTimer = setInterval(() => {
+      void pollStreamHistory(ctx.assistant, ctx.streamKey, ctx.seq)
+    }, pollIntervalMs)
+  }
+
+  function onVisibilityChange() {
+    if (typeof document === 'undefined') return // 非浏览器环境（SSR/单测）守卫
+    if (document.visibilityState === 'hidden') {
+      stopPolling()
+    } else if (streaming.value && pollCtx) {
+      startPolling() // 隐藏期间流仍在走（SSE 主通道），恢复可见后重新用 2s 轮询补差
+    }
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange)
   }
 
   /** 把累积的缓冲一次性写入消息并滚动（渲染节流的核心刷出点）。 */
@@ -185,6 +208,7 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
         streamSeq += 1 // MO2（四轮）：终态分支推进代际，在途轮询响应不再写缓冲
         flushThinking()
         flushDelta(assistant)
+        assistant.local = false // P1-2（v1.138）：终态后不再显示流式闪烁光标
         streaming.value = false
         streamError.value = ev.message
         stopPolling()
@@ -199,9 +223,8 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
       if (!assistant.content) removeAssistant?.(assistant)
       return
     }
-    activePollTimer = setInterval(() => {
-      void pollStreamHistory(assistant, streamKey, seq)
-    }, pollIntervalMs)
+    pollCtx = { assistant, streamKey, seq }
+    startPolling()
     const { promise, abort } = streamHandle
     chatAbort = abort
     try {
@@ -211,6 +234,7 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
       wasAborted = isAbortError(err)
       flushThinking()
       flushDelta(assistant)
+      assistant.local = false // P1-2（v1.138）：中止/出错后不再显示流式闪烁光标
       streaming.value = false
       // 用户主动中断（abort）不显示误导性错误横幅
       if (!wasAborted) {
@@ -220,6 +244,7 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
       }
     } finally {
       stopPolling()
+      pollCtx = null
       if (flushTimer !== null) {
         clearTimeout(flushTimer)
         flushTimer = null
@@ -230,6 +255,7 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
         streamSeq += 1 // MO2（四轮）：F2 兜底分支同样推进代际
         flushThinking()
         flushDelta(assistant)
+        assistant.local = false // P1-2（v1.138）：无终态收尾后不再显示流式闪烁光标
         streaming.value = false
         if (!wasAborted) onFinal?.()
       }
@@ -252,6 +278,9 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
     streamSeq += 1 // 审查 I-2：卸载后在途轮询不再写缓冲
     chatAbort?.()
     stopPolling()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
     if (flushTimer != null) {
       clearTimeout(flushTimer)
       flushTimer = null

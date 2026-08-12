@@ -87,6 +87,24 @@ def test_global_graph_no_resubmit_when_empty(client, wait_task):
     assert len(builds) == 1
 
 
+def test_global_graph_no_resubmit_within_cooldown_after_failed_build(client, monkeypatch):
+    """审查 P1 回归：构建失败后冷却窗口内不重复提交（防失败风暴）。"""
+    import app.services.graph.tasks as graph_tasks
+
+    def _boom(session):
+        raise RuntimeError("模拟构建失败")
+
+    monkeypatch.setattr(graph_tasks, "compute_cross_book_graph", _boom)
+    _import_md(client, "书I.md", "# 第一章 失败主题\n\n失败主题内容。\n")
+    data = client.get("/api/graph/books").json()["data"]
+    assert data.get("building")
+    data2 = client.get("/api/graph/books").json()["data"]
+    assert not data2.get("building"), "冷却窗口内失败不应重提"
+    tasks = client.get("/api/tasks").json()["data"]
+    builds = [t for t in tasks if t["name"].startswith("graph-global-build")]
+    assert len(builds) == 1, "失败后不应产生第二个构建任务"
+
+
 def test_global_graph_rebuild_when_book_set_changed(client, wait_task):
     """终审 §6.9：删书+导入同数量书（数量不变但集合变化）→ 空关系时仍触发重建（指纹判定）。
 

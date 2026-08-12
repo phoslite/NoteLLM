@@ -84,6 +84,16 @@ class _ScrubParser(HTMLParser):
         self.out: list[str] = []
         self._skip_depth = 0
 
+    @staticmethod
+    def _render_attr(name: str, value: str) -> str:
+        """属性序列化：转义 & 与 "，防止 &quot; 实体注入绕过 on* 过滤（审查 P1）。
+
+        HTMLParser(convert_charrefs=True) 会把属性值内的 &quot; 解码为 "，
+        若直接拼回 f'{k}="{v}"'，src="x&quot; onerror=..." 会重渲染出真实
+        onerror 事件属性；转义后输出等价于原文，服务端消毒承诺不失效。
+        """
+        return f'{name}="{value.replace("&", "&amp;").replace(chr(34), "&quot;")}"'
+
     def _maybe_rewrite(self, name: str, value: str) -> str:
         if name.lower() not in _IMAGE_ATTRS or not self.image_map:
             return value
@@ -119,7 +129,7 @@ class _ScrubParser(HTMLParser):
             return
         safe = self._safe_attrs(attrs)
         if safe:
-            rendered = " ".join(f'{k}="{v}"' if v is not None else k for k, v in safe)
+            rendered = " ".join(self._render_attr(k, v) if v is not None else k for k, v in safe)
             self.out.append(f"<{tag} {rendered}>")
         else:
             self.out.append(f"<{tag}>")
@@ -130,7 +140,7 @@ class _ScrubParser(HTMLParser):
             return
         safe = self._safe_attrs(attrs)
         if safe:
-            rendered = " ".join(f'{k}="{v}"' if v is not None else k for k, v in safe)
+            rendered = " ".join(self._render_attr(k, v) if v is not None else k for k, v in safe)
             self.out.append(f"<{tag} {rendered}/>")
         else:
             self.out.append(f"<{tag}/>")

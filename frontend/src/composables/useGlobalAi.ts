@@ -1,5 +1,5 @@
 import { reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { clearGlobalChatMessages, deleteGlobalChatSession, listGlobalChatMessages, streamGlobalChat } from '@/api/chat'
 import { mergeChatHistory } from '@/utils/chatMerge'
 import { useStreamSession } from '@/composables/useStreamSession'
@@ -115,6 +115,16 @@ export function useGlobalAi(): GlobalAi {
   }
 
   async function clear() {
+    // 审查 P1（v1.139）：清空为不可逆操作，须二次确认（与阅读页 clearChat 行为一致）
+    try {
+      await ElMessageBox.confirm(
+        `将永久删除该会话的全部聊天记录（共 ${messages.value.length} 条），此操作不可恢复。确定清空？`,
+        '清空对话',
+        { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
+      )
+    } catch {
+      return // 用户取消：不误杀在途流
+    }
     if (streaming.value) abortChat()
     try {
       await clearGlobalChatMessages(sessionId)

@@ -17,7 +17,10 @@ from app.services.graph.tasks import (
     sync_assets_task,
 )
 from app.services.graph_sync import apply_relation_feedback
-from app.tasks import find_recent_success, submit_dedupe
+from app.tasks import find_recent_finished, find_recent_success, submit_dedupe
+
+# 审查 P1：构建失败冷却窗口（分钟）——窗口内失败不重提，防失败风暴；窗口外允许自愈重试
+_BUILD_FAIL_COOLDOWN_MIN = 5
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
@@ -46,10 +49,16 @@ def get_global_graph(db: Session = Depends(get_db)):
         # 「进行中」任务，完成后每次 GET 都会重复提交全量重建+LLM 打分。若最近一次
         # 成功构建时的书籍数未变 → 空图谱为真值，直接返回不重提；新书导入后书籍数
         # 变化会自动触发重建。
+        book_ids = list_book_ids(db)
         recent = find_recent_success("text", "graph-global-build")
         # 终审 §6.9：按书籍 id 集合指纹判定（数量判定会在「删书+导入同数量书」时误判为未变）
-        if recent is not None and (recent.get("result") or {}).get("book_ids") == list_book_ids(db):
+        if recent is not None and (recent.get("result") or {}).get("book_ids") == book_ids:
             return ok(global_graph_payload(db))
+        # 审查 P1 修复：最近一次构建失败且处于冷却窗口内 → 跳过重提，
+        # 避免持续失败时每次 GET 都触发全量重建 + LLM 打分（失败风暴）；窗口外允许自愈重试
+        last = find_recent_finished("text", "graph-global-build", within_minutes=_BUILD_FAIL_COOLDOWN_MIN)
+        if last is not None and last.get("status") == "failed":
+            return ok(global_graph_payload(db), "上次图谱构建失败，稍后自动重试")
         task_id = _submit_graph_task("text", "graph-global-build", lazy_global_build)
         return ok({"building": True, "task_id": task_id}, "图谱构建中，稍后自动刷新")
     return ok(global_graph_payload(db))

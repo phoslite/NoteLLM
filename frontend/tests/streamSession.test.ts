@@ -58,13 +58,29 @@ function row(streamKey: string, content: string, overrides: Partial<ChatMessageI
   return { id: 9, role: 'assistant', content, stream_key: streamKey, book_id: null, chapter_id: null, ref_para_pos: null, created_at: null, ...overrides }
 }
 
+/** document stub（P2-5）：node 环境下模拟 visibilitychange 监听/派发。 */
+let visHandler: (() => void) | null = null
+function stubDocument() {
+  vi.stubGlobal('document', {
+    visibilityState: 'visible',
+    addEventListener: vi.fn((_t: string, h: () => void) => { visHandler = h }),
+    removeEventListener: vi.fn(),
+  })
+}
+function setVisibility(v: 'visible' | 'hidden') {
+  ;(globalThis.document as { visibilityState: string }).visibilityState = v
+  visHandler?.()
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  stubDocument()
 })
 
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  visHandler = null
 })
 
 describe('F1 · 停止复位（内核）', () => {
@@ -82,6 +98,7 @@ describe('F1 · 停止复位（内核）', () => {
 
     expect(session.streaming.value).toBe(false)
     expect(session.streamError.value).toBe('') // 主动中断不显示错误横幅
+    expect(a1.local).toBe(false) // P1-2：中止后不再显示流式闪烁光标
     const baseline = pollHistory.mock.calls.length
     await vi.advanceTimersByTimeAsync(2100) // 轮询定时器已清理
     expect(pollHistory.mock.calls.length).toBe(baseline)
@@ -123,7 +140,7 @@ describe('F1 · 停止复位（内核）', () => {
 })
 
 describe('F2 · 无终态复位（内核）', () => {
-  it('promise 正常结束但无 end/error → 复位 streaming、清轮询、onFinal 回调', async () => {
+  it('promise 正常结束但无 end/error → 复位 streaming、清轮询、onFinal 回调、local 复位（P1-2）', async () => {
     const stream = controllableStream()
     const { session, pollHistory, hooks } = makeSession({
       fetchStream: (onEvent) => { stream.setHandler(onEvent); return stream },
@@ -132,12 +149,15 @@ describe('F2 · 无终态复位（内核）', () => {
     const p = session.stream(a, 'k-1')
     expect(session.streaming.value).toBe(true)
 
+    stream.emit({ type: 'delta', text: 'partial' })
+    await vi.advanceTimersByTimeAsync(80)
     stream.resolve()
     await p
 
     expect(session.streaming.value).toBe(false)
     expect(session.streamError.value).toBe('')
     expect(hooks.onFinal).toHaveBeenCalledTimes(1) // 对应 reader onAssistantDone
+    expect(a.local).toBe(false) // P1-2：无终态收尾后不再显示流式闪烁光标
     const baseline = pollHistory.mock.calls.length
     await vi.advanceTimersByTimeAsync(2100)
     expect(pollHistory.mock.calls.length).toBe(baseline)
@@ -154,6 +174,37 @@ describe('F2 · 无终态复位（内核）', () => {
     await p
     expect(session.streaming.value).toBe(false)
     expect(hooks.onFinal).not.toHaveBeenCalled()
+  })
+})
+
+describe('P2-5 · 页面隐藏时暂停轮询、恢复可见后自动续跑（v1.138）', () => {
+  it('hidden 停轮询；visible 且流未终态时恢复轮询', async () => {
+    const stream = controllableStream()
+    const { session, pollHistory } = makeSession({
+      fetchStream: (onEvent) => { stream.setHandler(onEvent); return stream },
+    })
+    const a = makeAssistant()
+    const p = session.stream(a, 'k-1')
+
+    // 流式启动后轮询按 2s 周期运行
+    await vi.advanceTimersByTimeAsync(2100)
+    expect(pollHistory.mock.calls.length).toBe(1)
+
+    // 页面隐藏 → 暂停轮询（省电/减后端压力）
+    setVisibility('hidden')
+    const baseline = pollHistory.mock.calls.length
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(pollHistory.mock.calls.length).toBe(baseline)
+
+    // 恢复可见 → 轮询自动续跑
+    setVisibility('visible')
+    await vi.advanceTimersByTimeAsync(2100)
+    expect(pollHistory.mock.calls.length).toBeGreaterThan(baseline)
+
+    stream.emit({ type: 'end', text: 'done', citations: [], cached: false })
+    stream.resolve()
+    await p
+    session.dispose()
   })
 })
 
@@ -180,19 +231,23 @@ describe('MO2 · 六个终态分支（end/error/catch/F2/dispose/abortChat）', 
     expect(pollHistory.mock.calls.length).toBe(baseline) // end 已停轮询
   })
 
-  it('error 事件终态：streamError/onError 设置、streaming 复位、轮询停止', async () => {
+  it('error 事件终态：streamError/onError 设置、streaming 复位、轮询停止、local 复位（P1-2）', async () => {
     const stream = controllableStream()
     const { session, pollHistory, hooks } = makeSession({
       fetchStream: (onEvent) => { stream.setHandler(onEvent); return stream },
     })
     const a = makeAssistant()
     const p = session.stream(a, 'k-1')
+    stream.emit({ type: 'delta', text: 'partial' })
+    await vi.advanceTimersByTimeAsync(80)
     stream.emit({ type: 'error', message: '服务端错误' })
     stream.resolve()
     await p
     expect(session.streaming.value).toBe(false)
     expect(session.streamError.value).toBe('服务端错误')
     expect(hooks.onError).toHaveBeenCalledWith('服务端错误')
+    expect(a.content).toBe('partial') // 有内容时气泡保留
+    expect(a.local).toBe(false) // 不再显示流式闪烁光标
     const baseline = pollHistory.mock.calls.length
     await vi.advanceTimersByTimeAsync(2100)
     expect(pollHistory.mock.calls.length).toBe(baseline)
@@ -210,6 +265,7 @@ describe('MO2 · 六个终态分支（end/error/catch/F2/dispose/abortChat）', 
     expect(session.streaming.value).toBe(false)
     expect(session.streamError.value).toBe('连接中断')
     expect(hooks.onError).toHaveBeenCalledWith('连接中断')
+    expect(a.local).toBe(false) // P1-2：异常终态不再显示流式闪烁光标
     const baseline = pollHistory.mock.calls.length
     await vi.advanceTimersByTimeAsync(2100)
     expect(pollHistory.mock.calls.length).toBe(baseline)
