@@ -178,6 +178,7 @@ export interface AiSettings {
   rag_select_max_books: number
   rag_select_max_skills: number
   rag_select_cache_ttl_minutes: number
+  graph_sync_concurrency: number
 }
 
 export interface ChatMessageItem {

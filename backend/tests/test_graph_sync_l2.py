@@ -179,3 +179,23 @@ def test_sync_concurrency_one_is_serial(client, monkeypatch):
         db.close()
     assert result["llm_updated"] == 3
     assert state["peak"] == 1, f"串行模式峰值应为 1，实际 {state['peak']}"
+
+
+def test_graph_sync_concurrency_settings_override(client):
+    """设置页覆盖 graph_sync_concurrency：视图回显 + _sync_llm_workers 消费 DB 覆盖（0=不限制）。"""
+    from app.core.database import SessionLocal
+    from app.services.graph_sync import _sync_llm_workers
+
+    r = client.patch("/api/settings/ai", json={"graph_sync_concurrency": 4})
+    assert r.status_code == 200
+    assert r.json()["data"]["graph_sync_concurrency"] == 4
+    db = SessionLocal()
+    try:
+        assert _sync_llm_workers(db, 3) == 4, "DB 覆盖应优先于 .env"
+        client.patch("/api/settings/ai", json={"graph_sync_concurrency": 0})
+        assert _sync_llm_workers(db, 3) == 3, "0=不限制：worker 数取 min(书数,8)"
+        assert _sync_llm_workers(db, 20) == 8, "0=不限制：上限 8"
+        client.patch("/api/settings/ai", json={"graph_sync_concurrency": 1})
+        assert _sync_llm_workers(db, 3) == 1, "1=串行"
+    finally:
+        db.close()

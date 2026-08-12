@@ -30,6 +30,7 @@ AI_OVERRIDE_KEYS: dict[str, str] = {
     "ai_presence_penalty": "AI_PRESENCE_PENALTY",
     "ai_stop": "AI_STOP",
     "ai_anthropic_version": "AI_ANTHROPIC_VERSION",
+    "graph_sync_concurrency": "GRAPH_SYNC_CONCURRENCY",
     # 多模态视觉配置（M7）：独立于文本 AI
     "vision_base_url": "VISION_BASE_URL",
     "vision_api_key": "VISION_API_KEY",
@@ -62,7 +63,7 @@ AI_OVERRIDE_KEYS: dict[str, str] = {
 
 # 布尔/数值字段类型转换
 _BOOL_KEYS = {"ai_verify_ssl", "ai_enable_body_send", "ai_send_page_image", "vision_verify_ssl", "vision_enable_thinking", "rag_select_verify_ssl", "ai_rag_select_enabled"}
-_INT_KEYS = {"ai_timeout", "ai_max_tokens", "vision_timeout", "vision_max_tokens", "vision_thinking_budget", "rag_select_timeout", "rag_select_max_tokens", "rag_select_max_books", "rag_select_max_skills", "rag_select_cache_ttl_minutes"}
+_INT_KEYS = {"ai_timeout", "ai_max_tokens", "vision_timeout", "vision_max_tokens", "vision_thinking_budget", "rag_select_timeout", "rag_select_max_tokens", "rag_select_max_books", "rag_select_max_skills", "rag_select_cache_ttl_minutes", "graph_sync_concurrency"}
 _FLOAT_KEYS = {
     "ai_temperature",
     "ai_top_p",
@@ -311,6 +312,8 @@ def ai_settings_view(db: Session) -> dict:
         "rag_select_max_books": overrides.get("rag_select_max_books", settings.rag_select_max_books),
         "rag_select_max_skills": overrides.get("rag_select_max_skills", settings.rag_select_max_skills),
         "rag_select_cache_ttl_minutes": overrides.get("rag_select_cache_ttl_minutes", settings.rag_select_cache_ttl_minutes),
+        # 联动沉淀 LLM 并发（L2，默认 1=串行；0=不限制；N=上限 cap 8）
+        "graph_sync_concurrency": overrides.get("graph_sync_concurrency", settings.graph_sync_concurrency),
     }
 
 def find_env_file() -> Path | None:

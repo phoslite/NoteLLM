@@ -62,6 +62,7 @@ class AiSettingsIn(BaseModel):
     rag_select_max_books: int | None = None
     rag_select_max_skills: int | None = None
     rag_select_cache_ttl_minutes: int | None = None
+    graph_sync_concurrency: int | None = None  # 联动沉淀 LLM 并发（1=串行；0=不限制；N=上限）
 
 
 @router.get("/ai")

@@ -24,6 +24,7 @@ from app.models.graph import BookRelation
 from app.repositories.assets import read_asset_content, save_asset_content, upsert_asset
 from app.repositories.books import get_book
 from app.repositories.graph import list_active_relations, list_books
+from app.repositories.settings import load_ai_overrides
 from app.services.graph.clustering import (
     build_posterior_index,
     merge_and_rename_clusters,
@@ -227,16 +228,17 @@ def _chat_safe(client, messages: list[dict]) -> str | BaseException:
         return exc
 
 
-def _sync_llm_workers(total: int) -> int:
-    """L2 worker 数：GRAPH_SYNC_CONCURRENCY 默认 1=串行；0=不限制（min(书数, 8)）；N=上限（cap 8）。
+def _sync_llm_workers(db: Session, total: int) -> int:
+    """L2 worker 数：设置页/GRAPH_SYNC_CONCURRENCY 默认 1=串行；0=不限制（min(书数, 8)）；N=上限（cap 8）。
 
-    并发仍受 ai_concurrency 信号量约束（client.chat 内部统一限流，决策 35 红线 3）。
+    运行时覆盖（设置页保存）优先，未覆盖取 .env；并发仍受 ai_concurrency 信号量约束
+    （client.chat 内部统一限流，决策 35 红线 3）。
     """
-    n = settings.graph_sync_concurrency
-    if n <= 1:
-        return 1
+    n = load_ai_overrides(db).get("graph_sync_concurrency", settings.graph_sync_concurrency)
     if n == 0:
-        return min(max(total, 1), 8)
+        return min(max(total, 1), 8)  # 0=不限制（min(书数, 8)）
+    if n <= 1:
+        return 1  # 默认串行
     return min(n, 8)
 
 
@@ -330,7 +332,7 @@ def sync_assets_for_relations(
     # L2 并发 chat（仅网络 IO，不触碰 Session/ORM；client 线程安全可共享；失败按书隔离）
     if pending:
         client = build_client(db)
-        workers = _sync_llm_workers(len(pending))
+        workers = _sync_llm_workers(db, len(pending))
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="graph-sync") as pool:
                 replies = list(pool.map(lambda m: _chat_safe(client, m), [p[4] for p in pending]))

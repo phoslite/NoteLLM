@@ -58,6 +58,7 @@ const form = reactive<AiSettings>({
   rag_select_max_books: 3,
   rag_select_max_skills: 2,
   rag_select_cache_ttl_minutes: 60,
+  graph_sync_concurrency: 1,
 })
 
 type FieldType = 'text' | 'password' | 'number' | 'switch' | 'select'
@@ -94,6 +95,7 @@ const textFields: FieldDef[] = [
   { key: 'reasoning_effort', label: '推理强度', type: 'select', section: '思考模式', clearable: true, placeholder: '默认（不传）', options: [{ label: 'low', value: 'low' }, { label: 'medium', value: 'medium' }, { label: 'high', value: 'high' }, { label: 'max', value: 'max' }], tip: 'DeepSeek reasoning_effort；关闭思考时不要同时设置' },
   { key: 'enable_body_send', label: '发送书籍正文', type: 'switch', section: '隐私与附件', tip: '隐私开关：关闭后不向模型发送书籍正文，仅用元信息与问题' },
   { key: 'send_page_image', label: '发送页面图片', type: 'switch', section: '隐私与附件', tip: '扫描版 PDF：提问时附带当前页图片作为附件（需模型支持视觉输入，chat 模式）' },
+  { key: 'graph_sync_concurrency', label: '联动沉淀 LLM 并发', type: 'number', section: '并发', min: 0, max: 8, tip: '图谱联动沉淀（谱系图页「💾 联动沉淀」）LLM 并发：1=串行（默认，最稳）；0=不限制；N=并发上限（≤8）。仍受「文本并发信号量」（AI_CONCURRENCY）约束，边未变化时幂等跳过不消耗' },
 ]
 
 const visionFields: FieldDef[] = [
@@ -135,6 +137,7 @@ const sectionIcons: Record<string, string> = {
   隐私与附件: '🔒',
   总开关: '🎚️',
   预算: '💰',
+  并发: '⚡',
 }
 
 function sectionsOf(fields: FieldDef[]) {
@@ -241,6 +244,7 @@ function toPayload() {
     rag_select_max_books: form.rag_select_max_books,
     rag_select_max_skills: form.rag_select_max_skills,
     rag_select_cache_ttl_minutes: form.rag_select_cache_ttl_minutes,
+    graph_sync_concurrency: form.graph_sync_concurrency,
   }
   if (form.api_key.trim()) payload.api_key = form.api_key.trim()
   if (form.vision_api_key.trim()) payload.vision_api_key = form.vision_api_key.trim()

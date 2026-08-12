@@ -57,6 +57,7 @@ FIELD_TO_KEY: dict[str, str] = {
     "rag_select_max_books": "rag_select_max_books",
     "rag_select_max_skills": "rag_select_max_skills",
     "rag_select_cache_ttl_minutes": "rag_select_cache_ttl_minutes",
+    "graph_sync_concurrency": "graph_sync_concurrency",
 }
 
 
