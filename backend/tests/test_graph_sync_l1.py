@@ -18,8 +18,16 @@ def _task_result(client, wait_task, task_id: str) -> dict:
 
 
 def _add_relation(db, a: int, b: int, strength: float = 80.0):
+    from sqlalchemy import delete
+
     from app.models.graph import BookRelation
 
+    # 唯一约束（审查 P1-3）：同 pair 先删后插（upsert 语义），覆盖导入后台自动边
+    db.execute(
+        delete(BookRelation).where(
+            BookRelation.book_a_id == min(a, b), BookRelation.book_b_id == max(a, b)
+        )
+    )
     rel = BookRelation(
         book_a_id=min(a, b),
         book_b_id=max(a, b),

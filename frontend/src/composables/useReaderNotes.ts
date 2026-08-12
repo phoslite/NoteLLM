@@ -1,7 +1,7 @@
 import { nextTick, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createNote, deleteNote, updateNote } from '@/api/reading'
-import { findQuoteRange, type HlTextNode, type HlRange } from '@/utils/highlight'
+import { findQuoteRange, normalizeHlText, type HlTextNode, type HlRange } from '@/utils/highlight'
 import type { ChapterItem, NoteItem, NoteType } from '@/types'
 import type { ReaderSelection } from './useReaderSelection'
 
@@ -56,6 +56,14 @@ export function useReaderNotes(opts: {
 
   /** 本次会话内「引用文本 → 选区所在段落下标」，用于归一化匹配失败时回退整段高亮。 */
   const quoteParaIdx = new Map<string, number>()
+
+  /** 笔记 → 所在段落下标（增量高亮定位缓存；章节切换后按当前章笔记过滤使用）。 */
+  const noteParaIdx = new Map<number, number>()
+  /** 段落下标 → 该段需渲染的笔记 id 集合（上一轮 applyHighlights 结果，影响段判定用）。 */
+  const paraNoteIds = new Map<number, Set<number>>()
+  /** 当前章节段落归一化文本索引（textContent 级粗定位；key = 章节 id + 段落数）。 */
+  let paraTextsCache: string[] | null = null
+  let paraTextsKey = ''
 
   /** 收集容器内文本节点：跳过 .katex 公式与 .note-hl 内节点参与匹配（公式自动跳过、防嵌套 mark）。 */
   function collectHlNodes(root: HTMLElement): HlTextNode[] {
@@ -137,22 +145,89 @@ export function useReaderNotes(opts: {
     return false
   }
 
-  /** 按当前章节笔记重新渲染正文高亮（先展开旧 mark 再包裹，保持幂等）。 */
+  /** 解包指定段内全部旧 mark（幂等：无 mark 时无操作）。 */
+  function unwrapPara(paraIdx: number) {
+    const el = scrollEl.value
+    if (!el) return
+    const para = el.querySelector(`.para[data-para="${paraIdx}"]`) as HTMLElement | null
+    if (!para) return
+    let leftover: Element | null = null
+    while ((leftover = para.querySelector('.note-hl'))) {
+      leftover.replaceWith(...Array.from(leftover.childNodes))
+    }
+  }
+
+  /** 当前章节段落归一化文本索引（textContent 级，含公式/旧 mark 文本——粗定位只要段级命中）。 */
+  function buildParaTexts(chapterId: number): string[] {
+    const el = scrollEl.value
+    const count = el?.querySelectorAll('.para').length ?? 0
+    const key = `${chapterId}:${count}`
+    if (paraTextsCache && paraTextsKey === key) return paraTextsCache
+    paraTextsKey = key
+    paraTextsCache = []
+    if (el) {
+      el.querySelectorAll('.para').forEach((para) => {
+        const box = para.querySelector('.md-render') as HTMLElement | null
+        paraTextsCache!.push(normalizeHlText(box?.textContent ?? ''))
+      })
+    }
+    return paraTextsCache
+  }
+
+  /** 定位笔记所在段落：优先缓存；未缓存时按段落文本索引找第一个包含 quote 的段，
+   *  失配再回退本会话选区记录（quoteParaIdx）。返回段落下标或 null。 */
+  function locateNotePara(n: NoteItem, texts: string[]): number | null {
+    const cached = noteParaIdx.get(n.id)
+    if (cached != null && cached < texts.length) return cached
+    const normQ = normalizeHlText(n.quote_text || '')
+    let idx = -1
+    if (normQ) idx = texts.findIndex((t) => t.includes(normQ))
+    if (idx < 0) {
+      const selIdx = quoteParaIdx.get(n.quote_text)
+      if (selIdx != null && selIdx < texts.length) idx = selIdx
+    }
+    if (idx >= 0) noteParaIdx.set(n.id, idx)
+    return idx >= 0 ? idx : null
+  }
+
+  /** 按当前章节笔记增量渲染正文高亮：只解包/重包受影响段落（上一轮关联段 ∪ 本轮定位段），
+   *  段落文本索引只建一次，避免全章 O(P×N) 重扫；保持幂等与整段回退语义。 */
   function applyHighlights() {
     const el = scrollEl.value
     if (!el) return
-    let leftover: Element | null = null
-    while ((leftover = el.querySelector('.note-hl'))) {
-      leftover.replaceWith(...Array.from(leftover.childNodes))
+    const chapterId = currentChapterId.value
+    if (chapterId == null) return // 无章节上下文（切书瞬间）不渲染
+    const chapterNotes = notes.value.filter((n) => n.chapter_id === chapterId)
+    // 受影响段落 = 上一轮已关联段 ∪ 本轮定位段
+    const affected = new Set<number>(paraNoteIds.keys())
+    if (!chapterNotes.length) {
+      for (const paraIdx of affected) unwrapPara(paraIdx)
+      paraNoteIds.clear()
+      return
     }
-    const chapterNotes = notes.value.filter((n) => n.chapter_id === currentChapterId.value)
-    if (!chapterNotes.length) return
     const ordered = [...chapterNotes].sort((a, b) => b.quote_text.length - a.quote_text.length)
-    el.querySelectorAll('.para').forEach((para) => {
-      const box = para.querySelector('.md-render') as HTMLElement | null
-      if (!box) return
-      const paraIdx = Number(para.getAttribute('data-para') ?? -1)
+    const texts = buildParaTexts(chapterId)
+    const nextParaNotes = new Map<number, Set<number>>()
+    for (const n of ordered) {
+      const paraIdx = locateNotePara(n, texts)
+      if (paraIdx == null) continue
+      affected.add(paraIdx)
+      let ids = nextParaNotes.get(paraIdx)
+      if (!ids) {
+        ids = new Set()
+        nextParaNotes.set(paraIdx, ids)
+      }
+      ids.add(n.id)
+    }
+    for (const paraIdx of affected) {
+      unwrapPara(paraIdx)
+      const ids = nextParaNotes.get(paraIdx)
+      if (!ids) continue
+      const para = el.querySelector(`.para[data-para="${paraIdx}"]`) as HTMLElement | null
+      const box = para?.querySelector('.md-render') as HTMLElement | null
+      if (!box) continue
       for (const n of ordered) {
+        if (!ids.has(n.id)) continue
         const cls = NOTE_HL_CLASS[n.note_type] ?? 'note-hl-highlight'
         if (wrapQuoteInElement(box, n.quote_text, cls)) continue
         // E2E 四轮 #1：含公式段落精确匹配失败 → 回退「整段高亮」
@@ -160,7 +235,9 @@ export function useReaderNotes(opts: {
         // 仅回退到本次会话内记录过选区的段落，避免旧笔记误伤整段。
         if (quoteParaIdx.get(n.quote_text) === paraIdx) highlightWholeParagraph(box, cls)
       }
-    })
+    }
+    paraNoteIds.clear()
+    for (const [paraIdx, ids] of nextParaNotes) paraNoteIds.set(paraIdx, new Set(ids))
   }
 
   async function addNote(type: NoteType, quote: string, text: string) {
@@ -247,6 +324,7 @@ export function useReaderNotes(opts: {
     try {
       await deleteNote(n.id)
       notes.value = notes.value.filter((x) => x.id !== n.id)
+      noteParaIdx.delete(n.id)
       ElMessage.success('已删除')
     } catch (err) {
       ElMessage.error((err as Error).message)

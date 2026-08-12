@@ -31,6 +31,13 @@ describe('hasUnclosedMath', () => {
     expect(hasUnclosedMath('$$a$$ 与 $b')).toBe(true)
     expect(hasUnclosedMath('a$$b$')).toBe(true)
   })
+
+  it('P3-6：转义 \$ 不参与配对计数（价格/LaTeX 命令内美元）', () => {
+    expect(hasUnclosedMath('价格 \\$5 与 \\$10')).toBe(false) // 两个转义美元，无真实定界
+    expect(hasUnclosedMath('单价 \\$5')).toBe(false) // 单个转义美元不算未闭合
+    expect(hasUnclosedMath('公式 $x$ 与价格 \\$5')).toBe(false) // 真实成对 + 转义
+    expect(hasUnclosedMath('公式 $x 与价格 \\$5')).toBe(true) // 真实未闭合仍检出
+  })
 })
 
 describe('isAbortError', () => {

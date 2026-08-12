@@ -36,6 +36,15 @@ def _confirmed_edges(db, strengths: list[float]):
     db.add_all(books)
     db.commit()
     for i, s in enumerate(strengths):
+        # 唯一约束（审查 P1-3）：同 pair 先删后插
+        from sqlalchemy import delete as _delete
+
+        db.execute(
+            _delete(BookRelation).where(
+                BookRelation.book_a_id == books[0].id,
+                BookRelation.book_b_id == books[i + 1].id,
+            )
+        )
         db.add(
             BookRelation(
                 book_a_id=books[0].id,

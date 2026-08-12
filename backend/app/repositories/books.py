@@ -10,8 +10,16 @@ from app.models.book import Book, Chapter, Folder
 
 def list_books(db: Session, folder_id: int | None = None, q: str | None = None) -> list[Book]:
     """书架列表：按 position 升序（同位置回退创建时间倒序）；q 搜索书名/作者/tag。"""
-    stmt = select(Book).options(selectinload(Book.chapters)).order_by(
-        Book.position.asc(), Book.created_at.desc()
+    # 审查 P1-2：书架阅读概况只需 id/index/title/read_flag，不加载 content_text 全文
+    # （大库时每次 GET /api/books 免读几十 MB 正文；单本详情仍走 list_chapters 全列）
+    stmt = (
+        select(Book)
+        .options(
+            selectinload(Book.chapters).load_only(
+                Chapter.id, Chapter.index, Chapter.title, Chapter.read_flag
+            )
+        )
+        .order_by(Book.position.asc(), Book.created_at.desc())
     )
     if folder_id is not None:
         stmt = stmt.where(Book.folder_id == folder_id)

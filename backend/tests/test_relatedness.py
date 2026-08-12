@@ -44,6 +44,14 @@ def _attach_rag(book_id: int, rag: dict) -> None:
 def _edge(a: int, b: int, strength: float) -> None:
     db = SessionLocal()
     try:
+        # 唯一约束（审查 P1-3）：同 pair 先删后插
+        from sqlalchemy import delete as _delete
+
+        db.execute(
+            _delete(BookRelation).where(
+                BookRelation.book_a_id == min(a, b), BookRelation.book_b_id == max(a, b)
+            )
+        )
         db.add(
             BookRelation(
                 book_a_id=a,

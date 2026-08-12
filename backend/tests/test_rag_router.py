@@ -192,6 +192,11 @@ def test_fallback_keeps_null_feedback_relations(client, monkeypatch):
             or_(BookRelation.book_a_id == c, BookRelation.book_b_id == c)
         ).all():
             db.delete(rel)
+        # 唯一约束（审查 P1-3）：(a,b) pair 的导入自动边一并清理（upsert 语义）
+        for rel in db.query(BookRelation).filter(
+            BookRelation.book_a_id == min(a, b), BookRelation.book_b_id == max(a, b)
+        ).all():
+            db.delete(rel)
         db.flush()
         # 默认 NULL 反馈（多数边）与显式「忽略」各一条
         db.add_all([

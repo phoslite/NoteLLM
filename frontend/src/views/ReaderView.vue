@@ -46,7 +46,7 @@ const scrollEl = ref<HTMLElement | null>(null)
 const bookId = computed(() => Number(route.params.bookId))
 const books = computed<BookItem[]>(() => {
   // 阅读页书架：只展示最近打开过的 5 本（当前书籍恒在列表内，避免刚打开尚未保存进度时消失）
-  const recents = store.recentBooks()
+  const recents = store.recentBooks
   const cur = book.value
   if (!cur) return recents
   return [cur, ...recents.filter((b) => b.id !== cur.id)].slice(0, 5)
@@ -106,6 +106,16 @@ function jumpToBookmark(bm: BookmarkItem) {
   }
 }
 
+/** 当前章节段落元素缓存（loadChapter 后建立一次；滚动定位复用，避免每帧 querySelectorAll）。 */
+let paraEls: HTMLElement[] | null = null
+
+function rebuildParaEls() {
+  const el = scrollEl.value
+  paraEls = el && !pageMode.value && !epubMode.value
+    ? Array.from(el.querySelectorAll<HTMLElement>('[data-para]'))
+    : null
+}
+
 /** 文本书当前视口顶部段落（书签段落定位 I-9）：滚动/换章时更新。 */
 const currentParaIndex = ref<number | null>(null)
 function updateCurrentPara() {
@@ -114,17 +124,21 @@ function updateCurrentPara() {
     currentParaIndex.value = null
     return
   }
-  // 审查 I-9 修正 + 复审收尾：定位逻辑下沉 utils/viewport.ts（纯函数可单测）
-  currentParaIndex.value = viewportTopPara(
-    Array.from(el.querySelectorAll<HTMLElement>('[data-para]')),
-    el,
-  )
+  if (!paraEls) rebuildParaEls()
+  // 审查 I-9 修正 + 复审收尾：定位逻辑下沉 utils/viewport.ts（纯函数可单测）；
+  // 传入上次命中段做双向扩散查找（data-para = 数组下标，hint 即下标）
+  currentParaIndex.value = viewportTopPara(paraEls ?? [], el, 24, currentParaIndex.value)
 }
 
-/** 文本书书签跳转：滚动到指定段落。 */
+/** 滚动处理器（rAF 合并：同一帧多次 scroll 只执行一次进度/段落更新）。 */
+let scrollRaf = 0
 function onReadScroll() {
-  progress.onScroll()
-  updateCurrentPara()
+  if (scrollRaf) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0
+    progress.onScroll()
+    updateCurrentPara()
+  })
 }
 
 function scrollToPara(para: number) {
@@ -257,6 +271,7 @@ async function loadChapter(chapterId: number, restore: boolean) {
     epubContent.value = pageMode.value || book.value?.format !== 'epub' ? '' : content.content_text
     blocks.value = pageMode.value || epubMode.value ? [] : cachedSplitBlocks(content.content_text)
     await nextTick()
+    rebuildParaEls()
     if (!pageMode.value) applyHighlights()
     applyRestore(chapterId, restore)
     void nextTick(updateCurrentPara)
@@ -396,6 +411,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (scrollRaf) cancelAnimationFrame(scrollRaf)
   document.removeEventListener('mouseup', onMouseUp)
   document.removeEventListener('mousedown', onDocMouseDown)
   document.removeEventListener('visibilitychange', onVisibilityChange)

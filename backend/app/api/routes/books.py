@@ -115,27 +115,26 @@ def get_book(book: Book = Depends(_get_book), db: Session = Depends(get_db)):
 
 @router.patch("/{book_id}")
 def update_book(book_id: int, body: BookUpdate, book: Book = Depends(_get_book), db: Session = Depends(get_db)):
-    if body.folder_id is not None and db.get(Folder, body.folder_id) is None:
+    # 审查 P1-1：仅显式传入的字段参与更新（exclude_unset）——未传 folder_id 时
+    # 不得清空用户归类；显式传 null 才表示「移出文件夹」（保持 repo._UNSET 哨兵语义）
+    data = body.model_dump(exclude_unset=True)
+    folder_id = data.get("folder_id")
+    if folder_id is not None and db.get(Folder, folder_id) is None:
         # 终审 §6.9：无效 folder_id 与全库「资源不存在→404」契约统一
-        raise HTTPException(status_code=404, detail=f"文件夹不存在：{body.folder_id}")
-    tags = clean_tags(body.tags) if body.tags is not None else None
+        raise HTTPException(status_code=404, detail=f"文件夹不存在：{folder_id}")
+    tags = clean_tags(data["tags"]) if data.get("tags") is not None else None
+    kwargs: dict = {k: data[k] for k in ("title", "author", "status", "progress", "position") if k in data}
+    if "folder_id" in data:
+        kwargs["folder_id"] = data["folder_id"]  # None=显式移出；值=移动
+    if tags is not None:
+        kwargs["tags"] = tags
     try:
-        book = repo.update_book(
-            db,
-            book_id,
-            title=body.title,
-            author=body.author,
-            status=body.status,
-            progress=body.progress,
-            folder_id=body.folder_id,
-            tags=tags,
-            position=body.position,
-        )
+        book = repo.update_book(db, book_id, **kwargs)
     except IntegrityError as exc:
         # m-7 修复：FK 冲突拆两类——folder 并发删除（资源消失）→ 404「文件夹不存在」；
         # 其他数据冲突（如并发修改引用）→ 409 Conflict（与 folders.delete_folder 语义统一）
-        if body.folder_id is not None:
-            raise HTTPException(status_code=404, detail=f"文件夹不存在：{body.folder_id}") from exc
+        if folder_id is not None:
+            raise HTTPException(status_code=404, detail=f"文件夹不存在：{folder_id}") from exc
         raise HTTPException(status_code=409, detail="更新失败：数据引用冲突，请刷新后重试") from exc
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")

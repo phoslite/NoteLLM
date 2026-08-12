@@ -271,35 +271,45 @@ function toggleLevel(level: string) {
 }
 
 function backToGlobal() {
+  intraSeq += 1 // P1-3：返回全局后丢弃在途书内图谱响应
   view.value = 'global'
   currentBook.value = null
   intra.value = null
   nextTick(() => renderGlobal())
 }
 
+/** 书内图谱请求代际（P1-3 修复）：快速连点两本书/返回全局时，旧响应不得覆盖新书数据。 */
+let intraSeq = 0
+
 async function openIntraBook(node: GraphNode) {
+  const seq = ++intraSeq
   loading.value = true
   try {
     await ensureGraphLabelReady()
+    if (seq !== intraSeq) return // 过期请求：期间已打开其他书或返回全局
     currentBook.value = node
     const g = await getIntraGraph(node.id)
+    if (seq !== intraSeq) return
     if (g.building && g.task_id) {
       // 书内图谱懒构建后台化：任务完成后重拉
       ElMessage.info('本书知识图谱构建中…')
       notifyTaskSubmitted()
       await waitTask(g.task_id)
+      if (seq !== intraSeq) return
       intra.value = await getIntraGraph(node.id)
     } else {
       intra.value = g
     }
+    if (seq !== intraSeq) return
     view.value = 'intra'
     await nextTick()
     renderIntra()
   } catch (err) {
     if (isTaskAbort(err)) return
+    if (seq !== intraSeq) return // 过期请求的错误不打扰当前视图
     ElMessage.error((err as Error).message)
   } finally {
-    loading.value = false
+    if (seq === intraSeq) loading.value = false
   }
 }
 

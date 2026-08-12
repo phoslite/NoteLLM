@@ -499,14 +499,14 @@ async function batchSetTags() {
     <aside class="recent-panel">
       <div class="panel-head">
         <h2>近期阅读</h2>
-        <span class="panel-count" v-if="store.recentBooks().length">{{ store.recentBooks().length }} 本</span>
+        <span class="panel-count" v-if="store.recentBooks.length">{{ store.recentBooks.length }} 本</span>
       </div>
-      <div v-if="store.recentBooks().length === 0" class="empty-block">
+      <div v-if="store.recentBooks.length === 0" class="empty-block">
         <div class="empty-icon">📖</div>
         <div>暂无阅读记录</div>
         <div class="empty-sub">打开一本书开始阅读吧</div>
       </div>
-      <div v-for="b in store.recentBooks()" :key="b.id" class="recent-item" @click="openBook(b)">
+      <div v-for="b in store.recentBooks" :key="b.id" class="recent-item" @click="openBook(b)">
         <div class="recent-cover">
           <img v-if="b.cover_url" :src="b.cover_url" :alt="b.title" loading="lazy" decoding="async" />
           <span v-else>{{ b.title.charAt(0).toUpperCase() }}</span>

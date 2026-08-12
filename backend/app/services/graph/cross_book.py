@@ -1,13 +1,16 @@
 """跨书谱系：关键词共现余弦分 + 笔记加权 + 同聚类低分边；全局谱系序列化与重建。"""
 import json
+import threading
 from collections import defaultdict
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.activity import Note
+from app.models.asset import BookAsset
 from app.models.book import Book
 from app.models.graph import BookRelation, KnowledgePoint
-from app.repositories.assets import read_asset_content
+from app.repositories.assets import list_assets_by_books
 from app.repositories.graph import (
     clear_relations,
     count_knowledge_points,
@@ -25,7 +28,7 @@ from app.services.graph.edges import pair_key
 from app.services.graph.intra_book import build_intra_book_graph
 from app.services.graph.keywords import book_keywords, extract_keywords
 from app.services.graph.llm_score import apply_llm_result, enrich_pairs_with_llm
-from app.services.graph.similarity import idf_weights, pair_similarity
+from app.services.graph.similarity import idf_weights, pair_similarity_weighted, weighted_vectors
 from app.services.graph.terms import canonical_terms
 from app.services.graph_sync import link_graph_assets
 
@@ -39,6 +42,89 @@ def _load_notes_by_book(db: Session) -> dict[int, list[Note]]:
     for note in list_notes(db):
         notes_by_book.setdefault(note.book_id, []).append(note)
     return notes_by_book
+
+
+# ---- H3：跨书检索进程内倒排索引（词 → KP / 词 → RAG key_points）----
+# 惰性构建 + 指纹失效：(kp_count, max_kp_id, book_count, asset_count, asset_version_sum)。
+# KnowledgePoint 无 updated_at，且全库不存在就地更新路径（仅 intra_book 新建/重建删除），
+# 指纹可覆盖全部 KP 变更；资产 upsert 必 bump version（repositories/assets.upsert_asset），
+# 故 RAG 内容变更同样可检测。并发安全：双检锁 + 不可变快照（构建完成后不再修改）。
+_KP_INDEX_LOCK = threading.Lock()
+_KP_INDEX: dict | None = None
+
+
+def _kp_index_fingerprint(db: Session) -> tuple:
+    """索引数据源指纹：两三条轻量聚合查询，与构建内容一一对应。"""
+    kp_count, kp_max = db.query(func.count(KnowledgePoint.id), func.max(KnowledgePoint.id)).one()
+    asset_count, asset_ver_sum = db.query(
+        func.count(BookAsset.id), func.coalesce(func.sum(BookAsset.version), 0)
+    ).one()
+    book_count = db.query(func.count(Book.id)).scalar()
+    return (kp_count, kp_max, book_count, asset_count, asset_ver_sum)
+
+
+def _build_kp_index(db: Session, fingerprint: tuple) -> dict:
+    """全量构建：KP title+summary（top30）与每书 RAG key_points（top20）词倒排。"""
+    kp_rows: list[dict] = []
+    kp_posting: dict[str, list[int]] = defaultdict(list)
+    for kp in list_knowledge_points(db):  # id 升序，输出顺序与全量扫描一致
+        toks = frozenset(extract_keywords(f"{kp.title or ''} {kp.summary or ''}", 30))
+        idx = len(kp_rows)
+        kp_rows.append(
+            {
+                "id": kp.id,
+                "book_id": kp.book_id,
+                "title": kp.title,
+                "summary": kp.summary,
+                "level": kp.level,
+                "chapter_id": kp.chapter_id,
+                "para_pos": kp.para_pos,
+                "tokens": toks,
+            }
+        )
+        for t in toks:
+            kp_posting[t].append(idx)
+    rag_books: list[tuple[int, list[tuple[str, frozenset]]]] = []
+    rag_posting: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    assets = list_assets_by_books(db)
+    for book_id in sorted(assets):  # 书 id 升序，与 list_books_except 遍历序一致
+        rag = assets[book_id].get("rag") or {}
+        entries: list[tuple[str, frozenset]] = []
+        for kp_text in rag.get("key_points") or []:
+            if not isinstance(kp_text, str):
+                kp_text = str(kp_text.get("title") or kp_text.get("point") or "")
+            toks = frozenset(extract_keywords(kp_text, 20))
+            entries.append((kp_text, toks))
+        if not entries:
+            continue
+        book_idx = len(rag_books)
+        rag_books.append((book_id, entries))
+        for e_idx, (_text, toks) in enumerate(entries):
+            for t in toks:
+                rag_posting[t].append((book_idx, e_idx))
+    return {
+        "fingerprint": fingerprint,
+        "kps": kp_rows,
+        "kp_posting": dict(kp_posting),
+        "rag_books": rag_books,
+        "rag_posting": dict(rag_posting),
+    }
+
+
+def _get_kp_index(db: Session) -> dict:
+    """双检锁取索引：指纹未变直接复用（命中查询零全库扫描）；变更时重建。"""
+    global _KP_INDEX
+    fp = _kp_index_fingerprint(db)
+    idx = _KP_INDEX
+    if idx is not None and idx["fingerprint"] == fp:
+        return idx
+    with _KP_INDEX_LOCK:
+        idx = _KP_INDEX
+        if idx is not None and idx["fingerprint"] == fp:
+            return idx
+        idx = _build_kp_index(db, fp)
+        _KP_INDEX = idx
+        return idx
 
 
 def _note_weight(
@@ -56,10 +142,16 @@ def _note_weight(
 
 def _pair_score(
     db: Session, a: Book, b: Book, ka: dict[str, float], kb: dict[str, float],
-    notes_by_book: dict[int, list[Note]], idf: dict[str, float],
+    notes_by_book: dict[int, list[Note]], idf: dict[str, float], wv: dict,
 ) -> tuple[float, list[str]] | None:
-    """两书关联评分（L2）：IDF 加权余弦 ×100 + 笔记加权；低于 τ_edge 返回 None（不建边）。"""
-    result = pair_similarity(ka, kb, idf)
+    """两书关联评分（L2）：IDF 加权余弦 ×100 + 笔记加权；低于 τ_edge 返回 None（不建边）。
+
+    H2：wv 为入口预计算的加权向量/范数表（weighted_vectors(keywords, idf)），
+    逐对不再重复构建 IDF 加权向量（实测 4.4x 冗余）。
+    """
+    wa, norm_a = wv.get(a.id, ({}, 0.0))
+    wb, norm_b = wv.get(b.id, ({}, 0.0))
+    result = pair_similarity_weighted(ka, kb, wa, norm_a, wb, norm_b)
     if result is None:
         return None
     sim, reasons = result
@@ -96,6 +188,7 @@ def compute_cross_book_graph(db: Session) -> dict:
     books_by_id = {b.id: b for b in books}
     keywords = {b.id: canonical_terms(book_keywords(b, db=db)) for b in books}
     idf = idf_weights(keywords)
+    wv = weighted_vectors(keywords, idf)  # H2：加权向量/范数入口一次预计算
     notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载，_pair_score 直接查内存
     # 终审 §6.9：重建保留人工反馈（确认/忽略/修改），避免用户反复处理同一关联
     feedback: dict[tuple[int, int], dict] = {
@@ -112,7 +205,7 @@ def compute_cross_book_graph(db: Session) -> dict:
     for a_id, b_id in pair_ids:
         a = books_by_id[a_id]
         b = books_by_id[b_id]
-        result = _pair_score(db, a, b, keywords.get(a_id, {}), keywords.get(b_id, {}), notes_by_book, idf)
+        result = _pair_score(db, a, b, keywords.get(a_id, {}), keywords.get(b_id, {}), notes_by_book, idf, wv)
         if not result:
             continue
         score, reasons = result
@@ -178,6 +271,7 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
         return {"relations_added": 0, "linked": 0}
     keywords = {b.id: canonical_terms(book_keywords(b, db=db)) for b in [book, *others]}
     idf = idf_weights(keywords)
+    wv = weighted_vectors(keywords, idf)  # H2：加权向量/范数入口一次预计算
     notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载
     existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in list_relations(db)}
     added = 0
@@ -204,7 +298,7 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
         candidates.append((a.id, b.id, score))
 
     for other in others:
-        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book, idf)
+        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book, idf, wv)
         if result:
             score, reasons = result
             add_pair(book, other, score, reasons, "概念共现")
@@ -236,6 +330,9 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
 
     命中来源：其他书 KnowledgePoint（章节级/重要段落/用户标记，title+summary 关键词重叠）
     + 其他书 RAG key_points 文本命中；按命中数倒序，空结果 books=[]。
+
+    H3（复杂度审查）：进程内惰性倒排索引（词→KP/词→RAG key_points）+ 指纹失效，
+    消除每请求全库扫描（2 万 KP 实测 1.4s → 命中查询只碰倒排桶；RAG 资产批量读取一次）。
     """
 
     kp = db.get(KnowledgePoint, kp_id)
@@ -254,29 +351,39 @@ def knowledge_appears_in(db: Session, kp_id: int) -> dict:
     if not tokens:
         return {"source": source, "books": [], "total": 0}
 
+    index = _get_kp_index(db)
     hits: dict[int, dict] = {}
-    for other_kp in list_knowledge_points(db, exclude_book_id=kp.book_id):
-        common = tokens & set(extract_keywords(f"{other_kp.title or ''} {other_kp.summary or ''}", 30))
-        if not common:
-            continue
-        entry = hits.setdefault(other_kp.book_id, {"matched_kps": [], "rag_hits": []})
+    # KP 命中：倒排取候选、逐词累积交集；输出按 KP id 升序（与全量扫描顺序一致）
+    kp_common: dict[int, set[str]] = {}
+    for t in tokens:
+        for kp_idx in index["kp_posting"].get(t, ()):
+            kp_common.setdefault(kp_idx, set()).add(t)
+    for kp_idx in sorted(kp_common):
+        row = index["kps"][kp_idx]
+        if row["book_id"] == kp.book_id:
+            continue  # 与原实现 exclude_book_id 一致
+        entry = hits.setdefault(row["book_id"], {"matched_kps": [], "rag_hits": []})
         entry["matched_kps"].append(
             {
-                "id": other_kp.id,
-                "title": other_kp.title,
-                "level": other_kp.level,
-                "chapter_id": other_kp.chapter_id,
-                "para_pos": other_kp.para_pos,
-                "common": sorted(common)[:6],
+                "id": row["id"],
+                "title": row["title"],
+                "level": row["level"],
+                "chapter_id": row["chapter_id"],
+                "para_pos": row["para_pos"],
+                "common": sorted(kp_common[kp_idx])[:6],
             }
         )
-    for book in list_books_except(db, kp.book_id):
-        rag = read_asset_content(db, book.id, "rag")
-        for kp_text in rag.get("key_points") or []:
-            if not isinstance(kp_text, str):
-                kp_text = str(kp_text.get("title") or kp_text.get("point") or "")
-            if tokens & set(extract_keywords(kp_text, 20)):
-                entry = hits.setdefault(book.id, {"matched_kps": [], "rag_hits": []})
+    # RAG key_points 命中：倒排先筛候选书，候选书内按资产顺序取第一条命中文本
+    rag_candidates: set[int] = set()
+    for t in tokens:
+        for book_idx, _e_idx in index["rag_posting"].get(t, ()):
+            rag_candidates.add(index["rag_books"][book_idx][0])
+    for _book_idx, (book_id, entries) in enumerate(index["rag_books"]):
+        if book_id == kp.book_id or book_id not in rag_candidates:
+            continue
+        for kp_text, toks in entries:
+            if toks & tokens:
+                entry = hits.setdefault(book_id, {"matched_kps": [], "rag_hits": []})
                 entry["rag_hits"].append(kp_text[:120])
                 break  # 每书 RAG 至多记一条提示
 

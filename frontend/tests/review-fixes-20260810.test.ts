@@ -250,7 +250,7 @@ describe('I-13b · SSE 静默时轮询补增量触发渲染（复审 Critical �
       stream.setHandler(onEvent)
       return stream
     })
-    // 调用#1 = 创建时 loadHistory（空）；调用#2 = t=2000 轮询（DB 已落库 SSE 未送达的 'b'）
+    // 调用#1 = t=2000 轮询（空；P3-9 后创建时不再 loadHistory）；调用#2 = t=4000 轮询（DB 已落库 SSE 未送达的 'b'）
     mocks.listGlobalChatMessages
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
@@ -263,9 +263,10 @@ describe('I-13b · SSE 静默时轮询补增量触发渲染（复审 Critical �
     stream.emit({ type: 'delta', text: 'a' })
     await vi.advanceTimersByTimeAsync(80) // t=80 flush 'a' → content='a'，flush 链静默
     const assistant = ai.messages.value.find((m) => m.role === 'assistant')!
-    await vi.advanceTimersByTimeAsync(1920) // t=2000 轮询：pendingText='b' + scheduleFlush
+    await vi.advanceTimersByTimeAsync(1920) // t=2000 轮询#1：空（P3-9 懒加载，无创建时拉取）
+    await vi.advanceTimersByTimeAsync(2000) // t=4000 轮询#2：pendingText='b' + scheduleFlush
 
-    await vi.advanceTimersByTimeAsync(200) // t=2200：flush 触发 → 轮询增量已渲染
+    await vi.advanceTimersByTimeAsync(200) // t=4200：flush 触发 → 轮询增量已渲染
     expect(assistant.content).toBe('ab') // 修复前：无新 SSE 事件则永远停在 'a'
 
     stream.emit({ type: 'end', text: 'ab', citations: [], cached: false })

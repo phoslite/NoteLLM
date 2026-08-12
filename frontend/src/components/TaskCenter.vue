@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { listTasks } from '@/api/tasks'
 import type { TaskItem } from '@/types'
 import { TASK_SUBMITTED_EVENT, latestFinishedTasks } from '@/utils/task'
+import { createPollLoop } from '@/utils/taskCenter'
 
 /** 全局任务中心（决策 35 + 性能优化 §8 任务中心优化）：
  * - 类型图标（text/vision/render/generic）与类型标签；
@@ -18,11 +19,29 @@ const recents = ref<TaskItem[]>([])
 const visible = ref(false)
 const collapsed = ref(false)
 const expandedError = ref<string | null>(null)
-let polling = false
 let recentTimer: number | null = null
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms))
+/** P2-1：轮询循环控制器（关闭竞态守卫：closePanel 后在途 poll 结果被丢弃）。 */
+const pollLoop = createPollLoop<{ active: TaskItem[]; finished: TaskItem[] }>({
+  poll: async () => {
+    const all = await listTasks()
+    const active = all.filter((t) => t.status === 'queued' || t.status === 'running')
+    return { more: active.length > 0, data: { active, finished: latestFinishedTasks(all, 3) } }
+  },
+  onData: ({ active, finished }) => {
+    items.value = active
+    // C-I4：按 created_at 降序取最近终态任务（原实现 unshift+slice(0,3) 保留的是最旧 3 条）
+    for (const t of finished) pushRecent(t)
+  },
+  onIdle: () => {
+    // 原行为保持：轮询自然结束（无进行中任务）且无任何内容时自动收起面板（用户手动关闭不触发）
+    if (items.value.length === 0 && recents.value.length === 0) visible.value = false
+  },
+  sleep,
+})
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, ms))
 }
 
 function typeIcon(t: TaskItem) {
@@ -52,37 +71,17 @@ function pushRecent(t: TaskItem) {
   }, 6000)
 }
 
-async function pollOnce(): Promise<boolean> {
-  try {
-    const all = await listTasks()
-    const active = all.filter((t) => t.status === 'queued' || t.status === 'running')
-    items.value = active
-    // C-I4：按 created_at 降序取最近终态任务（原实现 unshift+slice(0,3) 保留的是最旧 3 条）
-    for (const t of latestFinishedTasks(all, 3)) pushRecent(t)
-    return active.length > 0
-  } catch {
-    return false
-  }
-}
-
-async function startPolling() {
-  if (polling) return
-  polling = true
+function startPolling() {
   visible.value = true
-  try {
-    while (polling) {
-      const more = await pollOnce()
-      if (!more) break
-      await sleep(1000)
-    }
-  } finally {
-    polling = false
-    if (items.value.length === 0 && recents.value.length === 0) visible.value = false
-  }
+  pollLoop.start()
 }
 
 function closePanel() {
-  polling = false
+  pollLoop.stop() // P2-1：在途 poll 返回后结果被丢弃，不再把已关闭面板重新打开
+  if (recentTimer !== null) {
+    clearTimeout(recentTimer)
+    recentTimer = null
+  }
   visible.value = false
   items.value = []
   recents.value = []
@@ -106,7 +105,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener(TASK_SUBMITTED_EVENT, startPolling)
   if (recentTimer !== null) clearTimeout(recentTimer)
-  polling = false // I-12 修复：卸载后 while(polling) 立即退出，不再继续轮询
+  pollLoop.stop() // I-12 修复：卸载后轮询循环立即退出，不再继续轮询
 })
 </script>
 

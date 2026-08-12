@@ -34,7 +34,11 @@ from app.services.graph.lexicon import (
     load_domain_lexicon,
     load_synonym_aliases,
 )
-from app.services.graph.similarity import idf_weights, pair_similarity
+from app.services.graph.similarity import (
+    idf_weights,
+    pair_similarity_weighted,
+    weighted_vectors,
+)
 from app.services.graph.terms import canonical_terms
 from app.services.graph.thresholds import (
     ANTI_ABSORB,
@@ -307,6 +311,11 @@ def merge_and_rename_clusters(db: Session) -> dict:
     - 合并：两簇代表特征（后验关键词并集）重叠 ≥ T_MERGE → 并入书更多的主簇；
     - 重命名：簇名取簇内出现于最多书的后验术语（众数），冲突时跳过。
     - 只处理 classify_source=post 的书；tag/文件夹硬约束不受影响。
+
+    H1（复杂度审查）：合并阶段由 while-重启全量两两扫描 O(C²·KW)~O(C³·KW)
+    改为「簇代表特征预计算 + 词→簇倒排候选 + 增量 overlap 计数」：每趟只扫描
+    共享 ≥ T_MERGE 词的候选簇对（正常数据远小于 C²），合并后只对主簇新增词增量
+    更新计数；扫描顺序/主簇选择/重命名语义与旧实现逐对一致（基准 14x）。
     """
     books = list_post_classified_books(db)
     if not books:
@@ -319,28 +328,85 @@ def merge_and_rename_clusters(db: Session) -> dict:
     for b in books:
         clusters[b.cluster_name].append(b)
 
+    # H1: 倒排候选 + 增量更新（语义与旧 while-重启全量扫描一致，见函数 docstring）
+    # 簇代表特征（后验关键词并集、剔除泛词）一次性预计算；合并时增量并集
+    kw: dict[str, set[str]] = {
+        name: _cluster_keywords(by_book, members) for name, members in clusters.items()
+    }
+    inv: dict[str, set[str]] = defaultdict(set)
+    for name, kws in kw.items():
+        for t in kws:
+            inv[t].add(name)
+
     merged = 0
-    changed = True
-    while changed:
-        changed = False
+    # overlap 计数只增不减（kw 只并集）：初始全量枚举，合并后只对主簇新增词增量计数；
+    # partners 恰好是 overlap >= T_MERGE 的簇对（计数每词 +1，跨过阈值只触发一次）
+    pair_count: dict[tuple[str, str], int] = {}
+    partners: dict[str, set[str]] = defaultdict(set)
+    for ids in inv.values():
+        if len(ids) < 2:
+            continue
+        lst = sorted(ids)
+        for i in range(len(lst)):
+            a = lst[i]
+            for b in lst[i + 1 :]:
+                key = (a, b) if a < b else (b, a)
+                c = pair_count.get(key, 0) + 1
+                pair_count[key] = c
+                if c == T_MERGE:
+                    partners[a].add(b)
+                    partners[b].add(a)
+
+    while True:
+        # 与旧实现同序：当前簇序下第一对 (i<j) overlap >= T_MERGE 的候选
         names = list(clusters)
-        for i in range(len(names)):
-            for j in range(i + 1, len(names)):
-                a, b = names[i], names[j]
-                if a not in clusters or b not in clusters or a == b:
+        pos = {n: i for i, n in enumerate(names)}
+        best_i = -1
+        best_a = best_b = ""
+        for i, a in enumerate(names):
+            j_min = -1
+            b_min = ""
+            for b in partners.get(a, ()):
+                if b not in clusters:
                     continue
-                overlap = len(_cluster_keywords(by_book, clusters[a]) & _cluster_keywords(by_book, clusters[b]))
-                if overlap >= T_MERGE:
-                    main, sub = (a, b) if len(clusters[a]) >= len(clusters[b]) else (b, a)
-                    clusters[main].extend(clusters[sub])  # 被并入的书并入主簇成员，保证重命名/再合并覆盖全部书
-                    for book in clusters[sub]:
-                        book.cluster_name = main
-                    del clusters[sub]
-                    merged += 1
-                    changed = True
-                    break
-            if changed:
+                j = pos[b]
+                if j > i and (j_min < 0 or j < j_min):
+                    j_min, b_min = j, b
+            if j_min >= 0:
+                best_i, best_a, best_b = i, a, b_min
                 break
+        if best_i < 0:
+            break
+        main, sub = (
+            (best_a, best_b) if len(clusters[best_a]) >= len(clusters[best_b]) else (best_b, best_a)
+        )
+        clusters[main].extend(clusters[sub])  # 被并入的书并入主簇成员，保证重命名/再合并覆盖全部书
+        for book in clusters[sub]:
+            book.cluster_name = main
+        del clusters[sub]
+        merged += 1
+        # 增量更新：只有主簇 kw 增长（并集），只重估涉及主簇的候选对
+        new_terms = kw[sub] - kw[main]
+        if new_terms:
+            kw[main] |= new_terms
+            for t in new_terms:
+                inv[t].add(main)
+                for z in inv[t]:
+                    if z == main or z not in clusters:
+                        continue
+                    key = (main, z) if main < z else (z, main)
+                    c = pair_count.get(key, 0) + 1
+                    pair_count[key] = c
+                    if c == T_MERGE:
+                        partners[main].add(z)
+                        partners[z].add(main)
+        # 清理被并入簇的倒排/伙伴残留（计数保留，扫描时按存活过滤）
+        partners[main].discard(sub)
+        for t in kw[sub]:
+            inv[t].discard(sub)
+        for z in partners.pop(sub, ()):
+            partners[z].discard(sub)
+        kw.pop(sub, None)
 
     renamed = 0
     used_names = set(clusters)
@@ -452,12 +518,15 @@ def _build_sim_graph(
     nodes = sorted(node_ids)
     adj: dict[int, dict[int, float]] = {}
     shared: dict[tuple[int, int], list[str]] = {}
+    wv = weighted_vectors(vectors, idf)  # H2: 每书加权向量/范数只构建一次（4.4x 冗余消除）
     for a_id, b_id in _candidate_pairs(vectors):
-        wa = vectors.get(a_id)
-        wb = vectors.get(b_id)
-        if not wa or not wb:
+        ka = vectors.get(a_id)
+        kb = vectors.get(b_id)
+        if not ka or not kb:
             continue
-        result = pair_similarity(wa, wb, idf, tau)
+        wa, norm_a = wv[a_id]
+        wb, norm_b = wv[b_id]
+        result = pair_similarity_weighted(ka, kb, wa, norm_a, wb, norm_b, tau)
         if result is None:
             continue
         sim, reasons = result
@@ -559,16 +628,21 @@ def _merge_fragments(
         (g for g in groups if len(g) == 1 and base_size.get(g[0], 0) >= 2),
         key=lambda m: m[0],
     )
+    wv = weighted_vectors(vectors, idf)  # H2: 入口预计算一次
     for g in fragments:
         if g not in groups or len(g) != 1:
             continue  # 已并入他簇 / 已随他簇合并（不再是单点）
         x = g[0]
+        wx, norm_x = wv.get(x, ({}, 0.0))
         best_s, best_g = -1.0, None
         for og in groups:
             if og is g or not og:
                 continue
             for y in og:
-                result = pair_similarity(vectors.get(x, {}), vectors.get(y, {}), idf, threshold)
+                wy, norm_y = wv.get(y, ({}, 0.0))
+                result = pair_similarity_weighted(
+                    vectors.get(x, {}), vectors.get(y, {}), wx, norm_x, wy, norm_y, threshold
+                )
                 if result is not None and result[0] > best_s:
                     best_s, best_g = result[0], og
         if best_g is not None and best_s >= threshold:

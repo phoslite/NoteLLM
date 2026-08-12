@@ -42,9 +42,14 @@ function scrollToBottom() {
 
 defineExpose({ scrollToBottom })
 
-/** 新消息/流式增量时自动滚动到底部。 */
+/** 新消息/流式增量时自动滚动到底部（P2-5：只追踪最后一条消息长度 + streaming 标志，
+ *  避免全量 map+join 在中间消息变化时也触发滚动）。 */
 watch(
-  () => props.messages.map((m) => m.content.length + (m.thinking?.length ?? 0)).join(','),
+  () => {
+    const last = props.messages[props.messages.length - 1]
+    const len = last ? last.content.length + (last.thinking?.length ?? 0) : 0
+    return `${props.streaming}:${len}`
+  },
   () => scrollToBottom(),
 )
 </script>

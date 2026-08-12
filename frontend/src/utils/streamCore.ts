@@ -16,10 +16,12 @@ export const THINKING_FLUSH_MS = 150
 /** SSE 活跃守卫（ms）：距最近一次 SSE 事件不足该时长时不做 DB 补差轮询（审查 I-2，防尾部重放重复）。 */
 export const SSE_ACTIVE_GUARD_MS = 500
 
-/** 检测缓冲区尾部是否有未闭合的 $$…$$ 或 $…$（避免流式中 KaTeX 闪错）。 */
+/** 检测缓冲区尾部是否有未闭合的 $$…$$ 或 $…$（避免流式中 KaTeX 闪错）。
+ *  P3-6：统计前剔除转义 `\$`，避免转义美元被误判为未闭合。 */
 export function hasUnclosedMath(text: string): boolean {
-  const blockPairs = (text.match(/\$\$/g) ?? []).length
-  const inlineDollars = (text.replace(/\$\$/g, '').match(/\$/g) ?? []).length
+  const plain = text.replace(/\\\$/g, '')
+  const blockPairs = (plain.match(/\$\$/g) ?? []).length
+  const inlineDollars = (plain.replace(/\$\$/g, '').match(/\$/g) ?? []).length
   return blockPairs % 2 === 1 || inlineDollars % 2 === 1
 }
 

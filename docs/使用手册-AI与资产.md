@@ -119,7 +119,7 @@
 | `page_chunks(page_texts)` | PDF 页缓存 → RAG 片段列表
 | `chunk_page_texts_for_summary(page_texts, chunk_chars, enable_body=None)` | PDF 页缓存 → 方案 B 总结分块（map 轮输入；隐私开关关闭仅页号标题单块，v1.83；enable_body 透传同方案 B 分块约定） |
 | `chunk_chapters_for_summary(chapters, chunks, chunk_chars, enable_body=None)` | 章节正文 → 方案 B 总结分块（按章节顺序；隐私开关关闭仅章节标题单块，v1.83；enable_body 透传） |
-| `_split_blocks(blocks, chunk_chars)` | 带标题正文块按 chunk_chars 切块（标题行不拆分；单块超长按行再切；0=单次发送全文，v1.83） |（`chapter_index`=页号、`para_pos`=页），供 PDF 归档资产使用；片段粒度/页标题格式在此调整 |
+|  `_split_blocks(blocks, chunk_chars)`  | 带标题正文块按 chunk_chars 切块（标题行不拆分；单块超长按行再切；0=单次发送全文，v1.83）；（`chapter_index`=页号、`para_pos`=页），供 PDF 归档资产使用；片段粒度/页标题格式在此调整 |
 | `_build_page_input(page_texts, enable_body=None)` | PDF 页缓存 → LLM 输入正文（隐私开关关闭仅页标题；超 `RAG_SUMMARY_CHUNK_CHARS` 截断；enable_body 透传）；页文本拼接格式在此调整 |
 | `generate_rag_skill(db, book_id, *, page_texts=None)` | 总结并落库，返回 `{book_id, version, rag, skill}`；未配置 `AI_API_KEY` 或 AI 返回非 JSON 时报错并透出。`page_texts` 传 PDF 页缓存时以页文本为正文与 RAG 片段（出处「第 X 页」）；成功后触发 `post_classify_book`；页输入分支看 `page_chunks`/`_build_page_input`；**长书分块（方案 B v1.83）**：正文 >`RAG_SUMMARY_CHUNK_CHARS`（默认 64K）时 map 逐块提炼后 reduce 合并（增量模式 reduce 注入旧资产+新素材；单块失败跳过、全失败回退单次） |
 | `archive_book_task(book_id)` | **M9 读完归档后台任务**：PDF **仅从未建立缓存的页视觉提取**（`rebuild_book_caches` force=False 跳过已缓存页；并发分支完成后重新 attach book 供收尾使用），再以全书缓存总结 RAG/Skill；随后 `set_all_chapters_read_flag(True)` 标记读完；成功后触发三层画像迁移与 post-classify |

@@ -16,6 +16,40 @@ def _db_ready():
         db.commit()
 
 
+def test_book_relations_unique_pair_constraint():
+    """审查 P1-3 回归：book_relations 同 (book_a_id, book_b_id) 不得插入两行（并发重建防重复边）。
+
+    本模块约定不使用 conftest client 夹具（其 teardown drop_all 与 _db_ready 清理冲突），
+    测试内自建 TestClient。
+    """
+    import json as _json
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy.exc import IntegrityError
+
+    from app.core.database import SessionLocal
+    from app.main import app
+    from app.models.graph import BookRelation
+
+    with TestClient(app) as c:
+        a = c.post("/api/books", files={"file": ("约束A.md", "# 第一章 变分\n\n变分法内容。\n".encode(), "text/markdown")}).json()["data"]["id"]
+        b = c.post("/api/books", files={"file": ("约束B.md", "# 第一章 泛函\n\n泛函分析内容。\n".encode(), "text/markdown")}).json()["data"]["id"]
+    lo, hi = min(a, b), max(a, b)
+    db = SessionLocal()
+    try:
+        db.add(BookRelation(book_a_id=lo, book_b_id=hi, strength=80.0, direction="无", relation_type="概念共现", reasons_json=_json.dumps(["变分"], ensure_ascii=False)))
+        db.commit()
+        db.add(BookRelation(book_a_id=lo, book_b_id=hi, strength=60.0, direction="无", relation_type="概念共现", reasons_json=_json.dumps(["变分"], ensure_ascii=False)))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return  # 唯一约束生效（同 pair 第二行被拒绝）
+        raise AssertionError("同 pair 第二行未被唯一约束拦截")
+    finally:
+        db.close()
+
+
 def test_get_db_commits_pending_changes():
     gen = get_db()
     db = next(gen)

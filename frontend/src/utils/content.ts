@@ -28,16 +28,22 @@ function quickHash(source: string): string {
   return (h >>> 0).toString(36)
 }
 
-/** 按 (长度+首 80 字符+hash) 缓存 splitBlocks 结果，章节切换/回退时避免重复切分大文本。 */
+/** 按 (长度+首 80 字符+hash) 缓存 splitBlocks 结果，章节切换/回退时避免重复切分大文本。
+ *  P3-2：真 LRU——命中时刷新为最近使用，超限删除最久未用项。 */
 export function cachedSplitBlocks(source: string): string[] {
   const key = `${source.length}:${source.slice(0, 80)}:${quickHash(source)}`
   const hit = splitCache.get(key)
-  if (hit) return hit
+  if (hit) {
+    splitCache.delete(key)
+    splitCache.set(key, hit) // 刷新访问序（Map 迭代序 = 最近使用序）
+    return hit
+  }
   const blocks = splitBlocks(source)
   splitCache.set(key, blocks)
-  if (splitCache.size > SPLIT_CACHE_MAX) {
-    const firstKey = splitCache.keys().next().value
-    if (firstKey !== undefined) splitCache.delete(firstKey)
+  while (splitCache.size > SPLIT_CACHE_MAX) {
+    const oldest = splitCache.keys().next().value
+    if (oldest === undefined) break
+    splitCache.delete(oldest)
   }
   return blocks
 }

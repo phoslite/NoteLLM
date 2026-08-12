@@ -163,8 +163,8 @@ export function useGlobalAi(): GlobalAi {
     session.dispose()
   }
 
-  void loadHistory()
-
+  // P3-9：历史改为懒加载——面板展开时由调用方 refreshHistory() 拉取，
+  // 不再在 composable 创建时无条件请求（默认折叠态下无人查看）
   return {
     messages, input, streaming, streamError,
     send, abort: abortChat, clear, deleteSession, copy,

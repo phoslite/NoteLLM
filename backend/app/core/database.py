@@ -88,6 +88,19 @@ def _ensure_indexes() -> None:
     with engine.begin() as conn:
         for ddl in _INDEX_DDL:
             conn.execute(text(ddl))
+        # 审查 P1-3：存量重复边去重后建唯一索引（新库由模型 UniqueConstraint 直接创建）
+        conn.execute(
+            text(
+                "DELETE FROM book_relations WHERE id NOT IN "
+                "(SELECT MIN(id) FROM book_relations GROUP BY book_a_id, book_b_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_book_relations_pair "
+                "ON book_relations(book_a_id, book_b_id)"
+            )
+        )
 
 
 def _ensure_fts() -> None:

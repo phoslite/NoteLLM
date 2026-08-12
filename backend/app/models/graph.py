@@ -1,7 +1,7 @@
 """知识图谱模型：书籍关联、知识点、知识点关系。"""
 from datetime import datetime
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -10,6 +10,8 @@ from app.core.time import utcnow
 
 class BookRelation(Base):
     __tablename__ = "book_relations"
+    # 审查 P1-3：同 pair 唯一约束（并发重建/重建+增量交错时防止重复边污染谱系与联动）
+    __table_args__ = (UniqueConstraint("book_a_id", "book_b_id", name="uq_book_relations_pair"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     book_a_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), index=True)

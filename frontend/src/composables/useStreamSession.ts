@@ -178,6 +178,7 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
     // 快照缺失/参数非法）时必须复位 streaming 且不启动轮询，避免 streaming 永久卡
     // true + 轮询定时器泄漏；异步失败仍走下方 catch/finally 终态机。
     let terminalSeen = false
+    let errorEventSeen = false // P2-4：SSE error 事件已写准确文案时，catch 分支不得用网络错误覆盖
     let wasAborted = false
     let streamHandle: { promise: Promise<void>; abort: () => void }
     try {
@@ -205,6 +206,7 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
         onFinal?.()
       } else if (ev.type === 'error') {
         terminalSeen = true
+        errorEventSeen = true // P2-4：后端准确错误文案已写入，后续 catch 不再覆盖
         streamSeq += 1 // MO2（四轮）：终态分支推进代际，在途轮询响应不再写缓冲
         flushThinking()
         flushDelta(assistant)
@@ -217,9 +219,11 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
       })
     } catch (err) {
       streaming.value = false
-      const message = err instanceof Error ? err.message : String(err)
-      streamError.value = message
-      onError?.(message)
+      if (!errorEventSeen) {
+        const message = err instanceof Error ? err.message : String(err)
+        streamError.value = message
+        onError?.(message)
+      }
       if (!assistant.content) removeAssistant?.(assistant)
       return
     }
@@ -236,8 +240,9 @@ export function useStreamSession(options: StreamSessionOptions): StreamSession {
       flushDelta(assistant)
       assistant.local = false // P1-2（v1.138）：中止/出错后不再显示流式闪烁光标
       streaming.value = false
-      // 用户主动中断（abort）不显示误导性错误横幅
-      if (!wasAborted) {
+      // 用户主动中断（abort）不显示误导性错误横幅；
+      // P2-4：error 事件已写入准确文案时，catch 不得用网络错误覆盖
+      if (!wasAborted && !errorEventSeen) {
         const message = err instanceof Error ? err.message : String(err)
         streamError.value = message
         onError?.(message)

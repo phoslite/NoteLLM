@@ -110,6 +110,20 @@ def test_patch_book_folder_id_null_moves_out(client):
     assert client.get(f"/api/books/{a}").json()["data"]["folder_id"] is None
 
 
+def test_patch_book_title_keeps_folder_id(client):
+    """审查 P1-1 回归：书在文件夹中时 PATCH 只改 title，不得静默清空 folder_id。"""
+    folder = client.post("/api/folders", json={"name": "归类夹"}).json()["data"]
+    a = _import_md(client, "归类书.md", "# 归类书\n\n内容。\n")
+    client.patch(f"/api/books/{a}", json={"folder_id": folder["id"]})
+    r = client.patch(f"/api/books/{a}", json={"title": "改名后的归类书"})
+    assert r.status_code == 200
+    assert r.json()["data"]["title"] == "改名后的归类书"
+    assert r.json()["data"]["folder_id"] == folder["id"], "改名不得清空 folder_id"
+    # 显式 folder_id=null 仍可移出（与 test_patch_book_folder_id_null_moves_out 一致）
+    client.patch(f"/api/books/{a}", json={"folder_id": None})
+    assert client.get(f"/api/books/{a}").json()["data"]["folder_id"] is None
+
+
 def test_patch_book_invalid_folder_id_returns_404(client):
     """终审 §6.9：PATCH 无效 folder_id 与全库「资源不存在→404」契约一致。"""
     r = client.post("/api/books", files={"file": ("无效文件夹.md", "# 第一章\n\n正文\n".encode(), "text/markdown")})
