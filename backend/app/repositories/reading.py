@@ -1,5 +1,6 @@
 """阅读进度数据访问层：ReadingLog + 书籍进度/章节已读标记。"""
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -14,7 +15,7 @@ def get_latest_log(db: Session, book_id: int) -> ReadingLog | None:
 
 
 def upsert_log(db: Session, book_id: int, chapter_id: int, position: float) -> ReadingLog:
-    """记录阅读位置；同一章节内重复记录更新 position。"""
+    """记录阅读位置；同一章节内重复记录更新 position（并发双写由唯一约束兜底转更新）。"""
     log = db.scalars(
         select(ReadingLog).where(ReadingLog.book_id == book_id, ReadingLog.chapter_id == chapter_id).limit(1)
     ).first()
@@ -24,7 +25,20 @@ def upsert_log(db: Session, book_id: int, chapter_id: int, position: float) -> R
     else:
         log = ReadingLog(book_id=book_id, chapter_id=chapter_id, position=position)
         db.add(log)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 审查 P2-2：并发双会话 check-then-act 交错时另一会话已插入同 (book_id, chapter_id)，
+        # 回滚后重读转更新（唯一约束保证数据不脏，请求不因重复行失败）
+        db.rollback()
+        log = db.scalars(
+            select(ReadingLog).where(ReadingLog.book_id == book_id, ReadingLog.chapter_id == chapter_id).limit(1)
+        ).first()
+        if log is None:
+            raise
+        log.position = position
+        log.updated_at = utcnow()
+        db.commit()
     db.refresh(log)
     return log
 

@@ -99,6 +99,7 @@ def _detach_shared(db: Session, book_id: int, kind: str) -> None:
         if isinstance(merged, list) and book_id in merged:
             merged.remove(book_id)
             content["merged_book_ids"] = merged
+            row.version += 1  # 审查 P2-1：成员引用变化同样失效资产指纹（H3 索引/挑选缓存）
             _save(db, row, content)
 
 
@@ -246,6 +247,7 @@ def delete_assets(db: Session, book_id: int) -> None:
         if merged:
             row.book_id = merged.pop(0)
             content["merged_book_ids"] = merged
+            row.version += 1  # 审查 P2-1：删书转移主书身份（book_id 变化）同样失效资产指纹
             _save(db, row, content)
     db.query(BookAsset).filter(BookAsset.book_id == book_id).delete()
     for row in db.query(BookAsset).all():
@@ -265,6 +267,7 @@ def delete_asset(db: Session, book_id: int, kind: str) -> bool:
         if book_id in merged:
             merged.remove(book_id)
             content["merged_book_ids"] = merged
+            asset.version += 1  # 审查 P2-1：成员引用变化同样失效资产指纹
             _save(db, asset, content)
         return True
     content = _load(asset)
@@ -272,6 +275,7 @@ def delete_asset(db: Session, book_id: int, kind: str) -> bool:
     if merged:  # 该书是主资产且有成员：主书转移给第一个成员书
         asset.book_id = merged.pop(0)
         content["merged_book_ids"] = merged
+        asset.version += 1  # 审查 P2-1：主书身份转移（book_id 变化）同样失效资产指纹
         _save(db, asset, content)
         return True
     db.delete(asset)

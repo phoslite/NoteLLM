@@ -19,7 +19,9 @@ export const SSE_ACTIVE_GUARD_MS = 500
 /** 检测缓冲区尾部是否有未闭合的 $$…$$ 或 $…$（避免流式中 KaTeX 闪错）。
  *  P3-6：统计前剔除转义 `\$`，避免转义美元被误判为未闭合。 */
 export function hasUnclosedMath(text: string): boolean {
-  const plain = text.replace(/\\\$/g, '')
+  // P3-4：按反斜杠数量奇偶判定——奇数个反斜杠=转义美元（剔除），偶数个=真实定界符（保留）。
+  // 例：\$ 不参与计数；\\$（字面反斜杠 + 真实 $）按真实定界统计。
+  const plain = text.replace(/(\\+)\$/g, (_, bs: string) => (bs.length % 2 ? '' : '$'))
   const blockPairs = (plain.match(/\$\$/g) ?? []).length
   const inlineDollars = (plain.replace(/\$\$/g, '').match(/\$/g) ?? []).length
   return blockPairs % 2 === 1 || inlineDollars % 2 === 1

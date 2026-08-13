@@ -272,6 +272,7 @@ function toggleLevel(level: string) {
 
 function backToGlobal() {
   intraSeq += 1 // P1-3：返回全局后丢弃在途书内图谱响应
+  loading.value = false // P2-1：书内请求的代际守卫使其 finally 不再复位 loading，返回全局须接管清理
   view.value = 'global'
   currentBook.value = null
   intra.value = null
@@ -315,26 +316,32 @@ async function openIntraBook(node: GraphNode) {
 
 async function rebuildCurrent() {
   if (!currentBook.value) return
+  const seq = ++intraSeq // P2-2：纳入代际守卫——返回全局/切书后旧响应不得写入书内视图
   loading.value = true
   try {
     const bookId = currentBook.value.id
     const { task_id } = await rebuildBookGraph(bookId)
+    if (seq !== intraSeq || view.value !== 'intra') return
     ElMessage.info('本书知识图谱重建任务已提交…')
     notifyTaskSubmitted()
     const t = await waitTask(task_id)
+    if (seq !== intraSeq || view.value !== 'intra') return
     if (t.status === 'failed') {
       ElMessage.error(`重建失败：${t.error || '未知错误'}`)
       return
     }
     intra.value = await getIntraGraph(bookId)
+    if (seq !== intraSeq || view.value !== 'intra') return
     await nextTick()
+    if (seq !== intraSeq || view.value !== 'intra') return
     renderIntra()
     ElMessage.success('本书知识图谱已重建')
   } catch (err) {
     if (isTaskAbort(err)) return
+    if (seq !== intraSeq || view.value !== 'intra') return // 过期请求的错误不打扰当前视图
     ElMessage.error((err as Error).message)
   } finally {
-    loading.value = false
+    if (seq === intraSeq) loading.value = false
   }
 }
 

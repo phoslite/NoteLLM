@@ -123,3 +123,107 @@ def test_knowledge_appears_in_rag_key_points(client, wait_task):
     data = client.get(f"/api/graph/knowledge/{kp['id']}/appears-in").json()["data"]
     hit = next((x for x in data["books"] if x["book_id"] == b), None)
     assert hit is not None and hit["rag_hits"], "其他书 RAG key_points 应命中"
+
+
+def test_kp_index_fingerprint_changes_on_rowid_reuse(client):
+    """审查 P1-1：删最大 id KP 后重建同数量 KP（rowid 复用）→ (count, max_id) 不变，updated_at 指纹必变。"""
+    from datetime import timedelta
+
+    from sqlalchemy import func, text
+
+    from app.core.database import _ensure_columns, engine
+    from app.core.time import utcnow
+    from app.models.graph import KnowledgePoint
+    from app.services.graph.cross_book import _get_kp_index, _kp_index_fingerprint
+
+    db = SessionLocal()
+    try:
+        b = Book(title="指纹书", file_path="/tmp/fp.md", format="md")
+        db.add(b)
+        db.commit()
+        kps = [
+            KnowledgePoint(book_id=b.id, title=f"KP{i}", summary="变分法研究泛函极值问题", level="章节级")
+            for i in range(3)
+        ]
+        db.add_all(kps)
+        db.commit()
+        max_id = max(k.id for k in kps)
+
+        # 存量库迁移：模拟旧库无 updated_at 列 → _ensure_columns 补列并回填 created_at
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE knowledge_points DROP COLUMN updated_at"))
+        _ensure_columns()
+        with engine.begin() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(knowledge_points)")).fetchall()]
+            assert "updated_at" in cols, "迁移后应补回 updated_at 列"
+            backfilled = conn.execute(
+                text("SELECT count(*) FROM knowledge_points WHERE updated_at = created_at")
+            ).scalar_one()
+            assert backfilled == 3, "存量行 updated_at 应回填为 created_at"
+
+        fp1 = _kp_index_fingerprint(db)
+        # 重建语义：先删最大 id 知识点，再插入同数量新 KP（SQLite 复用被删的 rowid）
+        db.query(KnowledgePoint).filter(KnowledgePoint.id == max_id).delete()
+        db.commit()
+        db.add(
+            KnowledgePoint(
+                book_id=b.id,
+                title="新知识点",
+                summary="变分法研究泛函极值问题",
+                level="章节级",
+                updated_at=utcnow() + timedelta(seconds=1),
+            )
+        )
+        db.commit()
+        new_max = db.query(func.max(KnowledgePoint.id)).scalar()
+        assert new_max == max_id, "删最大 id 后新插应复用该 rowid（缺口前提）"
+        fp2 = _kp_index_fingerprint(db)
+        assert fp1[0] == fp2[0] and fp1[1] == fp2[1], "count/max_id 不变（rowid 复用场景前提）"
+        assert fp1[2] != fp2[2], "max(updated_at) 必须变化 → 倒排索引重建"
+        index = _get_kp_index(db)
+        assert index["fingerprint"] == fp2, "指纹变化后应重建索引"
+        assert any(k["title"] == "新知识点" for k in index["kps"]), "重建后的索引应包含新 KP"
+    finally:
+        db.close()
+
+
+def test_incremental_graph_retries_on_concurrent_duplicate_edge(client, monkeypatch):
+    """审查 P2-1：并发导入时另一会话先插入同 pair 边 → IntegrityError 回滚重试，任务不失败、无重复边。"""
+    from app.models.graph import BookRelation
+    from app.services.graph.cross_book import incremental_cross_book_graph
+
+    a = _import_md(client, "并发A.md", "# 第一章 变分法\n\n变分法研究泛函极值问题。\n")
+    b = _import_md(client, "并发B.md", "# 第一章 泛函分析\n\n泛函空间与极值问题。\n")
+    lo, hi = min(a, b), max(a, b)
+    db1 = SessionLocal()
+    db2 = SessionLocal()
+    try:
+        db1.query(BookRelation).delete()
+        db1.commit()
+        db2.query(BookRelation).delete()
+        db2.commit()
+        injected = {"done": False}
+        orig_commit = db1.commit
+
+        def racing_commit():
+            if not injected["done"]:
+                injected["done"] = True
+                db2.add(
+                    BookRelation(
+                        book_a_id=lo, book_b_id=hi, strength=50.0, direction="无",
+                        relation_type="概念共现", reasons_json="[]",
+                    )
+                )
+                db2.commit()
+            orig_commit()
+
+        monkeypatch.setattr(db1, "commit", racing_commit)
+        incremental_cross_book_graph(db1, a)  # 并发冲突下不得抛 IntegrityError
+        assert injected["done"], "竞态注入应已触发（首轮提交被另一会话抢先）"
+        rows = db1.query(BookRelation).all()
+        pairs = [tuple(sorted((r.book_a_id, r.book_b_id))) for r in rows]
+        assert len(pairs) == len(set(pairs)), "唯一约束下不得出现重复边"
+        assert (lo, hi) in pairs, "并发会话先落地的边应保留"
+    finally:
+        db1.close()
+        db2.close()

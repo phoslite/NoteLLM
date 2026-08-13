@@ -38,6 +38,9 @@ class KnowledgePoint(Base):
     level: Mapped[str] = mapped_column(String(20), default="章节级")  # 章节级/重要段落/用户标记
     aliases_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    # 审查 P1-1：SQLite rowid 复用导致「删最大 id KP 后重建同数量 KP」时 (count, max_id) 不变，
+    # 倒排索引指纹必须并入 updated_at（max），新行时间必大于旧行 → 指纹必然变化
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
 class KpRelation(Base):

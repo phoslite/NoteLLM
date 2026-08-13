@@ -4,6 +4,7 @@ import threading
 from collections import defaultdict
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.activity import Note
@@ -45,22 +46,25 @@ def _load_notes_by_book(db: Session) -> dict[int, list[Note]]:
 
 
 # ---- H3：跨书检索进程内倒排索引（词 → KP / 词 → RAG key_points）----
-# 惰性构建 + 指纹失效：(kp_count, max_kp_id, book_count, asset_count, asset_version_sum)。
-# KnowledgePoint 无 updated_at，且全库不存在就地更新路径（仅 intra_book 新建/重建删除），
-# 指纹可覆盖全部 KP 变更；资产 upsert 必 bump version（repositories/assets.upsert_asset），
-# 故 RAG 内容变更同样可检测。并发安全：双检锁 + 不可变快照（构建完成后不再修改）。
+# 惰性构建 + 指纹失效：(kp_count, max_kp_id, max_kp_updated_at, book_count, asset_count, asset_version_sum)。
+# KnowledgePoint 仅 intra_book 新建/重建删除，无就地更新路径；updated_at（max）覆盖
+# SQLite rowid 复用缺口（删最大 id 后重建同数量 KP 时 count/max_id 不变，max(updated_at) 必变）；
+# 资产 upsert 必 bump version（repositories/assets.upsert_asset），故 RAG 内容变更同样可检测。
+# 并发安全：双检锁 + 不可变快照（构建完成后不再修改）。
 _KP_INDEX_LOCK = threading.Lock()
 _KP_INDEX: dict | None = None
 
 
 def _kp_index_fingerprint(db: Session) -> tuple:
     """索引数据源指纹：两三条轻量聚合查询，与构建内容一一对应。"""
-    kp_count, kp_max = db.query(func.count(KnowledgePoint.id), func.max(KnowledgePoint.id)).one()
+    kp_count, kp_max, kp_max_updated = db.query(
+        func.count(KnowledgePoint.id), func.max(KnowledgePoint.id), func.max(KnowledgePoint.updated_at)
+    ).one()
     asset_count, asset_ver_sum = db.query(
         func.count(BookAsset.id), func.coalesce(func.sum(BookAsset.version), 0)
     ).one()
     book_count = db.query(func.count(Book.id)).scalar()
-    return (kp_count, kp_max, book_count, asset_count, asset_ver_sum)
+    return (kp_count, kp_max, kp_max_updated, book_count, asset_count, asset_ver_sum)
 
 
 def _build_kp_index(db: Session, fingerprint: tuple) -> dict:
@@ -273,45 +277,57 @@ def incremental_cross_book_graph(db: Session, book_id: int) -> dict:
     idf = idf_weights(keywords)
     wv = weighted_vectors(keywords, idf)  # H2：加权向量/范数入口一次预计算
     notes_by_book = _load_notes_by_book(db)  # 审查 A-8：入口预加载
-    existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in list_relations(db)}
-    added = 0
-    created: dict[tuple[int, int], BookRelation] = {}
-    candidates: list[tuple[int, int, float]] = []
 
-    def add_pair(a: Book, b: Book, score: float, reasons: list[str], rel_type: str) -> None:
-        nonlocal added
-        key = pair_key(a.id, b.id)
-        if key in existing:
-            return
-        existing.add(key)
-        rel = BookRelation(
-            book_a_id=key[0],
-            book_b_id=key[1],
-            strength=score,
-            direction="无",
-            relation_type=rel_type,
-            reasons_json=json.dumps(reasons, ensure_ascii=False),
-        )
-        db.add(rel)
-        created[key] = rel
-        added += 1
-        candidates.append((a.id, b.id, score))
+    def compute_and_commit() -> tuple[int, dict[tuple[int, int], BookRelation], list[tuple[int, int, float]]]:
+        """check-then-act 补边 + 提交；并发冲突由外层回滚后重读 existing 重试（幂等）。"""
+        existing: set[tuple[int, int]] = {pair_key(r.book_a_id, r.book_b_id) for r in list_relations(db)}
+        added = 0
+        created: dict[tuple[int, int], BookRelation] = {}
+        candidates: list[tuple[int, int, float]] = []
 
-    for other in others:
-        result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book, idf, wv)
-        if result:
-            score, reasons = result
-            add_pair(book, other, score, reasons, "概念共现")
+        def add_pair(a: Book, b: Book, score: float, reasons: list[str], rel_type: str) -> None:
+            nonlocal added
+            key = pair_key(a.id, b.id)
+            if key in existing:
+                return
+            existing.add(key)
+            rel = BookRelation(
+                book_a_id=key[0],
+                book_b_id=key[1],
+                strength=score,
+                direction="无",
+                relation_type=rel_type,
+                reasons_json=json.dumps(reasons, ensure_ascii=False),
+            )
+            db.add(rel)
+            created[key] = rel
+            added += 1
+            candidates.append((a.id, b.id, score))
 
-    # 同聚类低分边（新书归属簇与其它书一致时补「主题相似」）
-    # A-I3：增量补边必须用全量人口聚类（子集 IDF/簇与全局矛盾，且子集 persist 会写坏全量缓存）
-    clusters = assign_clusters(db, list_books(db))
-    ca = clusters.get(book.id, "其他")
-    if ca not in ("", "其他"):
         for other in others:
-            if clusters.get(other.id, "其他") == ca:
-                add_pair(book, other, 8.0, [f"同属「{ca}」领域"], "主题相似")
-    db.commit()
+            result = _pair_score(db, book, other, keywords.get(book.id, {}), keywords.get(other.id, {}), notes_by_book, idf, wv)
+            if result:
+                score, reasons = result
+                add_pair(book, other, score, reasons, "概念共现")
+
+        # 同聚类低分边（新书归属簇与其它书一致时补「主题相似」）
+        # A-I3：增量补边必须用全量人口聚类（子集 IDF/簇与全局矛盾，且子集 persist 会写坏全量缓存）
+        clusters = assign_clusters(db, list_books(db))
+        ca = clusters.get(book.id, "其他")
+        if ca not in ("", "其他"):
+            for other in others:
+                if clusters.get(other.id, "其他") == ca:
+                    add_pair(book, other, 8.0, [f"同属「{ca}」领域"], "主题相似")
+        db.commit()
+        return added, created, candidates
+
+    try:
+        added, created, candidates = compute_and_commit()
+    except IntegrityError:
+        # 审查 P2-1：并发导入时另一会话已先插入同 pair 边（check-then-act 交错），
+        # 回滚后重读 existing 重试一次；唯一约束保证数据不脏，后台任务不因重复边失败
+        db.rollback()
+        added, created, candidates = compute_and_commit()
     books_by_id = {b.id: b for b in [book, *others]}
     llm_results = enrich_pairs_with_llm(db, books_by_id, keywords, candidates)
     for key, result in llm_results.items():

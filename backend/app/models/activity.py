@@ -1,7 +1,7 @@
 """阅读活动模型：进度、笔记、对话消息。"""
 from datetime import datetime
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -10,6 +10,8 @@ from app.core.time import utcnow
 
 class ReadingLog(Base):
     __tablename__ = "reading_logs"
+    # 审查 P2-2：同 (book_id, chapter_id) 唯一约束（并发双写只留一行，进度行不膨胀）
+    __table_args__ = (UniqueConstraint("book_id", "chapter_id", name="uq_reading_logs_book_chapter"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), index=True)

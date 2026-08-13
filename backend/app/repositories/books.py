@@ -9,7 +9,12 @@ from app.models.book import Book, Chapter, Folder
 
 
 def list_books(db: Session, folder_id: int | None = None, q: str | None = None) -> list[Book]:
-    """书架列表：按 position 升序（同位置回退创建时间倒序）；q 搜索书名/作者/tag。"""
+    """书架列表：按 position 升序（同位置回退创建时间倒序）；q 搜索书名/作者/tag。
+
+    列裁剪契约（审查 P3-14）：返回 Book.chapters 仅加载 id/index/title/read_flag 四列，
+    禁止访问 content_text/page_index/word_count/book_id 等未加载列——会话内触发逐章懒加载 N+1，
+    会话关闭后访问抛 DetachedInstanceError；需要完整章节请走 list_chapters。
+    """
     # 审查 P1-2：书架阅读概况只需 id/index/title/read_flag，不加载 content_text 全文
     # （大库时每次 GET /api/books 免读几十 MB 正文；单本详情仍走 list_chapters 全列）
     stmt = (

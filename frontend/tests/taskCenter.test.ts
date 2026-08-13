@@ -69,4 +69,53 @@ describe('createPollLoop（P2-1 关闭竞态）', () => {
     expect(polls).toBeGreaterThanOrEqual(2)
     expect(onData.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
+
+  it('T3：onData 抛错时循环退出（running 释放、不再轮询），重新 start 可恢复', async () => {
+    const onData = vi.fn()
+    const onIdle = vi.fn()
+    let throwOnce = true
+    let polls = 0
+    const loop = createPollLoop<number>({
+      poll: async () => {
+        polls += 1
+        return { more: true, data: polls }
+      },
+      onData: (d) => {
+        if (throwOnce) {
+          throwOnce = false
+          throw new Error('消费失败')
+        }
+        onData(d)
+      },
+      sleep: async () => { await new Promise((r) => setTimeout(r, 1)) }, // 真实 tick：纯微任务 sleep 会饿死事件循环
+      onIdle,
+    })
+    loop.start()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(polls).toBe(1) // 抛错即退出，不再继续轮询
+    expect(onIdle).toHaveBeenCalledTimes(1) // 与 poll 失败同语义：自然停止触发 onIdle
+    loop.start() // running 已释放：重启生效
+    await new Promise((r) => setTimeout(r, 20))
+    loop.stop() // 收尾：避免轮询循环拖住测试进程
+    expect(polls).toBeGreaterThanOrEqual(2)
+    expect(onData).toHaveBeenCalled() // 重启后消费正常
+  })
+
+  it('T4：onData 内同步 stop() 后不触发 onIdle（用户 stop 不算自然停止）', async () => {
+    const onIdle = vi.fn()
+    let stopCalled = false
+    const loop = createPollLoop<number>({
+      poll: async () => ({ more: false, data: 1 }),
+      onData: () => {
+        stopCalled = true
+        loop.stop()
+      },
+      sleep: vi.fn(async () => {}),
+      onIdle,
+    })
+    loop.start()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stopCalled).toBe(true)
+    expect(onIdle).not.toHaveBeenCalled()
+  })
 })

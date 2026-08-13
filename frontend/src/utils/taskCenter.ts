@@ -41,7 +41,12 @@ export function createPollLoop<T>(handlers: PollLoopHandlers<T>): PollLoop {
         break // 单次轮询失败静默退出（与组件原 catch→false 语义一致）
       }
       if (stopped) break // 轮询期间被 stop：丢弃本次结果
-      handlers.onData(result.data)
+      try {
+        handlers.onData(result.data)
+      } catch {
+        idle = true
+        break // P3-3：onData 抛错视为单次轮询失败，静默退出（running 必须释放，防楔死）
+      }
       if (!result.more) {
         idle = true
         break
@@ -49,7 +54,7 @@ export function createPollLoop<T>(handlers: PollLoopHandlers<T>): PollLoop {
       await handlers.sleep(1000)
     }
     running = false
-    if (idle) handlers.onIdle?.()
+    if (idle && !stopped) handlers.onIdle?.() // P3-3：stop() 后不触发 onIdle（仅自然停止触发）
     if (pendingStart) start() // 退场期间的新 start 请求：补启动
   }
 

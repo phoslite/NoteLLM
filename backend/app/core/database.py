@@ -45,10 +45,18 @@ def _ensure_columns() -> None:
             ("books", "content_hash", "ALTER TABLE books ADD COLUMN content_hash VARCHAR(64)"),
             ("book_relations", "from_book_id", "ALTER TABLE book_relations ADD COLUMN from_book_id INTEGER"),
             ("chat_messages", "stream_key", "ALTER TABLE chat_messages ADD COLUMN stream_key VARCHAR(64)"),
+            ("knowledge_points", "updated_at", "ALTER TABLE knowledge_points ADD COLUMN updated_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'"),
         ):
             cols = [r[1] for r in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()]
             if col not in cols:
                 conn.execute(text(ddl))
+                # 审查 P1-1：存量 KP 行回填 updated_at = created_at（默认哨兵值仅为满足
+                # SQLite 「NOT NULL 列需 DEFAULT」的 ADD COLUMN 约束，回填后即为真实时间）
+                if table == "knowledge_points" and col == "updated_at":
+                    conn.execute(text(
+                        "UPDATE knowledge_points SET updated_at = COALESCE(created_at, datetime('now')) "
+                        "WHERE updated_at = '1970-01-01 00:00:00'"
+                    ))
 
 
 # 外键/热点查询索引（性能优化第一梯队）：名称与 SQLAlchemy 模型 `index=True` / `__table_args__`
@@ -99,6 +107,22 @@ def _ensure_indexes() -> None:
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_book_relations_pair "
                 "ON book_relations(book_a_id, book_b_id)"
+            )
+        )
+        # 审查 P2-2：存量 (book_id, chapter_id) 重复阅读日志去重（保留 updated_at 最新、
+        # 同值取 id 最大决胜）后建唯一约束（新库由模型 UniqueConstraint 直接创建）
+        conn.execute(
+            text(
+                "DELETE FROM reading_logs WHERE id NOT IN ("
+                "SELECT id FROM (SELECT id, ROW_NUMBER() OVER ("
+                "PARTITION BY book_id, chapter_id ORDER BY updated_at DESC, id DESC"
+                ") AS rn FROM reading_logs) WHERE rn = 1)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_reading_logs_book_chapter "
+                "ON reading_logs(book_id, chapter_id)"
             )
         )
 

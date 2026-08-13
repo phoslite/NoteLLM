@@ -305,6 +305,11 @@ async function loadAll() {
     } else {
       // C-M3：无章节的空书显示空态（模板已有 empty-tip），不再请求 /chapters/null
       currentChapterId.value = null
+      // P3-1：清残留——防止新书阅读区显示旧书正文/旧定位
+      blocks.value = []
+      epubContent.value = ''
+      paraEls = null
+      currentParaIndex.value = null
     }
   } catch {
     book.value = null

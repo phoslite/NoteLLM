@@ -399,3 +399,63 @@ def test_asset_write_locks_bounded():
     # 最新访问的锁必须保留；最旧的 60 把（本测试新造）应已被淘汰
     assert all(i in _asset_write_locks for i in range(base + 60, base + _ASSET_WRITE_LOCK_MAX + 60))
     assert all(i not in _asset_write_locks for i in range(base, base + 60))
+
+
+def test_shared_member_detach_bumps_version(client):
+    """审查 P2-1：共享资产解除成员引用（merged_book_ids 变化）version 必须 +1（资产指纹失效）。"""
+    b1 = _book(client, "成员版本1.md")
+    b2 = _book(client, "成员版本2.md")
+    db = SessionLocal()
+    try:
+        rag = {"summary": "s", "key_points": ["A"]}
+        upsert_asset(db, b1, "rag", rag)
+        upsert_asset(db, b2, "rag", rag)
+        merge_duplicate_assets(db)
+        main = db.query(BookAsset).filter(BookAsset.kind == "rag").one()
+        member = b2 if main.book_id == b1 else b1
+        v_before = main.version
+        assert delete_asset(db, member, "rag") is True
+        main = db.query(BookAsset).filter(BookAsset.kind == "rag").one()
+        assert main.version == v_before + 1, "detach 成员后 version 应 +1"
+    finally:
+        db.close()
+
+
+def test_shared_main_transfer_bumps_version(client):
+    """审查 P2-1：主书删除转移给成员（book_id 变化）version 必须 +1（资产指纹失效）。"""
+    b1 = _book(client, "主版本1.md")
+    b2 = _book(client, "主版本2.md")
+    db = SessionLocal()
+    try:
+        rag = {"summary": "s", "key_points": ["A"]}
+        upsert_asset(db, b1, "rag", rag)
+        upsert_asset(db, b2, "rag", rag)
+        merge_duplicate_assets(db)
+        main = db.query(BookAsset).filter(BookAsset.kind == "rag").one()
+        v_before = main.version
+        assert delete_asset(db, main.book_id, "rag") is True
+        rows = db.query(BookAsset).filter(BookAsset.kind == "rag").all()
+        assert len(rows) == 1
+        assert rows[0].version == v_before + 1, "主书转移后 version 应 +1"
+    finally:
+        db.close()
+
+
+def test_delete_book_assets_bumps_version_on_shared(client):
+    """审查 P2-1：删除书籍时共享资产转移/解除引用同样 version +1（_detach_shared 路径）。"""
+    b1 = _book(client, "删除版本1.md")
+    b2 = _book(client, "删除版本2.md")
+    db = SessionLocal()
+    try:
+        rag = {"summary": "s", "key_points": ["A"]}
+        upsert_asset(db, b1, "rag", rag)
+        upsert_asset(db, b2, "rag", rag)
+        merge_duplicate_assets(db)
+        main = db.query(BookAsset).filter(BookAsset.kind == "rag").one()
+        v_before = main.version
+        delete_assets(db, b1)
+        rows = db.query(BookAsset).filter(BookAsset.kind == "rag").all()
+        assert len(rows) == 1
+        assert rows[0].version == v_before + 1, "删书时共享资产转移/解除引用应 version +1"
+    finally:
+        db.close()

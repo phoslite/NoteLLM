@@ -100,3 +100,15 @@ export function findQuoteRange(nodes: HlTextNode[], quote: string): HlRange[] | 
   return hits.length ? hits : null
 }
 
+/** 段落文本列表的轻量内容指纹（djb2，P2-3）：参与 buildParaTexts 缓存键，同章内容变化时键必然失配。 */
+export function paraTextsFingerprint(texts: string[]): string {
+  let hash = 5381
+  for (const t of texts) {
+    for (let i = 0; i < t.length; i++) {
+      hash = ((hash << 5) + hash + t.charCodeAt(i)) >>> 0
+    }
+    // 段间分隔符（0x2c = ','），避免 ['ab','c'] 与 ['a','bc'] 指纹相同
+    hash = ((hash << 5) + hash + 0x2c) >>> 0
+  }
+  return hash.toString(36)
+}

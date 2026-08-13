@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findQuoteRange, normalizeHlText, type HlTextNode } from '../src/utils/highlight'
+import { findQuoteRange, normalizeHlText, paraTextsFingerprint, type HlTextNode } from '../src/utils/highlight'
 
 /** 构造文本节点描述（node 占位；单测只验证纯匹配逻辑）。 */
 function n(text: string, opts: { katex?: boolean; mark?: boolean } = {}): HlTextNode {
@@ -72,5 +72,22 @@ describe('findQuoteRange（四轮 #1：划词高亮归一化匹配）', () => {
     const hits = findQuoteRange(nodes, 'abc def')
     expect(hits).not.toBeNull()
     expect(hits!.map((h) => nodes[h.nodeIndex].text.slice(h.start, h.end))).toEqual(['abc ', 'def'])
+  })
+})
+
+describe('paraTextsFingerprint（P2-3：段落文本内容指纹缓存键）', () => {
+  it('相同内容指纹一致；内容变化指纹不同', () => {
+    const a = ['第一段', '第二段']
+    expect(paraTextsFingerprint(a)).toBe(paraTextsFingerprint(['第一段', '第二段']))
+    expect(paraTextsFingerprint(a)).not.toBe(paraTextsFingerprint(['第一段', '第二段改']))
+  })
+
+  it('段间分隔参与哈希：["ab","c"] 与 ["a","bc"] 指纹不同', () => {
+    expect(paraTextsFingerprint(['ab', 'c'])).not.toBe(paraTextsFingerprint(['a', 'bc']))
+  })
+
+  it('空列表与单段指纹稳定', () => {
+    expect(paraTextsFingerprint([])).toBe(paraTextsFingerprint([]))
+    expect(paraTextsFingerprint([''])).toBe(paraTextsFingerprint(['']))
   })
 })

@@ -38,6 +38,12 @@ describe('hasUnclosedMath', () => {
     expect(hasUnclosedMath('公式 $x$ 与价格 \\$5')).toBe(false) // 真实成对 + 转义
     expect(hasUnclosedMath('公式 $x 与价格 \\$5')).toBe(true) // 真实未闭合仍检出
   })
+
+  it('P3-4：\\$ 按反斜杠数量奇偶判定（\\\\=字面反斜杠 + 真实定界符）', () => {
+    expect(hasUnclosedMath('a\\\\$b')).toBe(true) // 2 个反斜杠 + $：$ 是真实定界符 → 未闭合
+    expect(hasUnclosedMath('a\\\\\\\\$b')).toBe(true) // 4 个反斜杠 + $：$ 是真实定界符 → 未闭合
+    expect(hasUnclosedMath('a\\\\\\$b')).toBe(false) // 3 个反斜杠：\\\\ 字面 + \\$ 转义 → 无真实定界
+  })
 })
 
 describe('isAbortError', () => {

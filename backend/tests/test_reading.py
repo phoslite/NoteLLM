@@ -167,3 +167,73 @@ def test_notes_crud_and_export(client):
     assert exp.status_code == 200
     assert "没看懂" in exp.text
     assert "[不理解]" in exp.text
+
+
+def test_upsert_log_concurrent_duplicate_leaves_single_row(client, monkeypatch):
+    """审查 P2-2：并发双会话重复插入同一 (book_id, chapter_id) 只留一行（唯一约束 + 冲突转更新）。"""
+    from app.core.database import SessionLocal
+    from app.models.activity import ReadingLog
+    from app.repositories.reading import upsert_log
+
+    book_id = _upload(client)
+    ch = client.get(f"/api/books/{book_id}").json()["data"]["chapters"][0]["id"]
+    db1 = SessionLocal()
+    db2 = SessionLocal()
+    try:
+        injected = {"done": False}
+        orig_commit = db1.commit
+
+        def racing_commit():
+            if not injected["done"]:
+                injected["done"] = True
+                db2.add(ReadingLog(book_id=book_id, chapter_id=ch, position=0.1))
+                db2.commit()
+            orig_commit()
+
+        monkeypatch.setattr(db1, "commit", racing_commit)
+        log = upsert_log(db1, book_id, ch, 0.5)
+        assert log.position == 0.5
+        rows = db1.query(ReadingLog).filter(ReadingLog.book_id == book_id, ReadingLog.chapter_id == ch).all()
+        assert len(rows) == 1, "并发双写后同一 (book_id, chapter_id) 只能有一行"
+        assert rows[0].position == 0.5, "冲突转更新应保留本次写入的最新 position"
+    finally:
+        db1.close()
+        db2.close()
+
+
+def test_reading_log_dedup_migration_keeps_latest(client):
+    """审查 P2-2：存量重复 (book_id, chapter_id) 去重迁移——保留 updated_at 最新、同值取 id 最大。"""
+    import pytest
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from app.core.database import _ensure_indexes, engine
+
+    legacy_ddl = (
+        "CREATE TABLE reading_logs (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, "
+        "chapter_id INTEGER, position FLOAT NOT NULL DEFAULT 0.0, updated_at DATETIME)"
+    )
+    dupes = (
+        "INSERT INTO reading_logs (id, book_id, chapter_id, position, updated_at) VALUES "
+        "(1, 10, 100, 0.1, '2026-01-01 10:00:00'),"
+        "(2, 10, 100, 0.9, '2026-01-02 10:00:00'),"
+        "(3, 10, 100, 0.5, '2026-01-02 10:00:00'),"
+        "(4, 10, 101, 0.2, '2026-01-03 10:00:00'),"
+        "(5, 10, NULL, 0.1, '2026-01-01 10:00:00'),"
+        "(6, 10, NULL, 0.7, '2026-01-02 10:00:00')"
+    )
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS reading_logs"))
+        conn.execute(text(legacy_ddl))
+        conn.execute(text(dupes))
+    _ensure_indexes()  # 走真实启动迁移：去重 + 建唯一索引
+    with engine.begin() as conn:
+        remaining = [r[0] for r in conn.execute(text("SELECT id FROM reading_logs ORDER BY id")).fetchall()]
+        assert remaining == [3, 4, 6], f"应保留最新行（同值取 id 大），实际 {remaining}"
+        # 唯一索引已生效：再次插入同 (book_id, chapter_id) 被拒绝
+        with pytest.raises(IntegrityError):
+            conn.execute(
+                text("INSERT INTO reading_logs (id, book_id, chapter_id, position, updated_at) "
+                     "VALUES (7, 10, 100, 0.3, '2026-01-04 10:00:00')")
+            )
+

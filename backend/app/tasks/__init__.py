@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.core.config import settings
@@ -353,7 +354,7 @@ def get_status(task_id: str) -> dict:
 def list_tasks(task_type: str | None = None, status: str | None = None, limit: int = 20) -> list[dict]:
     """任务列表（创建时间倒序），供前端任务中心轮询。"""
     with SessionLocal() as db:
-        q = db.query(Task).order_by(Task.created_at.desc())
+        q = db.query(Task).order_by(Task.created_at.desc(), text("rowid DESC"))  # 审查 P2-3：同微秒撞车按插入序决胜（后提交在前）
         if task_type:
             q = q.filter(Task.type == task_type)
         if status:

@@ -1,7 +1,7 @@
 import { nextTick, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createNote, deleteNote, updateNote } from '@/api/reading'
-import { findQuoteRange, normalizeHlText, type HlTextNode, type HlRange } from '@/utils/highlight'
+import { findQuoteRange, normalizeHlText, paraTextsFingerprint, type HlTextNode, type HlRange } from '@/utils/highlight'
 import type { ChapterItem, NoteItem, NoteType } from '@/types'
 import type { ReaderSelection } from './useReaderSelection'
 
@@ -61,7 +61,7 @@ export function useReaderNotes(opts: {
   const noteParaIdx = new Map<number, number>()
   /** 段落下标 → 该段需渲染的笔记 id 集合（上一轮 applyHighlights 结果，影响段判定用）。 */
   const paraNoteIds = new Map<number, Set<number>>()
-  /** 当前章节段落归一化文本索引（textContent 级粗定位；key = 章节 id + 段落数）。 */
+  /** 当前章节段落归一化文本索引（textContent 级粗定位；key = 章节 id + 段落数 + 内容指纹）。 */
   let paraTextsCache: string[] | null = null
   let paraTextsKey = ''
 
@@ -160,26 +160,27 @@ export function useReaderNotes(opts: {
   /** 当前章节段落归一化文本索引（textContent 级，含公式/旧 mark 文本——粗定位只要段级命中）。 */
   function buildParaTexts(chapterId: number): string[] {
     const el = scrollEl.value
-    const count = el?.querySelectorAll('.para').length ?? 0
-    const key = `${chapterId}:${count}`
+    const paras = el?.querySelectorAll('.para') ?? []
+    const texts: string[] = []
+    for (const para of paras) {
+      const box = para.querySelector('.md-render') as HTMLElement | null
+      texts.push(normalizeHlText(box?.textContent ?? ''))
+    }
+    // P2-3：缓存键含内容指纹——同章同段数但内容变化（重渲染/重导入）时不得复用旧文本定位
+    const key = `${chapterId}:${paras.length}:${paraTextsFingerprint(texts)}`
     if (paraTextsCache && paraTextsKey === key) return paraTextsCache
     paraTextsKey = key
-    paraTextsCache = []
-    if (el) {
-      el.querySelectorAll('.para').forEach((para) => {
-        const box = para.querySelector('.md-render') as HTMLElement | null
-        paraTextsCache!.push(normalizeHlText(box?.textContent ?? ''))
-      })
-    }
+    paraTextsCache = texts
     return paraTextsCache
   }
 
   /** 定位笔记所在段落：优先缓存；未缓存时按段落文本索引找第一个包含 quote 的段，
    *  失配再回退本会话选区记录（quoteParaIdx）。返回段落下标或 null。 */
   function locateNotePara(n: NoteItem, texts: string[]): number | null {
-    const cached = noteParaIdx.get(n.id)
-    if (cached != null && cached < texts.length) return cached
     const normQ = normalizeHlText(n.quote_text || '')
+    const cached = noteParaIdx.get(n.id)
+    // P2-4：信任缓存前校验内容（normQ 非空时）；跨章同段数/同章内容变化时失配即重定位并更新缓存
+    if (cached != null && cached < texts.length && (!normQ || texts[cached].includes(normQ))) return cached
     let idx = -1
     if (normQ) idx = texts.findIndex((t) => t.includes(normQ))
     if (idx < 0) {
